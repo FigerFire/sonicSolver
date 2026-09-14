@@ -1,0 +1,6 @@
+add_subdirectory(boundary)
+add_subdirectory(linearAlgebra)
+add_subdirectory(discretization)
+add_subdirectory(equation)
+add_subdirectory(system)
+add_subdirectory(algorithm)
