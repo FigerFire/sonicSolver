@@ -18,30 +18,12 @@ class ITransportModel;
 namespace Physics::EquationSet { class Model; }
 namespace Equation::Compressible {
 
-enum class ConvectionThermodynamicContract {
-    EquationSetRusanov,
-    HighOrderPerfectGas
-};
-
-/// @brief 返回启动诊断中使用的显式对流热力学契约名称。
-constexpr const char* toString(ConvectionThermodynamicContract contract) {
-    switch (contract) {
-    case ConvectionThermodynamicContract::EquationSetRusanov:
-        return "EquationSetRusanov";
-    case ConvectionThermodynamicContract::HighOrderPerfectGas:
-        return "HighOrderPerfectGas";
-    }
-    return "unknown";
-}
-
 /// @brief 一次空间项装配所需的非拥有上下文。
 struct AssemblyContext {
     const FDM::SolverConfig& config;
     double timeStep = 0.0;
     const FDM::ITransportModel* transport = nullptr;
     const Physics::EquationSet::Model* thermodynamics = nullptr;
-    ConvectionThermodynamicContract convectionThermodynamics =
-        ConvectionThermodynamicContract::EquationSetRusanov;
 };
 
 /// @brief 可压缩质量、动量和能量方程组。

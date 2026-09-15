@@ -22,10 +22,8 @@
 
 namespace SF::SolverAlgorithm {
 CompressibleAlgorithm::CompressibleAlgorithm(
-        FDM::SolverConfig config,
-        Equation::Compressible::ConvectionThermodynamicContract convection)
+        FDM::SolverConfig config)
     : config_(std::move(config))
-    , convection_(convection)
     , boundaryApplicator_(config_.boundaries)
     , flowAlgorithm_(FDM::makeFlowAlgorithm(config_)) {
     FDM::validateNumericsConfig(config_.numerics);
@@ -41,11 +39,10 @@ void CompressibleAlgorithm::bindServices(FDM::SolverServices services) {
 }
 
 void CompressibleAlgorithm::bindState(State::StateBundle& state) {
+    const bool firstBinding = state_ == nullptr;
     state.validatePatches();
     if (config_.numerics.solver == FDM::SolverAlgorithm::DensityBased) {
-        DensityBasedRHS::validateTimestepState(
-            state, config_,
-            convection_);
+        DensityBasedRHS::validateTimestepState(state, config_);
     }
     if (state_ && state_ != &state) {
         throw std::runtime_error(
@@ -54,6 +51,9 @@ void CompressibleAlgorithm::bindState(State::StateBundle& state) {
     state_ = &state;
     ensureWorkspaces(state.patches);
     if (services_.executionRuntime) services_.executionRuntime->attachState(state);
+    if (firstBinding && config_.numerics.solver == FDM::SolverAlgorithm::DensityBased) {
+        emitConvectionContract();
+    }
 }
 
 void CompressibleAlgorithm::ensureWorkspaces(const std::vector<Field*>& fields) {
@@ -101,6 +101,21 @@ void CompressibleAlgorithm::emitTimeStep() {
     message.time = state_->time;
     message.dt = state_->dt;
     services_.observer->onSolverMessage(message);
+}
+
+void CompressibleAlgorithm::emitConvectionContract() {
+    if (!services_.observer || !state_ || !state_->equations) return;
+    const auto gamma = state_->equations->perfectGasGamma();
+    std::ostringstream detail;
+    detail << "reconstruction="
+           << FDM::toString(config_.numerics.convection)
+           << ", numericalFlux=" << FDM::toString(config_.numerics.flux)
+           << ", thermodynamics=PerfectGas(gamma=" << *gamma << ")"
+           << ", execution=reconstructed-face flux";
+    services_.observer->onSolverMessage({
+        FDM::SolverMessageKind::Setup,
+        "Convection contract", detail.str(),
+        state_->step, state_->time, state_->dt});
 }
 
 void CompressibleAlgorithm::validateStateClosure(Field& field, const char* stage) {
@@ -182,8 +197,7 @@ void CompressibleAlgorithm::stepPressure(Field& field, double maximumTimeStep) {
     auto assembleRHS = [&](Field& f, double stageTime) {
         DensityBasedRHS::assembleAllPatches(
             {&f}, workspaces_, config_, equations_, *state_, services_, boundaryApplicator_,
-            stageTime,
-            Equation::Compressible::ConvectionThermodynamicContract::EquationSetRusanov);
+            stageTime);
     };
 
     auto postStage = [&](Field& f, const char* stage) {
@@ -268,6 +282,7 @@ void CompressibleAlgorithm::stepDensity(
         throw std::runtime_error(
             "SolverAlgorithm::CompressibleAlgorithm requires a finite positive time-step limit.");
     }
+    HighOrderTrace::beginPhysicalStep(state_->step);
     if (HighOrderTrace::activeFor(state_->step)) {
         HighOrderTrace::conservative("initial Q", fields);
         HighOrderTrace::gamma(config_, *state_->equations);
@@ -316,7 +331,7 @@ void CompressibleAlgorithm::stepDensity(
                std::vector<PatchWorkspace>& workspaces, double stageTime) {
             DensityBasedRHS::assembleAllPatches(
                 patches, workspaces, config_, equations_, *state_, services_,
-                boundaryApplicator_, stageTime, convection_);
+                boundaryApplicator_, stageTime);
         },
         [this](const std::vector<Field*>& patches) {
             DensityBasedRHS::publishIntegratedState(

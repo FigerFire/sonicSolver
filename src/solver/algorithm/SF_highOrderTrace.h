@@ -10,12 +10,15 @@
 #include "core/state/SF_equationSet.h"
 
 #include <algorithm>
+#include <cerrno>
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
 #include <iomanip>
 #include <iostream>
 #include <limits>
+#include <sstream>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -29,8 +32,59 @@ inline bool enabled() {
     return value;
 }
 
+inline std::int64_t selectedStep() {
+    static const std::int64_t value = [] {
+        const char* env = std::getenv("SF_HIGH_ORDER_TRACE_STEP");
+        if (!env || *env == '\0') return std::int64_t{0};
+        char* end = nullptr;
+        errno = 0;
+        const long long parsed = std::strtoll(env, &end, 10);
+        if (errno != 0 || end == env || *end != '\0' || parsed < 0) {
+            throw std::runtime_error(
+                "SF_HIGH_ORDER_TRACE_STEP must be a non-negative integer.");
+        }
+        return static_cast<std::int64_t>(parsed);
+    }();
+    return value;
+}
+
+struct Context {
+    std::int64_t step = -1;
+    int stage = -1;
+    double stageTime = 0.0;
+};
+
+inline Context& context() {
+    static Context value;
+    return value;
+}
+
+inline void beginPhysicalStep(std::int64_t step) {
+    if (!enabled()) return;
+    context() = {step, -1, 0.0};
+}
+
+inline void beginStage(std::int64_t step, double stageTime) {
+    if (!enabled()) return;
+    Context& value = context();
+    if (value.step != step) value = {step, -1, 0.0};
+    ++value.stage;
+    value.stageTime = stageTime;
+}
+
 inline bool activeFor(std::int64_t step) {
-    return enabled() && step == 0;
+    return enabled() && step == selectedStep();
+}
+
+inline std::ostream& printPrefix(std::ostream& output) {
+    output << "[SF TRACE]";
+    const Context& value = context();
+    if (value.step >= 0) output << " step=" << value.step;
+    if (value.stage >= 0) {
+        output << " stage=" << value.stage
+               << " stage-time=" << std::setprecision(17) << value.stageTime;
+    }
+    return output << ' ';
 }
 
 struct Statistics {
@@ -55,8 +109,8 @@ struct Statistics {
 
 inline void printStatistics(const char* label, int component,
                             const Statistics& values) {
-    std::cout << std::setprecision(17)
-              << "[SF TRACE] " << label << " component=" << component
+    printPrefix(std::cout << std::setprecision(17))
+              << label << " component=" << component
               << " count=" << values.count
               << " sum=" << values.sum
               << " l1=" << values.l1
@@ -105,7 +159,7 @@ inline void conservative(const char* checkpoint,
         } else {
             Math::forFluidInterior(*field, add);
         }
-        std::cout << "[SF TRACE] " << checkpoint << " patch=" << patch
+        printPrefix(std::cout) << checkpoint << " patch=" << patch
                   << " field=" << static_cast<const void*>(field)
                   << " region=" << (includeGhost ? "storage" : "interior") << '\n';
         for (int v = 0; v < field->NVar(); ++v) {
@@ -122,7 +176,7 @@ inline void conservative(const char* checkpoint,
         const int i1 = field->MX() - field->NG() - 1;
         const int j = field->NG();
         const int k = field->NG();
-        std::cout << "[SF TRACE] " << checkpoint << " patch=" << patch
+        printPrefix(std::cout) << checkpoint << " patch=" << patch
                   << " x-samples physical-left=";
         for (int v = 0; v < field->NVar(); ++v) std::cout << (*field)(i0, j, k, v) << ' ';
         std::cout << " physical-right=";
@@ -143,7 +197,7 @@ inline void flux(const char* checkpoint, const std::vector<Field*>& fields,
         const PatchWorkspace* workspace = workspaces[patch];
         if (!field || !workspace) continue;
         const FluxField& flux = workspace->convectiveFlux;
-        std::cout << "[SF TRACE] " << checkpoint << " patch=" << patch
+        printPrefix(std::cout) << checkpoint << " patch=" << patch
                   << " faces=" << flux.faceCount() << " nVar=" << flux.variableCount() << '\n';
         for (int dir = 0; dir < 3; ++dir) {
             for (int v = 0; v < flux.variableCount(); ++v) {
@@ -165,7 +219,7 @@ inline void flux(const char* checkpoint, const std::vector<Field*>& fields,
                              field->NG() + field->NX() / 2 + 1};
         for (int i : faces) {
             const std::size_t face = static_cast<std::size_t>(field->getIdx(i, j, k));
-            std::cout << "[SF TRACE] " << checkpoint << " patch=" << patch
+            printPrefix(std::cout) << checkpoint << " patch=" << patch
                       << " fixed-face=XI(" << i << ',' << j << ',' << k << ") F=";
             for (int v = 0; v < flux.variableCount(); ++v) std::cout << flux(face, v) << ' ';
             std::cout << '\n';
@@ -219,7 +273,7 @@ inline void residual(const char* checkpoint, const std::vector<Field*>& fields,
                              field->NG() + field->NX() / 2,
                              field->NG() + field->NX() / 2 + 1};
         for (int i : cells) {
-            std::cout << "[SF TRACE] " << checkpoint << " patch=" << patch
+            printPrefix(std::cout) << checkpoint << " patch=" << patch
                       << " fixed-cell=(" << i << ',' << j << ',' << k << ")"
                       << " residual=";
             for (int v = 0; v < field->NVar(); ++v) {
@@ -234,7 +288,7 @@ inline void residual(const char* checkpoint, const std::vector<Field*>& fields,
             Math::forFluidInterior(*field, [&](int i, int j, int k) {
                 if (reported == 4 || !residual.hasGlobal(i, j, k)
                     || field->globalDofId(i, j, k) < 0) return;
-                std::cout << "[SF TRACE] " << checkpoint << " patch=" << patch
+                printPrefix(std::cout) << checkpoint << " patch=" << patch
                           << " GlobalDofId=" << field->globalDofId(i, j, k)
                           << " owner-rank=" << field->globalDofOwnerRank(i, j, k)
                           << " local=";
@@ -252,12 +306,127 @@ inline void residual(const char* checkpoint, const std::vector<Field*>& fields,
     }
 }
 
+struct ZeroStatistics {
+    std::size_t count = 0;
+    std::size_t nonZeroCount = 0;
+    double l1 = 0.0;
+    double linf = 0.0;
+    bool hasFirstNonZero = false;
+    std::string firstLocation;
+    double firstValue = 0.0;
+
+    void add(double value, std::string location) {
+        ++count;
+        const double magnitude = std::abs(value);
+        l1 += magnitude;
+        linf = std::max(linf, magnitude);
+        if (value == 0.0) return;
+        ++nonZeroCount;
+        if (!hasFirstNonZero) {
+            hasFirstNonZero = true;
+            firstLocation = std::move(location);
+            firstValue = value;
+        }
+    }
+};
+
+inline void printZeroStatistics(const char* storage, const ZeroStatistics& values) {
+    printPrefix(std::cout << std::setprecision(17))
+        << "workspace-after-clear " << storage
+        << " count=" << values.count
+        << " l1=" << values.l1
+        << " linf=" << values.linf
+        << " non-zero-count=" << values.nonZeroCount;
+    if (values.hasFirstNonZero) {
+        std::cout << " first-non-zero=" << values.firstLocation
+                  << " value=" << values.firstValue;
+    }
+    std::cout << '\n';
+}
+
+/// Flux/Residual are scratch storage.  A non-zero value immediately after
+/// System::begin means a stale stage can enter the next numerical assembly.
+inline void workspaceAfterClear(const Field& field,
+                                const PatchWorkspace& workspace,
+                                std::size_t patch) {
+    if (!enabled()) return;
+
+    const FluxField& flux = workspace.convectiveFlux;
+    const Residual& residual = workspace.residual;
+    ZeroStatistics fluxValues;
+    ZeroStatistics residualValues;
+    for (std::size_t face = 0; face < flux.faceCount(); ++face) {
+        for (int variable = 0; variable < flux.variableCount(); ++variable) {
+            fluxValues.add(flux(face, variable),
+                "face=" + std::to_string(face)
+                + ",component=" + std::to_string(variable));
+        }
+    }
+    for (int k = 0; k < field.MZ(); ++k) {
+        for (int j = 0; j < field.MY(); ++j) {
+            for (int i = 0; i < field.MX(); ++i) {
+                const std::string point = "cell=(" + std::to_string(i) + ','
+                    + std::to_string(j) + ',' + std::to_string(k) + ')';
+                if (residual.hasGlobal(i, j, k)) {
+                    residualValues.add(1.0, point + ",global-mask");
+                }
+                for (int variable = 0; variable < field.NVar(); ++variable) {
+                    const std::string component = ",component="
+                        + std::to_string(variable);
+                    residualValues.add(residual.x(i, j, k, variable),
+                        point + ",XI" + component);
+                    residualValues.add(residual.y(i, j, k, variable),
+                        point + ",ETA" + component);
+                    residualValues.add(residual.z(i, j, k, variable),
+                        point + ",ZETA" + component);
+                    residualValues.add(residual.source(i, j, k, variable),
+                        point + ",source" + component);
+                    residualValues.add(residual.local(i, j, k, variable),
+                        point + ",local" + component);
+                    if (residual.hasGlobal(i, j, k)) {
+                        residualValues.add(residual.global(i, j, k, variable),
+                            point + ",global" + component);
+                    }
+                }
+            }
+        }
+    }
+    printPrefix(std::cout) << "workspace-after-clear patch=" << patch
+        << " field=" << static_cast<const void*>(&field)
+        << " workspace=" << static_cast<const void*>(&workspace)
+        << " flux=" << static_cast<const void*>(&flux)
+        << " residual=" << static_cast<const void*>(&residual) << '\n';
+    printZeroStatistics("FluxField", fluxValues);
+    printZeroStatistics("Residual", residualValues);
+    if (fluxValues.nonZeroCount != 0 || residualValues.nonZeroCount != 0) {
+        std::ostringstream message;
+        message << "Workspace clear invariant failed at step=" << context().step
+                << ", stage=" << context().stage
+                << ", patch=" << patch
+                << ", field=" << static_cast<const void*>(&field)
+                << ", workspace=" << static_cast<const void*>(&workspace)
+                << ", flux=" << static_cast<const void*>(&flux)
+                << ", residual=" << static_cast<const void*>(&residual)
+                << "; FluxField nonZeroCount=" << fluxValues.nonZeroCount
+                << ", Residual nonZeroCount=" << residualValues.nonZeroCount;
+        if (fluxValues.hasFirstNonZero) {
+            message << ", first FluxField entry=" << fluxValues.firstLocation
+                    << " value=" << fluxValues.firstValue;
+        }
+        if (residualValues.hasFirstNonZero) {
+            message << ", first Residual entry=" << residualValues.firstLocation
+                    << " value=" << residualValues.firstValue;
+        }
+        throw std::runtime_error(message.str());
+    }
+}
+
 inline void gamma(const FDM::SolverConfig& config,
                   const Physics::EquationSet::Model& equations) {
     if (!enabled()) return;
     const auto equationGamma = equations.perfectGasGamma();
-    std::cout << std::setprecision(17)
-              << "[SF TRACE] thermodynamics config-gamma=" << config.numerics.idealGasGamma
+    printPrefix(std::cout << std::setprecision(17))
+              << "thermodynamics config-gamma=" << config.numerics.idealGasGamma
               << " equation-gamma=" << (equationGamma ? *equationGamma : -1.0)
               << " selected-divDispatch-gamma="
               << (equationGamma ? *equationGamma : config.numerics.idealGasGamma) << '\n';

@@ -6,7 +6,6 @@
 #include "SF_config.h"
 #include "solver/discretization/SF_discretization.h"
 #include "SF_field.h"
-#include "SF_rusanovEOS.h"
 
 namespace SF::Equation::Compressible {
 
@@ -47,23 +46,16 @@ void System::convection(
         Field& field, FluxField& fluxField, Residual& residual,
         const AssemblyContext& context) const {
     if (!definition_.contains(TermKind::Divergence)) return;
-    if (context.thermodynamics
-        && context.convectionThermodynamics
-            == ConvectionThermodynamicContract::EquationSetRusanov) {
-        Numerics::RusanovEOS::div(field, fluxField, residual,
-                                  *context.thermodynamics);
-        return;
+    if (!context.thermodynamics) {
+        throw std::runtime_error(
+            "Reconstructed convection requires an authoritative EquationSet binding.");
     }
-    double gamma = context.config.numerics.idealGasGamma;
-    if (context.thermodynamics) {
-        const auto equationGamma = context.thermodynamics->perfectGasGamma();
-        if (!equationGamma) {
-            throw std::runtime_error(
-                "Configured high-order convection requires a PerfectGas EquationSet; "
-                "generic EquationSet thermodynamics are not supported by the "
-                "current characteristic flux implementation.");
-        }
-        gamma = *equationGamma;
+    const auto equationGamma = context.thermodynamics->perfectGasGamma();
+    if (!equationGamma) {
+        throw std::runtime_error(
+            "Configured reconstructed convection requires a PerfectGas EquationSet; "
+            "generic EquationSet thermodynamics are not supported by the "
+            "current characteristic reconstruction implementation.");
     }
     divDispatch(field, fluxField, residual,
                 context.config.numerics.convection,
@@ -71,7 +63,8 @@ void System::convection(
                 context.timeStep,
                 context.config.numerics.ibmBoundary,
                 context.config.numerics.ilwOrder,
-                gamma);
+                *equationGamma,
+                *context.thermodynamics);
 }
 
 void System::diffusionAndSources(

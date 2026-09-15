@@ -36,7 +36,8 @@ void validate(const ResolvedSimulationSystem& system) {
     std::set<std::string> constraints;
     for (const auto& constraint : system.constraints) {
         if (constraint.id.empty() || constraint.equation.empty()
-            || unknowns.find(constraint.multiplierUnknown) == unknowns.end()
+            || (!constraint.multiplierUnknown.empty()
+                && unknowns.find(constraint.multiplierUnknown) == unknowns.end())
             || !constraints.insert(constraint.id).second) {
             throw std::runtime_error(
                 "Resolved system has an invalid multiplier constraint.");

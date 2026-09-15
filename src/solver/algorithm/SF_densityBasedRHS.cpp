@@ -37,28 +37,31 @@ void addWriteOnce(std::vector<Execution::FieldAccess>& writes,
 
 void validateTimestepState(
         const State::StateBundle& state,
-        const FDM::SolverConfig& config,
-        Equation::Compressible::ConvectionThermodynamicContract convection) {
+        const FDM::SolverConfig& config) {
     state.validateDensityEquationBinding();
-    if (convection != Equation::Compressible::ConvectionThermodynamicContract::HighOrderPerfectGas) {
-        return;
-    }
     const auto gamma = state.equations->perfectGasGamma();
-    if (!gamma) {
+    if (!gamma || state.equations->variableCount() != 5) {
+        std::ostringstream message;
+        message
+            << "Density-based reconstructed convection '"
+            << FDM::toString(config.numerics.convection)
+            << " + " << FDM::toString(config.numerics.flux)
+            << "' requires a five-variable PerfectGas EquationSet; selected "
+            << "EquationSet family="
+            << static_cast<int>(state.equations->family())
+            << ", variables=" << state.equations->variableCount()
+            << ". No whole-field Rusanov bypass is permitted.";
         throw std::runtime_error(
-            std::string("Density-based high-order convection '")
-            + FDM::toString(config.numerics.convection) + "' requires a "
-            "PerfectGas EquationSet; the current WENO/TENO + "
-            "Steger-Warming characteristic flux does not consume a generic "
-            "EquationSet thermodynamic interface.");
+            message.str());
     }
     const double tolerance = 64.0 * std::numeric_limits<double>::epsilon()
         * std::max({1.0, std::abs(*gamma),
                     std::abs(config.numerics.idealGasGamma)});
     if (std::abs(*gamma - config.numerics.idealGasGamma) > tolerance) {
         std::ostringstream message;
-        message << "Density-based high-order convection '"
+        message << "Density-based reconstructed convection '"
                 << FDM::toString(config.numerics.convection)
+                << " + " << FDM::toString(config.numerics.flux)
                 << "' received PerfectGas EquationSet gamma=" << *gamma
                 << " but configured characteristic flux gamma="
                 << config.numerics.idealGasGamma
@@ -106,8 +109,7 @@ void assembleAllPatches(
         State::StateBundle& state,
         FDM::SolverServices& services,
         Boundary::Applicator& boundaryApplicator,
-        double stageTime,
-        Equation::Compressible::ConvectionThermodynamicContract convection) {
+        double stageTime) {
     if (fields.empty() || fields.size() != workspaces.size()) {
         throw std::runtime_error(
             "Density-based RHS requires one workspace for every patch.");
@@ -115,6 +117,7 @@ void assembleAllPatches(
     const bool trace = HighOrderTrace::activeFor(state.step);
     std::vector<PatchWorkspace*> traceWorkspaces;
     if (trace) {
+        HighOrderTrace::beginStage(state.step, stageTime);
         traceWorkspaces.reserve(workspaces.size());
         for (std::size_t index = 0; index < workspaces.size(); ++index) {
             if (!fields[index]) {
@@ -145,9 +148,10 @@ void assembleAllPatches(
         auto& workspace = workspaces[index];
         workspace.ensureFor(*field);
         equations.begin(workspace.convectiveFlux, workspace.residual);
+        if (trace) HighOrderTrace::workspaceAfterClear(*field, workspace, index);
         equations.convection(*field, workspace.convectiveFlux, workspace.residual,
                             {config, state.dt, transportFor(*field, services),
-                             state.equations.get(), convection});
+                             state.equations.get()});
     }
     if (trace) {
         HighOrderTrace::flux("candidate face flux before canonical COPY",
@@ -180,7 +184,7 @@ void assembleAllPatches(
         equations.diffusionAndSources(
             *field, workspaces[index].residual,
             {config, state.dt, transportFor(*field, services),
-                     state.equations.get(), convection});
+                     state.equations.get()});
     }
     if (services.equationSystem) {
         std::vector<Residual*> residuals;

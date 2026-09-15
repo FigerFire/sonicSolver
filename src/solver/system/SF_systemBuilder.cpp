@@ -6,6 +6,7 @@
 #include "SF_config.h"
 
 #include <algorithm>
+#include <cmath>
 #include <stdexcept>
 #include <utility>
 
@@ -70,34 +71,40 @@ void addPressureBasedFluid(
         {"E_PRESSURE"},{},{"pPrime","U"}});
 }
 
-void addEulerianEulerian(
+void addPhaseEquationPack(
         ResolvedSimulationSystem& system,
-        const std::vector<std::string>& names) {
-    if (names.size() < 2) {
-        throw std::runtime_error(
-            "Resolved Eulerian-Eulerian system requires at least two phases.");
-    }
-    addUnknown(system,"p","shared pressure");
-    for (const std::string& phase : names) {
-        const std::string suffix = "."+phase;
-        addUnknown(system,"phaseMass"+suffix,"phase mass "+phase);
-        addUnknown(system,"momentum"+suffix,"phase momentum "+phase,3);
-        addUnknown(system,"enthalpy"+suffix,"phase total enthalpy "+phase);
-        system.equations.push_back({
-            "E_CONTINUITY"+suffix,"phase continuity "+phase,
-            "conservation",{"phaseMass"+suffix}});
-        system.equations.push_back({
-            "E_MOMENTUM"+suffix,"phase momentum "+phase,
-            "conservation",{"momentum"+suffix}});
-        system.equations.push_back({
-            "E_ENTHALPY"+suffix,"phase enthalpy "+phase,
-            "conservation",{"enthalpy"+suffix}});
-    }
+        const std::string& phase) {
+    const std::string suffix = "."+phase;
+    addUnknown(system,"phaseMass"+suffix,"phase mass "+phase);
+    addUnknown(system,"momentum"+suffix,"phase momentum "+phase,3);
+    addUnknown(system,"enthalpy"+suffix,"phase total enthalpy "+phase);
+    system.equations.push_back({
+        "E_CONTINUITY"+suffix,"phase continuity "+phase,
+        "conservation",{"phaseMass"+suffix}});
+    system.equations.push_back({
+        "E_MOMENTUM"+suffix,"phase momentum "+phase,
+        "conservation",{"momentum"+suffix}});
+    system.equations.push_back({
+        "E_ENTHALPY"+suffix,"phase enthalpy "+phase,
+        "conservation",{"enthalpy"+suffix}});
+}
+
+void addSharedPressureConstraint(ResolvedSimulationSystem& system) {
     system.equations.push_back({
         "E_SHARED_PRESSURE","shared pressure correction","constraint",{"p"}});
+    system.constraints.push_back({
+        "C_SHARED_PRESSURE","shared pressure relationship",
+        "p.phase = p",""});
+    system.constraints.push_back({
+        "C_VOLUME_FRACTION","volume-fraction closure",
+        "sum(alpha.phase) = 1",""});
+}
+
+void addEulerianEulerianSolveBlock(ResolvedSimulationSystem& system) {
     system.solveBlocks.push_back({
         "S_EE_PIMPLE","Eulerian-Eulerian pressure coupling",
-        "PIMPLE phase predictor/corrector",{}, {}, {"p"}});
+        "PIMPLE phase predictor/corrector",{},
+        {"C_SHARED_PRESSURE","C_VOLUME_FRACTION"},{"p"}});
     for (const auto& equation : system.equations) {
         system.solveBlocks.back().equations.push_back(equation.id);
         for (const auto& unknown : equation.solvedUnknowns) {
@@ -106,6 +113,21 @@ void addEulerianEulerian(
             }
         }
     }
+}
+
+void addEulerianEulerianTemplate(
+        ResolvedSimulationSystem& system,
+        const std::vector<std::string>& names) {
+    if (names.size() < 2) {
+        throw std::runtime_error(
+            "Resolved Eulerian-Eulerian system requires at least two phases.");
+    }
+    addUnknown(system,"p","shared pressure");
+    for (const std::string& phase : names) {
+        addPhaseEquationPack(system,phase);
+    }
+    addSharedPressureConstraint(system);
+    addEulerianEulerianSolveBlock(system);
 }
 
 VariableLocation location(FDM::ImmersedVariableLocation value) {
@@ -180,12 +202,12 @@ ResolvedSimulationSystem build(
         const FDM::SolverConfig& config,
         const BuildRequest& request) {
     ResolvedSimulationSystem result;
-    result.flow = config.numerics.solver;
-    result.physics = request.physics;
+    result.formulation = config.numerics.solver;
+    result.templateOrigin = request.templateOrigin;
     result.timeIntegrator = timeName(config.numerics.time);
 
-    if (request.physics == PhysicsStateKind::EulerianEulerian) {
-        addEulerianEulerian(result,request.phaseNames);
+    if (request.templateOrigin == PhysicsTemplateKind::EulerianEulerian) {
+        addEulerianEulerianTemplate(result,request.phaseNames);
     } else if (config.numerics.solver == FDM::SolverAlgorithm::DensityBased) {
         addDensityBasedFluid(result);
     } else {
@@ -193,11 +215,16 @@ ResolvedSimulationSystem build(
             result, FDM::toString(config.pressure.workflow.algorithm));
     }
 
-    if (request.physics == PhysicsStateKind::HomogeneousMixture) {
+    if (request.homogeneousThermodynamics) {
         addUnknown(result,"phaseMassAux","homogeneous phase mass auxiliary");
         result.equations.push_back({
             "E_PHASE_MASS","homogeneous phase-mass transport",
             "conservation",{"phaseMassAux"}});
+    } else if (request.legacyMixture) {
+        addUnknown(result,"alphaAux","legacy transported volume fraction");
+        result.equations.push_back({
+            "E_LEGACY_ALPHA","legacy volume-fraction transport",
+            "conservation",{"alphaAux"}});
     }
     if (request.levelSet) {
         addUnknown(result,"phi","level-set geometry");
@@ -205,6 +232,9 @@ ResolvedSimulationSystem build(
             "E_LEVEL_SET","level-set advection/reinitialization",
             "geometry transport",{"phi"}});
         result.closures.push_back("surface normal and curvature from phi");
+        if (request.interfaceGhostFluid) {
+            result.closures.push_back("ghost-fluid interface closure");
+        }
     }
     if (request.turbulence) {
         result.closures.push_back(
@@ -242,16 +272,88 @@ ResolvedSimulationSystem build(
         "DistributedLinearSystem",distributedSolve,
         request.distributedLinearSystemAvailable,
         "GlobalDofId is mapped to backend rows outside equation assembly"});
+    const bool homogeneousUnsupported = request.homogeneousThermodynamics
+        && (config.numerics.solver != FDM::SolverAlgorithm::DensityBased
+            || (config.turbulence.enabled
+                && config.turbulence.family != FDM::TurbulenceFamily::DNS));
+    result.requirements.push_back({
+        "HomogeneousEquationExecution",request.homogeneousThermodynamics,
+        !homogeneousUnsupported,
+        "current homogeneous EquationSet execution requires density formulation "
+        "without transported turbulence"});
+    const bool eulerianExecution =
+        request.templateOrigin == PhysicsTemplateKind::EulerianEulerian;
+    result.requirements.push_back({
+        "EulerianEquationExecution",eulerianExecution,
+        !eulerianExecution
+            || (config.numerics.solver == FDM::SolverAlgorithm::PressureBased
+                && std::isfinite(config.numerics.maxDeltaT)
+                && config.numerics.maxDeltaT > 0.0),
+        "current Eulerian equation executor requires pressure formulation and "
+        "a finite positive maxDeltaT"});
+    const bool unsupportedPhaseChange = request.phaseChange
+        && (request.levelSet || request.legacyMixture);
+    result.requirements.push_back({
+        "PhaseChangeExecution",request.phaseChange,
+        !unsupportedPhaseChange,
+        "phase change is implemented for homogeneous or Eulerian equation systems"});
+    result.requirements.push_back({
+        "CanonicalScalarInterfaceFlux",
+        request.transportedLegacyAlpha && request.parallel,
+        true,
+        "legacy transported alpha on coupled patches is not implemented"});
     return result;
 }
 
-const char* toString(PhysicsStateKind kind) {
+bool hasUnknown(const ResolvedSimulationSystem& system, std::string_view id) {
+    return std::any_of(system.unknowns.begin(), system.unknowns.end(),
+        [&](const UnknownDescriptor& value) { return value.id == id; });
+}
+
+bool hasEquation(const ResolvedSimulationSystem& system, std::string_view id) {
+    return std::any_of(system.equations.begin(), system.equations.end(),
+        [&](const EquationDescriptor& value) { return value.id == id; });
+}
+
+bool hasEquationPrefix(
+        const ResolvedSimulationSystem& system, std::string_view prefix) {
+    return std::any_of(system.equations.begin(), system.equations.end(),
+        [&](const EquationDescriptor& value) {
+            return value.id.compare(0, prefix.size(), prefix) == 0;
+        });
+}
+
+bool hasConstraint(const ResolvedSimulationSystem& system, std::string_view id) {
+    return std::any_of(system.constraints.begin(), system.constraints.end(),
+        [&](const ConstraintDescriptor& value) { return value.id == id; });
+}
+
+bool hasSolveBlock(const ResolvedSimulationSystem& system, std::string_view id) {
+    return std::any_of(system.solveBlocks.begin(), system.solveBlocks.end(),
+        [&](const SolveBlock& value) { return value.id == id; });
+}
+
+bool hasRequirement(
+        const ResolvedSimulationSystem& system, std::string_view name) {
+    return std::any_of(system.requirements.begin(), system.requirements.end(),
+        [&](const ExecutionRequirement& value) { return value.name == name; });
+}
+
+bool requiresCapability(
+        const ResolvedSimulationSystem& system, std::string_view name) {
+    return std::any_of(system.requirements.begin(), system.requirements.end(),
+        [&](const ExecutionRequirement& value) {
+            return value.name == name && value.required;
+        });
+}
+
+const char* toString(PhysicsTemplateKind kind) {
     switch (kind) {
-        case PhysicsStateKind::SingleFluid: return "singleFluid";
-        case PhysicsStateKind::HomogeneousMixture:
+        case PhysicsTemplateKind::SingleFluid: return "singleFluid";
+        case PhysicsTemplateKind::HomogeneousMixture:
             return "homogeneousMixture";
-        case PhysicsStateKind::OneFluidInterface: return "oneFluidInterface";
-        case PhysicsStateKind::EulerianEulerian: return "eulerianEulerian";
+        case PhysicsTemplateKind::OneFluidInterface: return "oneFluidInterface";
+        case PhysicsTemplateKind::EulerianEulerian: return "eulerianEulerian";
     }
     return "unknown";
 }

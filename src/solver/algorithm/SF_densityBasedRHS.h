@@ -16,8 +16,7 @@ namespace SF::SolverAlgorithm::DensityBasedRHS {
 
 void validateTimestepState(
     const State::StateBundle& state,
-    const FDM::SolverConfig& config,
-    Equation::Compressible::ConvectionThermodynamicContract convection);
+    const FDM::SolverConfig& config);
 
 void prepareBoundaryState(
     const std::vector<Field*>& fields,
@@ -35,8 +34,7 @@ void assembleAllPatches(
     State::StateBundle& state,
     FDM::SolverServices& services,
     Boundary::Applicator& boundaryApplicator,
-    double stageTime,
-    Equation::Compressible::ConvectionThermodynamicContract convection);
+    double stageTime);
 
 void publishIntegratedState(
     const std::vector<Field*>& fields,

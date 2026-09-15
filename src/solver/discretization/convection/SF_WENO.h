@@ -19,6 +19,7 @@
 #include "methods/numerics/Flux/SF_lxF.h"
 #include "methods/numerics/structured/SF_structured.h"
 #include "methods/numerics/Flux/SF_roe.h"
+#include "methods/numerics/Flux/SF_rusanovEOS.h"
 #include "methods/numerics/Flux/SF_sw.h"
 #include "methods/numerics/convection/SF_riemann.h"
 
@@ -28,6 +29,37 @@
 
 namespace SF {
 namespace Flux {
+
+inline void storeLowOrderFaceFlux(
+        FluxField& fluxField,
+        Field& field,
+        int i,
+        int j,
+        int k,
+        Math::Dir direction,
+        LowOrderFlux::Method method,
+        double gamma,
+        const Physics::EquationSet::Model& thermodynamics) {
+    if (method != LowOrderFlux::Method::FirstOrderRusanov) {
+        LowOrderFlux::storeFaceFlux(
+            fluxField, field, i, j, k, direction, method, gamma);
+        return;
+    }
+
+    int di = 0, dj = 0, dk = 0;
+    Math::dirOffset(direction, di, dj, dk);
+    const FaceGeometry geometry = makeFaceGeometry(
+        field, i, j, k, direction);
+    double qLeft[5], qRight[5], faceFlux[5];
+    loadConservative(field, i, j, k, qLeft);
+    loadConservative(field, i + di, j + dj, k + dk, qRight);
+    Numerics::RusanovEOS::faceFlux(
+        thermodynamics, qLeft, qRight,
+        {geometry.normal[0], geometry.normal[1], geometry.normal[2]},
+        faceFlux, 5);
+    storePhysicalFlux(
+        fluxField, field, i, j, k, direction, geometry, faceFlux);
+}
 
 template <int NStencil>
 inline constexpr int scalarWENOStencilWidth() {
@@ -230,7 +262,8 @@ inline void computeDirectionalFlux(Field& field, FluxField& fluxField,
                                    FDM::IBMBoundaryScheme ibmBoundary =
                                        FDM::IBMBoundaryScheme::LowOrder,
                                    int requestedILWOrder = 0,
-                                   double gamma = 1.4) {
+                                   double gamma = 1.4,
+                                   const Physics::EquationSet::Model* thermodynamics = nullptr) {
     const int* offsets = nullptr;
     if constexpr (NStencil == 4) offsets = Math::WENO3_OFFSETS;
     else if constexpr (NStencil == 6) offsets = Math::WENO5_OFFSETS;
@@ -250,8 +283,13 @@ inline void computeDirectionalFlux(Field& field, FluxField& fluxField,
 
         if (faceIsIBMInterface(field, i, j, k, d)
             && ibmBoundary != FDM::IBMBoundaryScheme::ILW) {
-            LowOrderFlux::storeFaceFlux(
-                fluxField, field, i, j, k, d, fallbackMethod, gamma);
+            if (!thermodynamics) {
+                throw std::runtime_error(
+                    "Reconstructed convection requires an active EquationSet.");
+            }
+            storeLowOrderFaceFlux(
+                fluxField, field, i, j, k, d, fallbackMethod, gamma,
+                *thermodynamics);
             return;
         }
 
@@ -305,8 +343,13 @@ inline void computeDirectionalFlux(Field& field, FluxField& fluxField,
                     << std::endl;
                 std::exit(1);
             }
-            LowOrderFlux::storeFaceFlux(
-                fluxField, field, i, j, k, d, fallbackMethod, gamma);
+            if (!thermodynamics) {
+                throw std::runtime_error(
+                    "Reconstructed convection requires an active EquationSet.");
+            }
+            storeLowOrderFaceFlux(
+                fluxField, field, i, j, k, d, fallbackMethod, gamma,
+                *thermodynamics);
             return;
         }
 
@@ -336,16 +379,17 @@ inline void computeAllFluxes(Field& field, FluxField& fluxField,
                              FDM::IBMBoundaryScheme ibmBoundary =
                                  FDM::IBMBoundaryScheme::LowOrder,
                              int requestedILWOrder = 0,
-                             double gamma = 1.4) {
+                             double gamma = 1.4,
+                             const Physics::EquationSet::Model* thermodynamics = nullptr) {
     computeDirectionalFlux<NStencil>(
         field, fluxField, Math::XI, kernel, fallbackMethod, ibmBoundary,
-        requestedILWOrder, gamma);
+        requestedILWOrder, gamma, thermodynamics);
     computeDirectionalFlux<NStencil>(
         field, fluxField, Math::ETA, kernel, fallbackMethod, ibmBoundary,
-        requestedILWOrder, gamma);
+        requestedILWOrder, gamma, thermodynamics);
     computeDirectionalFlux<NStencil>(
         field, fluxField, Math::ZETA, kernel, fallbackMethod, ibmBoundary,
-        requestedILWOrder, gamma);
+        requestedILWOrder, gamma, thermodynamics);
 }
 
 } // namespace Flux

@@ -13,6 +13,7 @@ target_link_libraries(SF_workflow PUBLIC
     SF_headers
     SF_solverConfig
     SF_solverInterfaces
+    SF_solverSystem
 )
 
 set_lib_output(SF_workflow algorithm/workflow)

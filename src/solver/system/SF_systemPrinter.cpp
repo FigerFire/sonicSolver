@@ -237,8 +237,8 @@ std::string describe(const ResolvedSimulationSystem& system) {
            << "sonicSolver - Resolved Mathematical System\n"
            << "============================================================\n"
            << "FLOW\n"
-           << "  family          : " << FDM::toString(system.flow) << "\n"
-           << "  state           : " << toString(system.physics) << "\n"
+           << "  formulation     : " << FDM::toString(system.formulation) << "\n"
+           << "  template origin : " << toString(system.templateOrigin) << "\n"
            << "  time integrator : " << system.timeIntegrator << "\n";
 
     printUnknownSection(output, "STATE VARIABLES", system, isStateUnknown);

@@ -58,12 +58,7 @@ public:
 /// `config.boundaries`.
     ///
     /// @param config Complete numerical/boundary/source configuration.
-    /// @param convection Explicit thermodynamic contract for the selected
-    ///        convection implementation. Composition must choose this from
-    ///        the active EquationSet; no default numerical fallback exists.
-    explicit CompressibleAlgorithm(
-        FDM::SolverConfig config,
-        Equation::Compressible::ConvectionThermodynamicContract convection);
+    explicit CompressibleAlgorithm(FDM::SolverConfig config);
 
     void bindServices(FDM::SolverServices services) override;
 
@@ -80,7 +75,6 @@ public:
 
 private:
     FDM::SolverConfig config_;
-    Equation::Compressible::ConvectionThermodynamicContract convection_;
     Boundary::Applicator boundaryApplicator_;
     Equation::Compressible::System equations_;
     std::unique_ptr<FDM::IFlowAlgorithm> flowAlgorithm_;
@@ -107,6 +101,7 @@ private:
 
     /// @brief Emit a structured time-step message through the observer hook.
     void emitTimeStep();
+    void emitConvectionContract();
 
     /// @brief Validate the conservative state after a time-integration stage.
     /// @param field Field to inspect.

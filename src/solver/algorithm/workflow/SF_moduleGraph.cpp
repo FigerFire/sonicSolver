@@ -5,6 +5,7 @@
 
 #include "solver/algorithm/immersed/SF_immersedStrategy.h"
 
+#include <algorithm>
 #include <sstream>
 #include <stdexcept>
 #include <utility>
@@ -15,18 +16,19 @@ namespace {
 using FDM::Capability;
 using FDM::CapabilitySet;
 
-ModuleDescriptor equationModule(Kind kind) {
+ModuleDescriptor equationModule(
+        const System::ResolvedSimulationSystem& system) {
     ModuleDescriptor module;
-    if (kind == Kind::Homogeneous) {
+    if (System::hasEquation(system, "E_PHASE_MASS")) {
         module.name = "HomogeneousEquationSet";
         module.provides = {
             Capability::CanonicalConservativeState,
             Capability::PrimitiveState};
-    } else if (kind == Kind::EulerianEulerian) {
+    } else if (System::hasEquationPrefix(system, "E_CONTINUITY.")) {
         module.name = "EulerianEulerianPhaseSystem";
         module.provides = {Capability::PhaseCanonicalState};
     } else {
-        module.name = kind == Kind::OneFluidInterface
+        module.name = System::hasEquation(system, "E_LEVEL_SET")
             ? "OneFluidEquationSet" : "SingleFluidEquationSet";
         module.provides = {
             Capability::CanonicalConservativeState,
@@ -88,14 +90,13 @@ std::string ModuleGraph::describe() const {
 }
 
 ModuleGraph makeModuleGraph(
-        const Request& request,
-        const Plan& plan,
+        const System::ResolvedSimulationSystem& system,
         const FDM::SolverConfig& config) {
     ModuleGraph graph;
-    graph.add(equationModule(plan.kind));
+    graph.add(equationModule(system));
 
     ModuleDescriptor flow;
-    if (config.numerics.solver == FDM::SolverAlgorithm::PressureBased) {
+    if (system.formulation == FDM::SolverAlgorithm::PressureBased) {
         flow.name = "PressureBasedAlgorithm";
         flow.provides = {
             Capability::PredictedConservativeState,
@@ -109,24 +110,29 @@ ModuleGraph makeModuleGraph(
     flow.provides.add(Capability::MultiFieldExecution);
     graph.add(std::move(flow));
 
+    const bool immersed = !system.immersedAlgorithm.empty();
+    const bool immersedForcing = immersed
+        && system.immersedEnforcement != "ghostCell";
+    const bool phaseEquations =
+        System::hasEquationPrefix(system, "E_CONTINUITY.");
     ModuleDescriptor geometry;
-    geometry.name = request.ibm
+    geometry.name = immersed
         ? "ImmersedBoundaryGeometry" : "BodyFittedGeometry";
-    geometry.provides.add(request.ibm
+    geometry.provides.add(immersed
         ? Capability::ImmersedBoundaryGeometry
         : Capability::FittedBoundaryGeometry);
-    if (request.ibm && !request.ibmForcing) {
+    if (immersed && !immersedForcing) {
         geometry.requiresAll.add(
-            plan.kind == Kind::EulerianEulerian
+            phaseEquations
                 ? Capability::PhaseGhostState
                 : Capability::ConservativeGhostState);
-    } else if (plan.kind == Kind::EulerianEulerian) {
+    } else if (phaseEquations) {
         geometry.provides.add(Capability::PhaseGhostState);
     }
     graph.add(std::move(geometry));
 
     ModuleDescriptor reconstruction;
-    if (request.ilw) {
+    if (config.boundaries.ilwEnabled) {
         reconstruction.name = "ILWBoundaryReconstruction";
         reconstruction.requiresAll = {
             Capability::CharacteristicEigenSystem,
@@ -138,7 +144,7 @@ ModuleGraph makeModuleGraph(
         reconstruction.name = "AlgebraicBoundaryReconstruction";
         reconstruction.provides.add(
             Capability::AlgebraicBoundaryReconstruction);
-        if (plan.kind != Kind::Homogeneous) {
+        if (!System::hasEquation(system, "E_PHASE_MASS")) {
             reconstruction.provides.add(
                 Capability::ConservativeGhostState);
         }
@@ -147,7 +153,7 @@ ModuleGraph makeModuleGraph(
     }
     graph.add(std::move(reconstruction));
 
-    if (request.ibmForcing) {
+    if (immersedForcing) {
         ImmersedAlgorithm::validateForAlgorithm(
             config.ibm.forcing, config.numerics.solver);
         ModuleDescriptor constraint;
@@ -172,7 +178,8 @@ ModuleGraph makeModuleGraph(
         graph.add(std::move(constraint));
     }
 
-    if (request.interfaceGhostFluid) {
+    if (std::find(system.closures.begin(), system.closures.end(),
+                  "ghost-fluid interface closure") != system.closures.end()) {
         ModuleDescriptor interface;
         interface.name = "GhostFluidInterface";
         interface.requiresOneOf.push_back({

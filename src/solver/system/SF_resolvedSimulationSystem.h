@@ -7,12 +7,13 @@
 #include "SF_immersedSystem.h"
 
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace SF::System {
 
 /// @brief 物理状态族；与压力基/密度基数值算法正交。
-enum class PhysicsStateKind {
+enum class PhysicsTemplateKind {
     SingleFluid,
     HomogeneousMixture,
     OneFluidInterface,
@@ -81,8 +82,12 @@ struct ExecutionRequirement {
 
 /// @brief 一个 case 最终解析出的完整数学系统。
 struct ResolvedSimulationSystem {
-    FDM::SolverAlgorithm flow = FDM::SolverAlgorithm::DensityBased;
-    PhysicsStateKind physics = PhysicsStateKind::SingleFluid;
+    FDM::SolverAlgorithm formulation = FDM::SolverAlgorithm::DensityBased;
+    /// @brief 物理状态族仅作为 template provenance / explain 元数据保留。
+    ///
+    /// Runtime execution 不得以此为 dispatch key 选择 runner；
+    /// 执行依据是 unknowns / equations / constraints / solveBlocks。
+    PhysicsTemplateKind templateOrigin = PhysicsTemplateKind::SingleFluid;
     std::string timeIntegrator;
     std::vector<UnknownDescriptor> unknowns;
     std::vector<EquationDescriptor> equations;
@@ -100,11 +105,28 @@ struct ResolvedSimulationSystem {
     std::string immersedFunctional;
 };
 
+/// @brief 只读查询；运行装配应查询数学系统，而不是 template provenance。
+bool hasUnknown(const ResolvedSimulationSystem& system, std::string_view id);
+bool hasEquation(const ResolvedSimulationSystem& system, std::string_view id);
+bool hasEquationPrefix(
+    const ResolvedSimulationSystem& system, std::string_view prefix);
+bool hasConstraint(const ResolvedSimulationSystem& system, std::string_view id);
+bool hasSolveBlock(const ResolvedSimulationSystem& system, std::string_view id);
+bool hasRequirement(
+    const ResolvedSimulationSystem& system, std::string_view name);
+bool requiresCapability(
+    const ResolvedSimulationSystem& system, std::string_view name);
+
 /// @brief Builder 所需、已由 application 明确解析的上下文。
 struct BuildRequest {
-    PhysicsStateKind physics = PhysicsStateKind::SingleFluid;
+    PhysicsTemplateKind templateOrigin = PhysicsTemplateKind::SingleFluid;
     std::vector<std::string> phaseNames;
     bool levelSet = false;
+    bool homogeneousThermodynamics = false;
+    bool legacyMixture = false;
+    bool phaseChange = false;
+    bool transportedLegacyAlpha = false;
+    bool interfaceGhostFluid = false;
     bool turbulence = false;
     std::string turbulenceModel;
     bool parallel = false;
@@ -113,7 +135,7 @@ struct BuildRequest {
     const FDM::ImmersedAlgorithmDescriptor* immersed = nullptr;
 };
 
-const char* toString(PhysicsStateKind kind);
+const char* toString(PhysicsTemplateKind kind);
 const char* toString(VariableLocation location);
 const char* toString(OwnershipKind ownership);
 

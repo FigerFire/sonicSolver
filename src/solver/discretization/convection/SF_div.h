@@ -53,70 +53,53 @@ inline void wenoDiv(Field& field, FluxField& fluxField, Residual& residual,
                     const char* schemeName,
                     int requiredGhost,
                     double gamma,
+                    const Physics::EquationSet::Model& thermodynamics,
                     WenoCore&& wenoCore) {
     if (!Math::checkGhostDepth(field, requiredGhost, schemeName)) std::exit(1);
 
     const auto fallback = Flux::LowOrderFlux::fallbackFor(fluxMethod);
 
-    if (fluxMethod == FDM::FluxSplitter::Roe) {
-        Flux::computeAllFluxes<NStencil>(field, fluxField,
-            [&](const auto& s, const auto& m, auto* f, int, int, int, Math::Dir) {
-                Flux::characteristicWENOFaceFlux<NStencil>(s, m, f, wenoCore,
-                    [gamma](const double qL[5], const double qR[5],
-                       const double normal[3], double out[5]) {
-                        Flux::RoeFlux::flux(
-                            qL, qR, normal, out, gamma);
-                    }, gamma);
-            },
-            fallback,
-            ibmBoundary,
-            requestedILWOrder,
-            gamma);
-        Math::assembleConvectiveFluxResidual(field, fluxField, residual);
-        return;
-    }
-
-    if (fluxMethod == FDM::FluxSplitter::LaxWendroff) {
-        Flux::computeAllFluxes<NStencil>(field, fluxField,
-            [&](const auto& s, const auto& m, auto* f,
-                int i, int j, int k, Math::Dir d) {
-                Flux::characteristicWENOFaceFlux<NStencil>(s, m, f, wenoCore,
-                    [&](const double qL[5], const double qR[5],
-                        const double normal[3], double out[5]) {
-                        Flux::LaxWendroffFlux::flux(qL, qR, normal, dt,
-                            Flux::faceSpacing(field, i, j, k, d, normal), out,
-                            gamma);
-                    }, gamma);
-            },
-            fallback,
-            ibmBoundary,
-            requestedILWOrder,
-            gamma);
-        Math::assembleConvectiveFluxResidual(field, fluxField, residual);
-        return;
-    }
-
-    auto riemannFn = [fluxMethod, gamma](
-            const double q[5], const double normal[3],
-            double fPos[5], double fNeg[5]) {
-        if (fluxMethod == FDM::FluxSplitter::LaxFriedrichs) {
-            Flux::LaxFriedrichsFlux::split(
-                q, normal, fPos, fNeg, gamma);
-        } else {
-            Flux::StegerWarmingFlux::split(
-                q, normal, fPos, fNeg, gamma);
-        }
-    };
-
     Flux::computeAllFluxes<NStencil>(field, fluxField,
-        [&](const auto& s, const auto& m, auto* f, int, int, int, Math::Dir) {
-            Flux::characteristicWENO<NStencil>(
-                s, m, f, wenoCore, riemannFn, gamma);
+        [&](const auto& s, const auto& m, auto* f,
+            int i, int j, int k, Math::Dir d) {
+            Flux::characteristicWENOFaceFlux<NStencil>(
+                s, m, f, wenoCore,
+                [&](const double qLeft[5], const double qRight[5],
+                    const double normal[3], double out[5]) {
+                    switch (fluxMethod) {
+                    case FDM::FluxSplitter::StegerWarming:
+                        Flux::StegerWarmingFlux::flux(
+                            qLeft, qRight, normal, out, gamma);
+                        return;
+                    case FDM::FluxSplitter::Rusanov:
+                        Numerics::RusanovEOS::faceFlux(
+                            thermodynamics, qLeft, qRight,
+                            {normal[0], normal[1], normal[2]}, out, 5);
+                        return;
+                    case FDM::FluxSplitter::LaxFriedrichs:
+                        Flux::LaxFriedrichsFlux::flux(
+                            qLeft, qRight, normal, out, gamma);
+                        return;
+                    case FDM::FluxSplitter::Roe:
+                        Flux::RoeFlux::flux(
+                            qLeft, qRight, normal, out, gamma);
+                        return;
+                    case FDM::FluxSplitter::LaxWendroff:
+                        Flux::LaxWendroffFlux::flux(
+                            qLeft, qRight, normal, dt,
+                            Flux::faceSpacing(field, i, j, k, d, normal),
+                            out, gamma);
+                        return;
+                    }
+                    throw std::runtime_error(
+                        "Unknown reconstructed-face numerical flux.");
+                }, gamma);
         },
         fallback,
         ibmBoundary,
         requestedILWOrder,
-        gamma);
+        gamma,
+        &thermodynamics);
     Math::assembleConvectiveFluxResidual(field, fluxField, residual);
 }
 
@@ -133,14 +116,15 @@ namespace WENO3 {
 /// @param dt 当前时间步；仅LaxWendroff使用。
 /// @param ibmBoundary IBM近壁WENO模板处理方式。
 inline void div(Field& field, FluxField& fluxField, Residual& residual,
-                FDM::FluxSplitter fluxMethod = FDM::FluxSplitter::StegerWarming,
-                double dt = 0.0,
-                FDM::IBMBoundaryScheme ibmBoundary = FDM::IBMBoundaryScheme::LowOrder,
-                int requestedILWOrder = 0,
-                double gamma = 1.4) {
+                FDM::FluxSplitter fluxMethod,
+                double dt,
+                FDM::IBMBoundaryScheme ibmBoundary,
+                int requestedILWOrder,
+                double gamma,
+                const Physics::EquationSet::Model& thermodynamics) {
     DivDetail::wenoDiv<4>(field, fluxField, residual, fluxMethod, dt, ibmBoundary,
                           requestedILWOrder, "WENO3",
-                          Math::minGhostWENO3, gamma,
+                          Math::minGhostWENO3, gamma, thermodynamics,
                           ::SF::WENO3::weno3_core);
 }
 
@@ -157,14 +141,15 @@ namespace WENO5 {
 /// @param dt 当前时间步；仅LaxWendroff使用。
 /// @param ibmBoundary IBM近壁WENO模板处理方式。
 inline void div(Field& field, FluxField& fluxField, Residual& residual,
-                FDM::FluxSplitter fluxMethod = FDM::FluxSplitter::StegerWarming,
-                double dt = 0.0,
-                FDM::IBMBoundaryScheme ibmBoundary = FDM::IBMBoundaryScheme::LowOrder,
-                int requestedILWOrder = 0,
-                double gamma = 1.4) {
+                FDM::FluxSplitter fluxMethod,
+                double dt,
+                FDM::IBMBoundaryScheme ibmBoundary,
+                int requestedILWOrder,
+                double gamma,
+                const Physics::EquationSet::Model& thermodynamics) {
     DivDetail::wenoDiv<6>(field, fluxField, residual, fluxMethod, dt, ibmBoundary,
                           requestedILWOrder, "WENO5",
-                          Math::minGhostWENO5, gamma,
+                          Math::minGhostWENO5, gamma, thermodynamics,
                           ::SF::WENO5::weno5_core);
 }
 
@@ -181,14 +166,15 @@ namespace TENO5 {
 /// @param dt 当前时间步；仅LaxWendroff使用。
 /// @param ibmBoundary IBM近壁WENO/TENO模板处理方式。
 inline void div(Field& field, FluxField& fluxField, Residual& residual,
-                FDM::FluxSplitter fluxMethod = FDM::FluxSplitter::StegerWarming,
-                double dt = 0.0,
-                FDM::IBMBoundaryScheme ibmBoundary = FDM::IBMBoundaryScheme::LowOrder,
-                int requestedILWOrder = 0,
-                double gamma = 1.4) {
+                FDM::FluxSplitter fluxMethod,
+                double dt,
+                FDM::IBMBoundaryScheme ibmBoundary,
+                int requestedILWOrder,
+                double gamma,
+                const Physics::EquationSet::Model& thermodynamics) {
     DivDetail::wenoDiv<6>(field, fluxField, residual, fluxMethod, dt, ibmBoundary,
                           requestedILWOrder, "TENO5",
-                          Math::minGhostWENO5, gamma,
+                          Math::minGhostWENO5, gamma, thermodynamics,
                           ::SF::TENO5::teno5_core);
 }
 
@@ -205,14 +191,15 @@ namespace WENO7 {
 /// @param dt 当前时间步；仅LaxWendroff使用。
 /// @param ibmBoundary IBM近壁WENO模板处理方式。
 inline void div(Field& field, FluxField& fluxField, Residual& residual,
-                FDM::FluxSplitter fluxMethod = FDM::FluxSplitter::StegerWarming,
-                double dt = 0.0,
-                FDM::IBMBoundaryScheme ibmBoundary = FDM::IBMBoundaryScheme::LowOrder,
-                int requestedILWOrder = 0,
-                double gamma = 1.4) {
+                FDM::FluxSplitter fluxMethod,
+                double dt,
+                FDM::IBMBoundaryScheme ibmBoundary,
+                int requestedILWOrder,
+                double gamma,
+                const Physics::EquationSet::Model& thermodynamics) {
     DivDetail::wenoDiv<8>(field, fluxField, residual, fluxMethod, dt, ibmBoundary,
                           requestedILWOrder, "WENO7",
-                          Math::minGhostWENO7, gamma,
+                          Math::minGhostWENO7, gamma, thermodynamics,
                           ::SF::WENO7::weno7_core);
 }
 
@@ -222,27 +209,28 @@ inline void div(Field& field, FluxField& fluxField, Residual& residual,
 inline void divDispatch(
         Field& field, FluxField& fluxField, Residual& residual,
         FDM::ConvectionScheme scheme,
-        FDM::FluxSplitter flux = FDM::FluxSplitter::StegerWarming,
-        double timeStep = 0.0,
-        FDM::IBMBoundaryScheme ibmBoundary = FDM::IBMBoundaryScheme::LowOrder,
-        int ilwOrder = 0,
-        double idealGasGamma = 1.4) {
+        FDM::FluxSplitter flux,
+        double timeStep,
+        FDM::IBMBoundaryScheme ibmBoundary,
+        int ilwOrder,
+        double idealGasGamma,
+        const Physics::EquationSet::Model& thermodynamics) {
     switch (scheme) {
         case FDM::ConvectionScheme::WENO3:
             WENO3::div(field, fluxField, residual, flux, timeStep, ibmBoundary,
-                       ilwOrder, idealGasGamma);
+                       ilwOrder, idealGasGamma, thermodynamics);
             return;
         case FDM::ConvectionScheme::WENO5:
             WENO5::div(field, fluxField, residual, flux, timeStep, ibmBoundary,
-                       ilwOrder, idealGasGamma);
+                       ilwOrder, idealGasGamma, thermodynamics);
             return;
         case FDM::ConvectionScheme::TENO5:
             TENO5::div(field, fluxField, residual, flux, timeStep, ibmBoundary,
-                       ilwOrder, idealGasGamma);
+                       ilwOrder, idealGasGamma, thermodynamics);
             return;
         case FDM::ConvectionScheme::WENO7:
             WENO7::div(field, fluxField, residual, flux, timeStep, ibmBoundary,
-                       ilwOrder, idealGasGamma);
+                       ilwOrder, idealGasGamma, thermodynamics);
             return;
     }
     throw std::runtime_error("Unknown convection discretization.");

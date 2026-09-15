@@ -5,7 +5,7 @@
 
 #include "SF_capability.h"
 #include "SF_config.h"
-#include "SF_workflow.h"
+#include "SF_resolvedSimulationSystem.h"
 
 #include <string>
 #include <vector>
@@ -34,8 +34,7 @@ private:
 
 /// @brief 根据 workflow 请求和求解配置建立可组合模块图。
 ModuleGraph makeModuleGraph(
-    const Request& request,
-    const Plan& plan,
+    const System::ResolvedSimulationSystem& system,
     const FDM::SolverConfig& config);
 
 } // namespace SF::Workflow
