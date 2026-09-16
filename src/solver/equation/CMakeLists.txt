@@ -1,5 +1,6 @@
 add_library(SF_equation STATIC
     SF_expression.cpp
+    SF_assemblyPlan.cpp
     compressible/SF_compressible.cpp
     eulerian/SF_phase.cpp
     eulerian/SF_pressure.cpp

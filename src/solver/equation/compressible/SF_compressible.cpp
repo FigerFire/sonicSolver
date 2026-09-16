@@ -7,34 +7,22 @@
 #include "solver/discretization/SF_discretization.h"
 #include "SF_field.h"
 
+#include <algorithm>
+
 namespace SF::Equation::Compressible {
 
-System::System() {
-    const Symbol rho{"rho"};
-    const Symbol rhoU{"rhoU"};
-    const Symbol rhoE{"rhoE"};
-    const Symbol massFlux{"massFlux"};
-    const Symbol momentumFlux{"momentumFlux"};
-    const Symbol energyFlux{"energyFlux"};
-    const Symbol mu{"mu"};
-    const Symbol conductivity{"conductivity"};
-    const Symbol velocity{"U"};
-    const Symbol temperature{"T"};
-    const Symbol zero{"zero"};
-    const Symbol bodyForces{"bodyForces"};
-    const Symbol energySources{"energySources"};
+System::System(const Equation::System& definition)
+    : definition_(&definition),
+      assemblyPlan_(Equation::makeAssemblyPlan(
+          definition,{"E_MASS","E_MOMENTUM","E_ENERGY"})) {
+}
 
-    definition_.add(named(
-        "mass", ddt(rho) + div(massFlux) == zero));
-    definition_.add(named(
-        "momentum",
-        ddt(rhoU) + div(momentumFlux) + diffusion(mu, velocity)
-            == bodyForces));
-    definition_.add(named(
-        "energy",
-        ddt(rhoE) + div(energyFlux)
-            + diffusion(conductivity, temperature)
-            == energySources));
+bool System::contains(TermKind kind) const {
+    return std::any_of(
+        assemblyPlan_.begin(),assemblyPlan_.end(),
+        [kind](const Equation::AssemblyPlan& plan) {
+            return plan.contains(kind);
+        });
 }
 
 void System::begin(FluxField& fluxField, Residual& residual) const {
@@ -45,7 +33,7 @@ void System::begin(FluxField& fluxField, Residual& residual) const {
 void System::convection(
         Field& field, FluxField& fluxField, Residual& residual,
         const AssemblyContext& context) const {
-    if (!definition_.contains(TermKind::Divergence)) return;
+    if (!contains(TermKind::Divergence)) return;
     if (!context.thermodynamics) {
         throw std::runtime_error(
             "Reconstructed convection requires an authoritative EquationSet binding.");
@@ -69,7 +57,7 @@ void System::convection(
 
 void System::diffusionAndSources(
         Field& field, Residual& residual, const AssemblyContext& context) const {
-    if (definition_.contains(TermKind::Diffusion)) {
+    if (contains(TermKind::Diffusion)) {
         laplacianDispatch(
             field, residual,
             context.config.numerics.viscous,
@@ -80,8 +68,8 @@ void System::diffusionAndSources(
             context.config.numerics.idealGasConstant,
             context.transport);
     }
-    if (definition_.contains(TermKind::ExplicitSource)
-        || definition_.contains(TermKind::ImplicitSource)) {
+    if (contains(TermKind::ExplicitSource)
+        || contains(TermKind::ImplicitSource)) {
         SourceTerm::Sp(field, residual, context.config.sources);
     }
 }

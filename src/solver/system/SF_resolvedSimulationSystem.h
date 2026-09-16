@@ -5,6 +5,8 @@
 
 #include "SF_configTypes.h"
 #include "SF_immersedSystem.h"
+#include "SF_solveStrategy.h"
+#include "solver/equation/SF_expression.h"
 
 #include <string>
 #include <string_view>
@@ -37,6 +39,19 @@ enum class OwnershipKind {
     SolidGlobalDof
 };
 
+/// @brief 数学未知量的值形状；独立于底层连续存储布局。
+enum class ValueShape { Scalar, Vector, Tensor };
+
+/// @brief 未知量在方程系统中的角色。
+enum class UnknownRole { Primary, Transported, Algebraic, Multiplier, Derived };
+
+/// @brief 启动阶段将数学未知量绑定到 runtime storage 的方式。
+enum class StorageBinding {
+    PackedDistributed,
+    NamedDistributed,
+    SpecializedExecutor
+};
+
 /// @brief 一个启动阶段声明的数学未知量。
 struct UnknownDescriptor {
     std::string id;
@@ -44,6 +59,17 @@ struct UnknownDescriptor {
     VariableLocation location = VariableLocation::EulerianCell;
     int components = 1;
     OwnershipKind ownership = OwnershipKind::EulerianGlobalDof;
+    ValueShape shape = ValueShape::Scalar;
+    UnknownRole role = UnknownRole::Primary;
+    StorageBinding storageBinding = StorageBinding::SpecializedExecutor;
+    std::string storageKey;
+    int componentOffset = 0;
+    bool initializationRequired = true;
+    bool boundaryRequired = true;
+    bool restartEligible = true;
+    bool outputEligible = true;
+    bool runtimeStorageRequired = true;
+    std::string nameSpace;
 };
 
 /// @brief 一个独立方程的数学身份。
@@ -66,10 +92,13 @@ struct ConstraintDescriptor {
 struct SolveBlock {
     std::string id;
     std::string name;
+    /// @brief 兼容输入/explain 文本；不得被 runtime 用于语义分派。
     std::string strategy;
     std::vector<std::string> equations;
     std::vector<std::string> constraints;
     std::vector<std::string> unknowns;
+    /// @brief runtime 只消费的类型化 solve strategy。
+    FDM::SolveStrategyKind strategyKind = FDM::SolveStrategyKind::AlgebraicUpdate;
 };
 
 /// @brief 运行所需 backend 能力及其当前可用性。
@@ -78,6 +107,14 @@ struct ExecutionRequirement {
     bool required = false;
     bool available = false;
     std::string detail;
+};
+
+/// @brief Solver execution 所需、但不属于 physical state 的显式 workspace。
+struct WorkspaceRequirement {
+    std::string id;
+    int components = 1;
+    VariableLocation location = VariableLocation::EulerianCell;
+    OwnershipKind ownership = OwnershipKind::EulerianGlobalDof;
 };
 
 /// @brief 一个 case 最终解析出的完整数学系统。
@@ -91,11 +128,14 @@ struct ResolvedSimulationSystem {
     std::string timeIntegrator;
     std::vector<UnknownDescriptor> unknowns;
     std::vector<EquationDescriptor> equations;
+    /// Runtime assembly 与 check/explain 共享的 executable equation authority。
+    Equation::System equationDefinitions;
     std::vector<ConstraintDescriptor> constraints;
     std::vector<SolveBlock> solveBlocks;
     std::vector<std::string> closures;
     std::vector<std::string> boundaries;
     std::vector<ExecutionRequirement> requirements;
+    std::vector<WorkspaceRequirement> workspaceRequirements;
     std::string immersedAlgorithm;
     std::string immersedReference;
     std::string immersedSupport;
@@ -108,10 +148,14 @@ struct ResolvedSimulationSystem {
 /// @brief 只读查询；运行装配应查询数学系统，而不是 template provenance。
 bool hasUnknown(const ResolvedSimulationSystem& system, std::string_view id);
 bool hasEquation(const ResolvedSimulationSystem& system, std::string_view id);
+const Equation::Definition& equationDefinition(
+    const ResolvedSimulationSystem& system, std::string_view id);
 bool hasEquationPrefix(
     const ResolvedSimulationSystem& system, std::string_view prefix);
 bool hasConstraint(const ResolvedSimulationSystem& system, std::string_view id);
 bool hasSolveBlock(const ResolvedSimulationSystem& system, std::string_view id);
+bool hasSolveStrategy(
+    const ResolvedSimulationSystem& system, FDM::SolveStrategyKind kind);
 bool hasRequirement(
     const ResolvedSimulationSystem& system, std::string_view name);
 bool requiresCapability(
@@ -129,6 +173,7 @@ struct BuildRequest {
     bool interfaceGhostFluid = false;
     bool turbulence = false;
     std::string turbulenceModel;
+    std::vector<std::string> turbulencePhaseNames;
     bool parallel = false;
     bool constraintGlobalDofAvailable = false;
     bool distributedLinearSystemAvailable = false;

@@ -22,11 +22,53 @@
 
 namespace SF::SolverAlgorithm {
 CompressibleAlgorithm::CompressibleAlgorithm(
-        FDM::SolverConfig config)
+        FDM::SolverConfig config,
+        const System::ResolvedSimulationSystem& system)
     : config_(std::move(config))
+    , resolved_(system)
     , boundaryApplicator_(config_.boundaries)
+    , equations_(system.equationDefinitions)
     , flowAlgorithm_(FDM::makeFlowAlgorithm(config_)) {
     FDM::validateNumericsConfig(config_.numerics);
+}
+
+void CompressibleAlgorithm::bindSolveStages(
+        const std::vector<FDM::SolveStage>& stages) {
+    if (solveStagesBound_) {
+        throw std::runtime_error(
+            "CompressibleAlgorithm solve stages are already bound.");
+    }
+    if (stages.size() != resolved_.solveBlocks.size()) {
+        throw std::runtime_error(
+            "CompressibleAlgorithm workflow does not match the resolved solve blocks.");
+    }
+    for (size_t index = 0; index < stages.size(); ++index) {
+        const auto& stage = stages[index];
+        const auto& block = resolved_.solveBlocks[index];
+        if (stage.id != block.id || stage.equations != block.equations
+            || stage.constraints != block.constraints
+            || stage.strategy != block.strategyKind) {
+            throw std::runtime_error(
+                "CompressibleAlgorithm workflow stage '" + stage.id
+                + "' differs from resolved solve block '" + block.id + "'.");
+        }
+        densitySolveBlockActive_ = densitySolveBlockActive_
+            || stage.strategy == FDM::SolveStrategyKind::ExplicitTimeIntegration;
+        pressurePredictorActive_ = pressurePredictorActive_
+            || stage.strategy == FDM::SolveStrategyKind::SegregatedPredictor;
+        pressureCorrectionActive_ = pressureCorrectionActive_
+            || stage.strategy == FDM::SolveStrategyKind::PressureCorrection;
+    }
+    if (config_.numerics.solver == FDM::SolverAlgorithm::DensityBased) {
+        if (!densitySolveBlockActive_) {
+            throw std::runtime_error(
+                "Density execution requires an explicit-time solve strategy.");
+        }
+    } else if (!pressurePredictorActive_ || !pressureCorrectionActive_) {
+        throw std::runtime_error(
+            "Pressure execution requires typed predictor and correction strategies.");
+    }
+    solveStagesBound_ = true;
 }
 
 void CompressibleAlgorithm::bindServices(FDM::SolverServices services) {
@@ -36,6 +78,19 @@ void CompressibleAlgorithm::bindServices(FDM::SolverServices services) {
     }
     services_ = services;
     servicesBound_ = true;
+}
+
+void CompressibleAlgorithm::prepare(FDM::SolverState& state) {
+    if (!servicesBound_ || !solveStagesBound_) {
+        throw std::runtime_error(
+            "CompressibleAlgorithm requires services and solve stages before state preparation.");
+    }
+    if (!state.bundle) {
+        throw std::runtime_error(
+            "CompressibleAlgorithm::prepare requires a StateBundle.");
+    }
+    bindState(*state.bundle);
+    realizedState_ = System::realizeState(resolved_,*state.bundle);
 }
 
 void CompressibleAlgorithm::bindState(State::StateBundle& state) {
@@ -359,15 +414,24 @@ FDM::StepResult CompressibleAlgorithm::advance(FDM::SolverState& state) {
         result.message = "CompressibleAlgorithm requires bindServices before advance.";
         return result;
     }
+    if (!solveStagesBound_) {
+        result.message =
+            "CompressibleAlgorithm requires bindSolveStages before advance.";
+        return result;
+    }
     if (!state.bundle) {
         result.message = "CompressibleAlgorithm::advance requires a StateBundle.";
         return result;
     }
     bindState(*state.bundle);
-    if (config_.numerics.solver == FDM::SolverAlgorithm::DensityBased) {
+    if (densitySolveBlockActive_) {
         stepDensity(state.bundle->patches, state.maximumTimeStep);
-    } else {
+    } else if (pressurePredictorActive_ && pressureCorrectionActive_) {
         stepPressure(state.bundle->singlePatch(), state.maximumTimeStep);
+    } else {
+        result.message =
+            "CompressibleAlgorithm has no executable bound solve block.";
+        return result;
     }
     result.accepted = true;
     result.dt = state.bundle->dt;

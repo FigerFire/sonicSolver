@@ -57,6 +57,22 @@ const Definition& System::at(const std::string& name) const {
     return *found;
 }
 
+void System::addRightTerm(const std::string& name, Term term) {
+    auto found = std::find_if(
+        equations_.begin(),equations_.end(),
+        [&](const Definition& equation) { return equation.name == name; });
+    if (found == equations_.end()) {
+        throw std::runtime_error(
+            "Equation system does not contain '"+name+"'.");
+    }
+    if (term.primary.name.empty()) {
+        throw std::runtime_error(
+            "Equation contribution for '"+name+"' has no symbol.");
+    }
+    found->right.terms.push_back(std::move(term));
+    found->validate();
+}
+
 bool System::contains(TermKind kind) const {
     for (const Definition& equation : equations_) {
         const auto containsKind = [kind](const Expression& expression) {

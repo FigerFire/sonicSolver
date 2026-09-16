@@ -16,6 +16,8 @@
 #include "solver/equation/compressible/SF_compressible.h"
 #include "core/state/SF_state.h"
 #include "solver/algorithm/SF_patchWorkspace.h"
+#include "solver/system/SF_resolvedSimulationSystem.h"
+#include "solver/system/SF_stateRealizer.h"
 
 #include <functional>
 #include <memory>
@@ -58,9 +60,14 @@ public:
 /// `config.boundaries`.
     ///
     /// @param config Complete numerical/boundary/source configuration.
-    explicit CompressibleAlgorithm(FDM::SolverConfig config);
+    CompressibleAlgorithm(
+        FDM::SolverConfig config,
+        const System::ResolvedSimulationSystem& system);
 
     void bindServices(FDM::SolverServices services) override;
+    void bindSolveStages(
+        const std::vector<FDM::SolveStage>& stages) override;
+    void prepare(FDM::SolverState& state) override;
 
     /// @brief 推进 bundle 中全部 density-based patches。
     FDM::StepResult advance(FDM::SolverState& state) override;
@@ -75,6 +82,7 @@ public:
 
 private:
     FDM::SolverConfig config_;
+    const System::ResolvedSimulationSystem& resolved_;
     Boundary::Applicator boundaryApplicator_;
     Equation::Compressible::System equations_;
     std::unique_ptr<FDM::IFlowAlgorithm> flowAlgorithm_;
@@ -83,6 +91,11 @@ private:
     State::StateBundle* state_ = nullptr;
     std::vector<PatchWorkspace> workspaces_;
     bool servicesBound_ = false;
+    bool solveStagesBound_ = false;
+    bool densitySolveBlockActive_ = false;
+    bool pressurePredictorActive_ = false;
+    bool pressureCorrectionActive_ = false;
+    System::StateRealization realizedState_;
 
     void bindState(State::StateBundle& state);
     void ensureWorkspaces(const std::vector<Field*>& fields);

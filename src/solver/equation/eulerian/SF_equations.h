@@ -9,6 +9,7 @@
 #include "solver/discretization/eulerian/SF_eulerian.h"
 #include "SF_equationSystem.h"
 #include "solver/equation/eulerian/SF_summary.h"
+#include "solver/equation/SF_assemblyPlan.h"
 
 #include <memory>
 
@@ -25,6 +26,8 @@ public:
     void setExecutionRuntime(FDM::IExecutionRuntime* runtime) {
         runtime_ = runtime;
     }
+    /// @brief 在 timestep 前绑定 authoritative equation lowering。
+    void bindAssemblyPlans(const Equation::AssemblyPlanRegistry& plans);
     void refreshRowMap();
 
     void initializeMomentumDiagonal(double dt);
@@ -72,6 +75,19 @@ private:
     double currentTimeStep_ = 0.0;
     int turbulenceIterations_ = 0;
     double turbulenceResidual_ = 0.0;
+
+    struct PhasePlans {
+        const Equation::AssemblyPlan* continuity = nullptr;
+        const Equation::AssemblyPlan* momentum = nullptr;
+        const Equation::AssemblyPlan* enthalpy = nullptr;
+    };
+    std::vector<PhasePlans> phasePlans_;
+    const Equation::AssemblyPlan* pressurePlan_ = nullptr;
+
+    void requireTerm(
+        const Equation::AssemblyPlan& plan,
+        Equation::TermKind kind,
+        const char* operation) const;
 
 };
 

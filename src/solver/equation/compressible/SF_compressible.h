@@ -4,6 +4,7 @@
 /// @brief 可压缩守恒方程定义及其离散绑定入口。
 
 #include "solver/equation/SF_expression.h"
+#include "solver/equation/SF_assemblyPlan.h"
 
 #include <memory>
 
@@ -29,10 +30,10 @@ struct AssemblyContext {
 /// @brief 可压缩质量、动量和能量方程组。
 class System {
 public:
-    System();
+    explicit System(const Equation::System& definition);
 
     /// @brief 返回不含格式名称的方程声明。
-    const Equation::System& definition() const { return definition_; }
+    const Equation::System& definition() const { return *definition_; }
 
     /// @brief 清空旧残差，开始当前 stage 的方程装配。
     void begin(FluxField& fluxField, Residual& residual) const;
@@ -47,7 +48,10 @@ public:
                   const AssemblyContext& context) const;
 
 private:
-    Equation::System definition_;
+    const Equation::System* definition_ = nullptr;
+    std::vector<Equation::AssemblyPlan> assemblyPlan_;
+
+    bool contains(TermKind kind) const;
 };
 
 } // namespace Equation::Compressible

@@ -13,6 +13,26 @@
 namespace SF::System {
 namespace {
 
+const char* roleName(UnknownRole role) {
+    switch (role) {
+        case UnknownRole::Primary: return "primary";
+        case UnknownRole::Transported: return "transported";
+        case UnknownRole::Algebraic: return "algebraic";
+        case UnknownRole::Multiplier: return "multiplier";
+        case UnknownRole::Derived: return "derived";
+    }
+    return "unknown";
+}
+
+const char* storageName(StorageBinding binding) {
+    switch (binding) {
+        case StorageBinding::PackedDistributed: return "packed-distributed";
+        case StorageBinding::NamedDistributed: return "named-distributed";
+        case StorageBinding::SpecializedExecutor: return "specialized-executor";
+    }
+    return "unknown";
+}
+
 bool isPressureConstraint(const std::string& id) {
     return id == "E_PRESSURE" || id == "E_SHARED_PRESSURE";
 }
@@ -43,7 +63,15 @@ std::string unknownDescription(const UnknownDescriptor& unknown) {
     output << "  " << unknown.id << "  " << unknown.name
            << "  [" << toString(unknown.location) << ", "
            << toString(unknown.ownership) << ", components="
-           << unknown.components << "]\n";
+           << unknown.components << ", role=" << roleName(unknown.role)
+           << ", storage=" << storageName(unknown.storageBinding);
+    if (!unknown.storageKey.empty()) {
+        output << ":" << unknown.storageKey;
+        if (unknown.componentOffset != 0) {
+            output << "@" << unknown.componentOffset;
+        }
+    }
+    output << "]\n";
     return output.str();
 }
 
@@ -78,6 +106,37 @@ std::string constraintName(const EquationDescriptor& equation) {
     return equation.name;
 }
 
+std::string termText(const Equation::Term& term) {
+    switch (term.kind) {
+        case Equation::TermKind::Transient:
+            return "ddt("+term.primary.name+")";
+        case Equation::TermKind::Divergence:
+            return "div("+term.primary.name+")";
+        case Equation::TermKind::Gradient:
+            return "grad("+term.primary.name+")";
+        case Equation::TermKind::Diffusion:
+            return "diffusion("+term.secondary.name+","+term.primary.name+")";
+        case Equation::TermKind::ExplicitSource:
+            return "source("+term.primary.name+")";
+        case Equation::TermKind::ImplicitSource:
+            return "implicitSource("+term.secondary.name+","+term.primary.name+")";
+        case Equation::TermKind::Constraint:
+            return "constraint("+term.primary.name+")";
+        case Equation::TermKind::AlgebraicRelation:
+            return "algebraic("+term.primary.name+")";
+    }
+    return "unknownTerm";
+}
+
+std::string expressionText(const Equation::Expression& expression) {
+    std::string result;
+    for (const auto& term : expression.terms) {
+        if (!result.empty()) result += " + ";
+        result += termText(term);
+    }
+    return result.empty() ? "0" : result;
+}
+
 void printPhysicalEquations(
         std::ostringstream& output,
         const ResolvedSimulationSystem& system) {
@@ -87,7 +146,9 @@ void printPhysicalEquations(
         if (isAlgebraicEquation(equation)) continue;
         output << "  " << equation.id << "  " << equation.name;
         if (!equation.kind.empty()) output << "  {" << equation.kind << "}";
-        output << "\n";
+        const auto& definition = equationDefinition(system,equation.id);
+        output << "\n    " << expressionText(definition.left)
+               << " = " << expressionText(definition.right) << "\n";
         printed = true;
     }
     if (!printed) output << "  (none)\n";
@@ -207,7 +268,8 @@ void printSolveStages(
     output << "\nSOLVE STAGES\n";
     for (const auto& block : system.solveBlocks) {
         output << "  " << block.id << "  " << block.name
-               << "  strategy=" << block.strategy << "\n";
+               << "  strategy=" << block.strategy
+               << "  kind=" << FDM::toString(block.strategyKind) << "\n";
     }
 }
 
@@ -269,6 +331,17 @@ std::string describe(const ResolvedSimulationSystem& system) {
     for (const auto& requirement : system.requirements) {
         output << "  " << requirement.name << "  "
                << requirementStatus(requirement, system) << "\n";
+    }
+    output << "\nWORKSPACE REQUIREMENTS\n";
+    if (system.workspaceRequirements.empty()) {
+        output << "  (none)\n";
+    } else {
+        for (const auto& workspace : system.workspaceRequirements) {
+            output << "  " << workspace.id
+                   << "  [" << toString(workspace.location) << ", "
+                   << toString(workspace.ownership) << ", components="
+                   << workspace.components << "]\n";
+        }
     }
     output << "============================================================";
     return output.str();

@@ -51,6 +51,56 @@ LinearAlgebra::DistributedRowMap makePhaseRowMap(
 
 } // namespace
 
+void PhaseEquationAssembler::requireTerm(
+        const Equation::AssemblyPlan& plan,
+        Equation::TermKind kind,
+        const char* operation) const {
+    if (!plan.contains(kind)) {
+        throw std::runtime_error(
+            "Eulerian runtime operation '"+std::string(operation)
+            +"' requested an operator absent from resolved equation '"
+            +plan.definition->name+"'.");
+    }
+}
+
+void PhaseEquationAssembler::bindAssemblyPlans(
+        const Equation::AssemblyPlanRegistry& plans) {
+    if (!phasePlans_.empty() || pressurePlan_) {
+        throw std::runtime_error(
+            "Eulerian AssemblyPlans are already bound.");
+    }
+    phasePlans_.reserve(system_.phases().size());
+    for (const auto& phase : system_.phases()) {
+        const std::string suffix = "."+phase.name;
+        PhasePlans bound{
+            &plans.at("E_CONTINUITY"+suffix),
+            &plans.at("E_MOMENTUM"+suffix),
+            &plans.at("E_ENTHALPY"+suffix)};
+        requireTerm(*bound.continuity,Equation::TermKind::Transient,
+                    "continuity time derivative");
+        requireTerm(*bound.continuity,Equation::TermKind::Divergence,
+                    "continuity face divergence");
+        requireTerm(*bound.momentum,Equation::TermKind::Transient,
+                    "momentum time derivative");
+        requireTerm(*bound.momentum,Equation::TermKind::Divergence,
+                    "momentum convection");
+        requireTerm(*bound.momentum,Equation::TermKind::Gradient,
+                    "momentum pressure gradient");
+        requireTerm(*bound.momentum,Equation::TermKind::Diffusion,
+                    "momentum diffusion");
+        requireTerm(*bound.enthalpy,Equation::TermKind::Transient,
+                    "enthalpy time derivative");
+        requireTerm(*bound.enthalpy,Equation::TermKind::Divergence,
+                    "enthalpy convection");
+        requireTerm(*bound.enthalpy,Equation::TermKind::Diffusion,
+                    "enthalpy diffusion");
+        phasePlans_.push_back(bound);
+    }
+    pressurePlan_ = &plans.at("E_SHARED_PRESSURE");
+    requireTerm(*pressurePlan_,Equation::TermKind::Constraint,
+                "shared-pressure correction");
+}
+
 PhaseEquationAssembler::PhaseEquationAssembler(
         Physics::PhaseSystems::PhaseSystem& system,
         const FDM::SolverPropertiesConfig& config,
@@ -78,6 +128,10 @@ void PhaseEquationAssembler::refreshRowMap() {
 }
 
 void PhaseEquationAssembler::initializeMomentumDiagonal(double dt) {
+    if (phasePlans_.size() != system_.phases().size()) {
+        throw std::runtime_error(
+            "Eulerian equation assembly requires bound AssemblyPlans.");
+    }
     if (!std::isfinite(dt) || dt <= 0.0) {
         throw std::runtime_error(
             "Eulerian equation assembly requires finite positive dt.");
@@ -101,6 +155,9 @@ void PhaseEquationAssembler::assembleContinuity(
     const Field& field = system_.geometry();
     const size_t reference = system_.referencePhaseIndex();
     for (size_t phase = 0; phase < system_.phases().size(); ++phase) {
+        requireTerm(*phasePlans_.at(phase).continuity,
+                    Equation::TermKind::Divergence,
+                    "continuity face divergence");
         if (phase == reference) continue;
         auto& mass = system_.phases()[phase].primary.phaseMass;
         const auto& old = workspace_.previousPhaseMass[phase].values();
@@ -146,6 +203,9 @@ void PhaseEquationAssembler::solveMomentumPredictors(double dt) {
     const Field& field = system_.geometry();
     const auto& couplings = system_.sources().momentumCouplings;
     for (size_t phase = 0; phase < system_.phases().size(); ++phase) {
+        requireTerm(*phasePlans_.at(phase).momentum,
+                    Equation::TermKind::Divergence,
+                    "momentum convection");
         auto& state = system_.phases()[phase];
         const auto& properties = system_.phaseProperties(phase);
         ScalarField diffusivity;
@@ -311,6 +371,9 @@ void PhaseEquationAssembler::applySemiImplicitInterphase(double dt) {
 void PhaseEquationAssembler::solvePhaseEnergy(double dt) {
     const Field& field = system_.geometry();
     for (size_t phase = 0; phase < system_.phases().size(); ++phase) {
+        requireTerm(*phasePlans_.at(phase).enthalpy,
+                    Equation::TermKind::Divergence,
+                    "enthalpy convection");
         auto& state = system_.phases()[phase];
         const auto& properties = system_.phaseProperties(phase);
         ScalarField diffusivity, source, diagonal;

@@ -8,6 +8,9 @@
 #include "solver/equation/eulerian/SF_equations.h"
 #include "SF_phaseSource.h"
 #include "SF_interfaces.h"
+#include "solver/system/SF_resolvedSimulationSystem.h"
+#include "solver/equation/SF_assemblyPlan.h"
+#include "solver/system/SF_stateRealizer.h"
 
 namespace SF::EulerianEulerian {
 
@@ -15,12 +18,16 @@ namespace SF::EulerianEulerian {
 class PressureStepper final : public FDM::INavierStokesStepper {
 public:
     PressureStepper(Physics::PhaseSystems::PhaseSystem& phaseSystem,
-                    FDM::SolverConfig config);
+                    FDM::SolverConfig config,
+                    const System::ResolvedSimulationSystem& resolved);
 
     /// @brief 把各相主状态、湍流量和压力 workspace 注册到 StateBundle。
     void registerState(State::StateBundle& state);
 
     void bindServices(FDM::SolverServices services) override;
+    void bindSolveStages(
+        const std::vector<FDM::SolveStage>& stages) override;
+    void prepare(FDM::SolverState& state) override;
     FDM::StepResult advance(FDM::SolverState& state) override;
     /// @brief 返回由 `[numerics].CFL/maxCo` 决定的时间步上限。
     double stableTimeStep(double cfl);
@@ -31,16 +38,22 @@ public:
 
 private:
     Physics::PhaseSystems::PhaseSystem& system_;
+    const System::ResolvedSimulationSystem& resolved_;
     FDM::SolverConfig config_;
     Turbulence::EquationSystem turbulence_;
     PhaseSolverWorkspace workspace_;
     Physics::PhaseSystems::PhaseBoundaryApplicator boundary_;
     Physics::PhaseSystems::PhaseSourceRegistry sourceRegistry_;
+    Equation::AssemblyPlanRegistry assemblyPlans_;
     PhaseEquationAssembler equations_;
     StepSummary lastSummary_;
     FDM::SolverServices services_;
     State::StateBundle* state_ = nullptr;
     bool servicesBound_ = false;
+    bool solveStagesBound_ = false;
+    bool pimpleStageActive_ = false;
+    bool turbulenceStageActive_ = false;
+    System::StateRealization realizedState_;
 
     void bindState(State::StateBundle& state);
     StepSummary stepImpl(double dt);

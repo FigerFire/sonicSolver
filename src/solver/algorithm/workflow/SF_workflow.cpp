@@ -8,30 +8,23 @@
 namespace SF::Workflow {
 namespace {
 
-/// @brief 由 SolveBlock 的 strategy 推断粗粒度阶段类别。
-/// @details 该映射是临时迁移层：runner 真正消费 Stage 后，应由
-///          WorkflowBuilder 直接产出精确阶段，而不是从字符串 strategy 反推。
-StageKind classifyStage(
-        const System::SolveBlock& block,
-        const std::string& timeIntegrator) {
-    const std::string& strategy = block.strategy;
-    if (strategy == timeIntegrator) {
-        return StageKind::Predictor;
+/// @brief 从启动阶段冻结的类型化策略映射粗粒度 stage；不解析显示名称。
+StageKind classifyStage(FDM::SolveStrategyKind strategy) {
+    switch (strategy) {
+        case FDM::SolveStrategyKind::ExplicitTimeIntegration:
+        case FDM::SolveStrategyKind::SegregatedPredictor:
+            return StageKind::Predictor;
+        case FDM::SolveStrategyKind::PressureCorrection:
+        case FDM::SolveStrategyKind::PressureVelocityCoupling:
+            return StageKind::Correction;
+        case FDM::SolveStrategyKind::ConstraintSolve:
+        case FDM::SolveStrategyKind::MonolithicKKT:
+        case FDM::SolveStrategyKind::BoundaryClosure:
+            return StageKind::Constraint;
+        case FDM::SolveStrategyKind::AlgebraicUpdate:
+            return StageKind::Commit;
     }
-    if (strategy.find("correction") != std::string::npos
-        || strategy.find("PIMPLE") != std::string::npos
-        || strategy.find("pimple") != std::string::npos) {
-        return StageKind::Correction;
-    }
-    if (strategy.find("predictor") != std::string::npos) {
-        return StageKind::Predictor;
-    }
-    if (strategy.find("constraint") != std::string::npos
-        || strategy.find("KKT") != std::string::npos
-        || strategy.find("monolithic") != std::string::npos) {
-        return StageKind::Constraint;
-    }
-    return StageKind::Commit;
+    throw std::runtime_error("Unknown typed solve strategy.");
 }
 
 std::vector<Stage> buildStages(const System::ResolvedSimulationSystem& system) {
@@ -40,7 +33,8 @@ std::vector<Stage> buildStages(const System::ResolvedSimulationSystem& system) {
     for (const auto& block : system.solveBlocks) {
         Stage stage;
         stage.id = block.id;
-        stage.kind = classifyStage(block, system.timeIntegrator);
+        stage.kind = classifyStage(block.strategyKind);
+        stage.strategy = block.strategyKind;
         stage.equations = block.equations;
         stage.constraints = block.constraints;
         stages.push_back(std::move(stage));

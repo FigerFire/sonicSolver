@@ -200,6 +200,12 @@ void PhaseEquationAssembler::buildMomentumInterpolatedFlux() {
 
 LinearAlgebra::SolveResult
 PhaseEquationAssembler::solvePressureCorrection() {
+    if (!pressurePlan_) {
+        throw std::runtime_error(
+            "Eulerian pressure correction requires a bound AssemblyPlan.");
+    }
+    requireTerm(*pressurePlan_,Equation::TermKind::Constraint,
+                "shared-pressure correction");
     const Field& field = system_.geometry();
     const auto& geometry = system_.config().eulerianEulerian;
     if (rowMap_.total <= 0) {

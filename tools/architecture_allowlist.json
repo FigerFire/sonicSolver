@@ -1,0 +1,33 @@
+{
+  "dependency_allowlist": [
+    {"source":"src/methods/numerics/scalar/SF_scalarTransport.h","target":"src/solver/boundary/SF_boundaryGeometry.h","rule":"methods -> solver","reason":"Phase 1A baseline: scalar CFD path owns boundary dependency."},
+    {"source":"src/methods/numerics/scalar/SF_scalarTransport.h","target":"src/solver/boundary/reconstruction/ILW/SF_boundaryClosure.h","rule":"methods -> solver","reason":"Phase 1A baseline: scalar ILW closure dependency."},
+    {"source":"src/methods/numerics/viscous/SF_viscous.h","target":"src/solver/discretization/structured/SF_vectorCalculus.h","rule":"methods -> solver","reason":"Phase 1A baseline: viscous CFD helper depends on solver calculus."},
+    {"source":"src/models/physics/phaseSystem/interphase/SF_lift.cpp","target":"src/solver/discretization/structured/SF_vectorCalculus.h","rule":"models -> solver/discretization","reason":"Audit D2 existing lift closure dependency."},
+    {"source":"src/models/physics/phaseSystem/interphase/SF_turbulentDispersion.cpp","target":"src/solver/discretization/structured/SF_vectorCalculus.h","rule":"models -> solver/discretization","reason":"Audit D2 existing turbulent-dispersion dependency."},
+    {"source":"src/models/turbulence/SF_equationModelOps.cpp","target":"src/solver/discretization/structured/SF_vectorCalculus.h","rule":"models -> solver/discretization","reason":"Audit D2 existing turbulence calculus dependency."},
+    {"source":"src/models/turbulence/SF_kOmegaSSTEquation.cpp","target":"src/solver/discretization/structured/SF_vectorCalculus.h","rule":"models -> solver/discretization","reason":"Audit D2 existing k-omega SST calculus dependency."},
+    {"source":"src/models/turbulence/RAS/SF_kOmegaSST.cpp","target":"src/solver/discretization/structured/SF_vectorCalculus.h","rule":"models -> solver/discretization","reason":"Audit D2 existing RAS k-omega SST calculus dependency."},
+    {"source":"src/infrastructure/mpi/backend/SF_hypreBackend.cpp","target":"src/solver/linearAlgebra/hypre/SF_hypre.h","rule":"infrastructure -> solver","reason":"Deferred: Linear Algebra Backend Ownership."},
+    {"source":"src/infrastructure/mpi/backend/SF_schurPreconditioner.h","target":"src/solver/linearAlgebra/SF_blockSchur.h","rule":"infrastructure -> solver","reason":"Deferred: Linear Algebra Backend Ownership."}
+  ],
+  "duplicate_baseline": {
+    "SF_executionRuntime.h": ["src/core/interfaces/SF_executionRuntime.h", "src/infrastructure/execution/SF_executionRuntime.h"],
+    "SF_IO.h": ["src/app/gui/IO/SF_IO.h", "src/infrastructure/io/SF_IO.h"],
+    "SF_field.h": ["src/core/field/SF_field.h", "src/infrastructure/io/field/SF_field.h"],
+    "SF_state.h": ["src/core/state/SF_state.h", "src/models/physics/interfaceModel/levelSet/SF_state.h"],
+    "SF_time.h": ["src/methods/numerics/time/SF_time.h", "src/solver/algorithm/time/SF_time.h", "src/solver/discretization/time/SF_time.h"],
+    "SF_structured.h": ["src/methods/numerics/structured/SF_structured.h", "src/solver/discretization/structured/SF_structured.h"],
+    "SF_polynomial.h": ["src/methods/math/discrete/SF_polynomial.h", "src/solver/boundary/reconstruction/polynomial/SF_polynomial.h"],
+    "SF_compressible.h": ["src/solver/algorithm/SF_compressible.h", "src/solver/equation/compressible/SF_compressible.h"],
+    "SF_empty.h": ["src/solver/boundary/reconstruction/ILW/SF_empty.h", "src/solver/boundary/reconstruction/linear/SF_empty.h"],
+    "SF_fixedValue.h": ["src/solver/boundary/reconstruction/ILW/SF_fixedValue.h", "src/solver/boundary/reconstruction/linear/SF_fixedValue.h"],
+    "SF_symmetry.h": ["src/solver/boundary/reconstruction/ILW/SF_symmetry.h", "src/solver/boundary/reconstruction/linear/SF_symmetry.h"],
+    "SF_zeroGradient.h": ["src/solver/boundary/reconstruction/ILW/SF_zeroGradient.h", "src/solver/boundary/reconstruction/linear/SF_zeroGradient.h"],
+    "SF_eulerian.h": ["src/solver/algorithm/pressureBased/eulerian/SF_eulerian.h", "src/solver/discretization/eulerian/SF_eulerian.h", "src/solver/equation/eulerian/SF_eulerian.h"],
+    "SF_model.h": ["src/app/application/model/SF_model.h", "src/core/model/SF_model.h"],
+    "SF_equationCoupling.h": ["src/app/application/run/SF_equationCoupling.h", "src/core/interfaces/SF_equationCoupling.h"],
+    "SF_application.h": ["src/app/application/SF_application.h", "src/app/gui/Application/SF_application.h"],
+    "SF_output.h": ["src/app/application/model/SF_output.h", "src/app/application/run/SF_output.h"]
+  }
+}

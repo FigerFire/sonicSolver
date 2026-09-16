@@ -23,6 +23,7 @@
 #include "mrf/SF_mrf.h"
 
 #include <algorithm>
+#include <array>
 #include <stdexcept>
 #include <string>
 
@@ -94,6 +95,36 @@ inline void addWallHeat(Field& field, Residual& residual,
     Source::WallHeat::addSource(field, residual, settings);
 }
 
+using ContributionAssembler = void(*)(
+    Field&, Residual&, const FDM::SourceConfig&);
+
+struct RegisteredContribution {
+    FDM::SourceKind kind;
+    const char* name;
+    ContributionAssembler assemble;
+};
+
+inline const std::array<RegisteredContribution,3>& contributions() {
+    static const std::array<RegisteredContribution,3> registry{{
+        {FDM::SourceKind::Gravity,"gravity",
+         [](Field& field, Residual& residual,
+            const FDM::SourceConfig& config) {
+             addGravity(field,residual,config.gravity);
+         }},
+        {FDM::SourceKind::MRF,"MRF",
+         [](Field& field, Residual& residual,
+            const FDM::SourceConfig& config) {
+             addMRF(field,residual,config.rotating);
+         }},
+        {FDM::SourceKind::WallHeat,"wallHeat",
+         [](Field& field, Residual& residual,
+            const FDM::SourceConfig& config) {
+             addWallHeat(field,residual,config.wallHeat);
+         }}
+    }};
+    return registry;
+}
+
 /// @brief Assemble source terms from explicit solver config.
 ///
 /// This overload is preferred by the Equation layer because it receives all source data
@@ -105,17 +136,16 @@ inline void Sp(Field& field, Residual& residual, const FDM::SourceConfig& config
     residual.clearSource();
 
     for (FDM::SourceKind kind : config.enabled) {
-        switch (kind) {
-            case FDM::SourceKind::Gravity:
-                addGravity(field, residual, config.gravity);
-                break;
-            case FDM::SourceKind::MRF:
-                addMRF(field, residual, config.rotating);
-                break;
-            case FDM::SourceKind::WallHeat:
-                addWallHeat(field, residual, config.wallHeat);
-                break;
+        const auto found = std::find_if(
+            contributions().begin(),contributions().end(),
+            [kind](const RegisteredContribution& item) {
+                return item.kind == kind;
+            });
+        if (found == contributions().end()) {
+            throw std::runtime_error(
+                "No density equation contribution is registered for SourceKind.");
         }
+        found->assemble(field,residual,config);
     }
 }
 

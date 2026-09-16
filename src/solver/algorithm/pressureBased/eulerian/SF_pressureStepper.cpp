@@ -9,12 +9,49 @@
 #include "SF_phaseChange.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <stdexcept>
 
 namespace SF::EulerianEulerian {
 
 namespace {
+std::vector<std::string> equationIds(
+        const System::ResolvedSimulationSystem& system) {
+    std::vector<std::string> ids;
+    ids.reserve(system.equations.size());
+    for (const auto& equation : system.equations) ids.push_back(equation.id);
+    return ids;
+}
+
+struct PhaseSourceRegistration {
+    FDM::SourceKind kind;
+    bool wallHeat;
+    std::unique_ptr<Physics::PhaseSystems::PhaseEquationSource> (*make)(
+        const FDM::SourceConfig&);
+};
+
+const std::array<PhaseSourceRegistration,3>& phaseSourceContributions() {
+    static const std::array<PhaseSourceRegistration,3> registry{{
+        {FDM::SourceKind::Gravity,false,
+         [](const FDM::SourceConfig& config) {
+             return Physics::PhaseSystems::makePhaseGravitySource(
+                 config.gravity);
+         }},
+        {FDM::SourceKind::MRF,false,
+         [](const FDM::SourceConfig& config) {
+             return Physics::PhaseSystems::makePhaseMRFSource(
+                 config.rotating);
+         }},
+        {FDM::SourceKind::WallHeat,true,
+         [](const FDM::SourceConfig& config) {
+             return Physics::PhaseSystems::makePhaseWallHeatSource(
+                 config.wallHeat);
+         }}
+    }};
+    return registry;
+}
+
 State::VariableDescriptor distributedScalar(
         const std::string& name, int depth,
         State::UpdatePolicy policy = State::UpdatePolicy::LocalImplicit,
@@ -33,9 +70,11 @@ State::VariableDescriptor distributedScalar(
 
 PressureStepper::PressureStepper(
         Physics::PhaseSystems::PhaseSystem& system,
-        FDM::SolverConfig config)
-    : system_(system), config_(std::move(config)),
+        FDM::SolverConfig config,
+        const System::ResolvedSimulationSystem& resolved)
+    : system_(system), resolved_(resolved), config_(std::move(config)),
       turbulence_(config_.turbulence),
+      assemblyPlans_(resolved.equationDefinitions,equationIds(resolved)),
       equations_(system_, config_.pressure.workflow, workspace_) {
     FDM::validateSolverProperties(config_.pressure.workflow);
     if (config_.pressure.workflow.type
@@ -45,24 +84,18 @@ PressureStepper::PressureStepper(
     }
     bool wallHeatEnabled = false;
     for (FDM::SourceKind kind : config_.sources.enabled) {
-        switch (kind) {
-            case FDM::SourceKind::Gravity:
-                sourceRegistry_.add(
-                    Physics::PhaseSystems::makePhaseGravitySource(
-                        config_.sources.gravity));
-                break;
-            case FDM::SourceKind::MRF:
-                sourceRegistry_.add(
-                    Physics::PhaseSystems::makePhaseMRFSource(
-                        config_.sources.rotating));
-                break;
-            case FDM::SourceKind::WallHeat:
-                wallHeatEnabled = true;
-                sourceRegistry_.add(
-                    Physics::PhaseSystems::makePhaseWallHeatSource(
-                        config_.sources.wallHeat));
-                break;
+        const auto found = std::find_if(
+            phaseSourceContributions().begin(),
+            phaseSourceContributions().end(),
+            [kind](const PhaseSourceRegistration& item) {
+                return item.kind == kind;
+            });
+        if (found == phaseSourceContributions().end()) {
+            throw std::runtime_error(
+                "No Eulerian equation contribution is registered for SourceKind.");
         }
+        wallHeatEnabled = wallHeatEnabled || found->wallHeat;
+        sourceRegistry_.add(found->make(config_.sources));
     }
     if (Physics::PhaseChange::normalizeModel(
             system_.config().phaseChange.model) == "rpi"
@@ -73,7 +106,13 @@ PressureStepper::PressureStepper(
     }
     workspace_.setupLike(system_);
     turbulence_.initialize(system_);
+    if (turbulence_.hasTransportEquations()
+        != System::hasSolveBlock(resolved_,"S_TURBULENCE")) {
+        throw std::runtime_error(
+            "Resolved S_TURBULENCE does not match the active turbulence equations.");
+    }
     equations_.attachTurbulence(&turbulence_);
+    equations_.bindAssemblyPlans(assemblyPlans_);
 }
 
 void PressureStepper::registerState(State::StateBundle& state) {
@@ -259,15 +298,30 @@ void PressureStepper::synchronizeMomentumDiagonal() {
 
 void PressureStepper::assembleCanonicalPhaseFlux() {
     if (!services_.executionRuntime) return;
-    std::vector<Execution::FieldAccess> fluxes;
+    if (!state_) {
+        throw std::runtime_error(
+            "Eulerian canonical face synchronization requires bound state.");
+    }
     for (size_t phase=0; phase<workspace_.faceFlux.size(); ++phase) {
         const std::string prefix="phase"+std::to_string(phase)+".";
-        fluxes.push_back(
-            Execution::writeCanonicalFace(prefix+"volumeFaceFlux"));
-        fluxes.push_back(
-            Execution::writeCanonicalFace(prefix+"massFaceFlux"));
+        for (const std::string& name : {
+                 prefix+"volumeFaceFlux", prefix+"massFaceFlux"}) {
+            const auto registered = state_->distributed.select(
+                name, State::HaloSyncStage::None);
+            if (registered.empty()) {
+                throw std::runtime_error(
+                    "Eulerian canonical face workspace '"+name
+                    +"' was not bound before timestep execution.");
+            }
+            std::vector<State::DistributedFieldView> borrowed;
+            borrowed.reserve(registered.size());
+            for (const auto* view : registered) borrowed.push_back(*view);
+            // Face workspaces remain solver-owned.  The runtime only borrows
+            // their registered views to apply the canonical owner -> COPY
+            // synchronization; no second face-flux storage is created.
+            services_.executionRuntime->synchronizeTransient(borrowed);
+        }
     }
-    services_.executionRuntime->finalize({"Eulerian canonical phase flux",fluxes});
 }
 
 double PressureStepper::stableTimeStep(double cfl) {
@@ -301,6 +355,42 @@ void PressureStepper::bindServices(FDM::SolverServices services) {
     servicesBound_ = true;
 }
 
+void PressureStepper::bindSolveStages(
+        const std::vector<FDM::SolveStage>& stages) {
+    if (solveStagesBound_) {
+        throw std::runtime_error(
+            "PressureStepper solve stages are already bound.");
+    }
+    if (stages.size() != resolved_.solveBlocks.size()) {
+        throw std::runtime_error(
+            "PressureStepper workflow does not match the resolved solve blocks.");
+    }
+    for (size_t index = 0; index < stages.size(); ++index) {
+        const auto& stage = stages[index];
+        const auto& block = resolved_.solveBlocks[index];
+        if (stage.id != block.id || stage.equations != block.equations
+            || stage.constraints != block.constraints
+            || stage.strategy != block.strategyKind) {
+            throw std::runtime_error(
+                "PressureStepper workflow stage '" + stage.id
+                + "' differs from resolved solve block '" + block.id + "'.");
+        }
+        pimpleStageActive_ = pimpleStageActive_
+            || stage.strategy == FDM::SolveStrategyKind::PressureVelocityCoupling;
+        turbulenceStageActive_ = turbulenceStageActive_
+            || stage.strategy == FDM::SolveStrategyKind::ExplicitTimeIntegration;
+    }
+    if (!pimpleStageActive_) {
+        throw std::runtime_error(
+            "Eulerian execution requires a pressure-velocity coupling strategy.");
+    }
+    if (turbulenceStageActive_ != turbulence_.hasTransportEquations()) {
+        throw std::runtime_error(
+            "Typed workflow turbulence stage does not match runtime turbulence equations.");
+    }
+    solveStagesBound_ = true;
+}
+
 void PressureStepper::bindState(State::StateBundle& state) {
     state.validatePatches();
     if (&state.singlePatch() != &system_.geometry()) {
@@ -321,9 +411,26 @@ void PressureStepper::bindState(State::StateBundle& state) {
     if (services_.executionRuntime) services_.executionRuntime->attachState(state);
 }
 
+void PressureStepper::prepare(FDM::SolverState& state) {
+    if (!servicesBound_ || !solveStagesBound_) {
+        throw std::runtime_error(
+            "PressureStepper requires services and solve stages before state preparation.");
+    }
+    if (!state.bundle) {
+        throw std::runtime_error(
+            "PressureStepper::prepare requires a StateBundle.");
+    }
+    bindState(*state.bundle);
+    realizedState_ = System::realizeState(resolved_,*state.bundle);
+}
+
 FDM::StepResult PressureStepper::advance(FDM::SolverState& state) {
     if (!servicesBound_) {
         throw std::runtime_error("PressureStepper requires bindServices before advance.");
+    }
+    if (!solveStagesBound_) {
+        throw std::runtime_error(
+            "PressureStepper requires bindSolveStages before advance.");
     }
     if (!state.bundle) {
         throw std::runtime_error("PressureStepper::advance requires a StateBundle.");
@@ -398,7 +505,9 @@ StepSummary PressureStepper::stepImpl(double dt) {
             }
         }
         equations_.solvePhaseEnergy(dt);
-        equations_.solveTurbulence(dt);
+        if (turbulenceStageActive_) {
+            equations_.solveTurbulence(dt);
+        }
         applyBoundaryAndSynchronize();
         system_.validateState("PIMPLE outer corrector");
         ++summary.outerCorrectors;

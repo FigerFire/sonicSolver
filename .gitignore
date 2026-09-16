@@ -1,0 +1,10 @@
+build*/
+test/**/result/
+tmp/
+*.SFM
+*.log
+src/src.tar.gz
+.DS_Store
+._*
+.git.backup-*
+.git.badinit-*
