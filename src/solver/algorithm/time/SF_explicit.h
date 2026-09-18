@@ -1,14 +1,10 @@
 #pragma once
 
 /// @file SF_explicit.h
-/// @brief 通用显式时间积分 contract；给定 state、dt 与 RHS provider，执行
-///        Euler、SSPRK3 或 RK4 的 stage snapshot、组合、发布与验证。
+/// @brief 显式时间离散的单 stage 数学与临时状态 contract。
 ///
 /// Data flow:
-///   State_n + dt + RHS callback
-///       -> stage state / RHS snapshot
-///       -> explicit update and publish
-///       -> State_{n+1}
+///   State_n + dt + stageIndex -> RHS -> stage combination -> published state
 ///
 /// 本文件不选择 governing equations、MPI topology 或 global timestep loop。
 
@@ -28,8 +24,46 @@ using AssembleRHS = std::function<void(const std::vector<Field*>&,
 using Publish = std::function<void(const std::vector<Field*>&)>;
 using Validate = std::function<void(const std::vector<Field*>&, const char*)>;
 
-/// Qn belongs to StateBundle.  q0/k workspaces and Field stage states are
-/// temporary; StateBundle::time is never advanced inside this function.
+struct ScalarRKStorage {
+    std::vector<double> q0, k1, k2, k3, k4;
+};
+
+struct RKStorage {
+    std::vector<double> q0, k1, k2, k3, k4;
+    std::vector<ScalarRKStorage> registered;
+};
+
+/// @brief Solver-owned storage spanning the stages of one explicit step.
+struct Workspace {
+    FDM::TimeScheme scheme = FDM::TimeScheme::Euler;
+    bool active = false;
+    int nextStage = 0;
+    std::vector<RKStorage> patches;
+};
+
+/// @brief Number of stages for a supported explicit scheme.
+int stageCount(FDM::TimeScheme scheme);
+
+/// @brief Snapshot Q_n and registered variables required by the scheme.
+void begin(Workspace& workspace,
+           const std::vector<Field*>& fields,
+           State::StateBundle& state,
+           FDM::TimeScheme scheme,
+           FDM::IEquationSystemCoupling* equationSystem);
+
+/// @brief Execute exactly one plan-selected explicit stage.
+void executeStage(
+    Workspace& workspace,
+    int stageIndex,
+    const std::vector<Field*>& fields,
+    std::vector<PatchWorkspace>& workspaces,
+    State::StateBundle& state,
+    FDM::IEquationSystemCoupling* equationSystem,
+    const AssembleRHS& assembleRHS,
+    const Publish& publish,
+    const Validate& validate);
+
+/// Transitional full-step driver retained only for the infrastructure commit.
 void advance(
     const std::vector<Field*>& fields,
     std::vector<PatchWorkspace>& workspaces,

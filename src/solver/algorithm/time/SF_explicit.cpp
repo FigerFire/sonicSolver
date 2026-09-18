@@ -3,16 +3,13 @@
 /*----------code by LPF, 2026.07.11-----------*/
 
 /// @file SF_explicit.cpp
-/// @brief 对 patch state 与 registered scalars 执行同一显式时间格式。
+/// @brief 显式时间离散的 stage 数学与临时状态管理。
 ///
 /// Data flow:
-///   authoritative StateBundle state + dt
-///       -> temporary Euler/SSPRK3/RK4 snapshots
-///       -> caller-provided RHS evaluation
-///       -> stage publish/validation
-///       -> committed stage state
+///   State_n + dt + stageIndex -> RHS
+///       -> Euler/SSPRK3/RK4 stage combination -> published stage state
 ///
-/// StateBundle owns Qn and clock；本文件不决定方程、边界顺序或 MPI topology。
+/// Stage 顺序由调用方控制；本文件不拥有 global timestep loop 或 clock。
 
 #include "solver/algorithm/time/SF_explicit.h"
 #include "solver/algorithm/SF_highOrderTrace.h"
@@ -28,15 +25,6 @@ namespace SF::Time::Explicit {
 using SolverAlgorithm::PatchWorkspace;
 namespace HighOrderTrace = SolverAlgorithm::HighOrderTrace;
 namespace {
-
-struct ScalarRKStorage {
-    std::vector<double> q0, k1, k2, k3, k4;
-};
-
-struct RKStorage {
-    std::vector<double> q0, k1, k2, k3, k4;
-    std::vector<ScalarRKStorage> registered;
-};
 
 bool usesExplicitTableau(State::UpdatePolicy policy) {
     return policy == State::UpdatePolicy::Explicit
@@ -284,111 +272,112 @@ State::VariableRegistry* registryFor(
 
 } // namespace
 
-void stepEuler(const std::vector<Field*>& fields,
-               std::vector<PatchWorkspace>& workspaces,
-               State::StateBundle& state,
-               FDM::IEquationSystemCoupling* equationSystem,
-               const AssembleRHS& assembleRHS,
-               const Publish& publish,
-               const Validate& validate) {
-    assembleRHS(fields, workspaces, state.time);
-    for (size_t index = 0; index < fields.size(); ++index) {
-        Field* field = fields[index];
-        if (!field) continue;
-        Math::applyDivergence(*field, workspaces[index].residual, state.dt);
-        field->invalidateThermodynamicCache();
-        if (State::VariableRegistry* registry =
-                registryFor(*field, fields, state, equationSystem)) {
+int stageCount(FDM::TimeScheme scheme) {
+    return FDM::explicitStageCount(scheme);
+}
+
+void begin(Workspace& workspace,
+           const std::vector<Field*>& fields,
+           State::StateBundle& state,
+           FDM::TimeScheme scheme,
+           FDM::IEquationSystemCoupling* equationSystem) {
+    if (workspace.active) {
+        throw std::runtime_error("Explicit workspace is already active.");
+    }
+    workspace.scheme = scheme;
+    workspace.nextStage = 0;
+    workspace.patches.clear();
+    workspace.patches.resize(fields.size());
+    if (scheme != FDM::TimeScheme::Euler) {
+        for (size_t n = 0; n < fields.size(); ++n) {
+            if (!fields[n]) continue;
+            snapshotField(*fields[n], workspace.patches[n].q0);
+            if (auto* registry = registryFor(
+                    *fields[n], fields, state, equationSystem)) {
+                snapshotRegistered(
+                    *registry, *fields[n], workspace.patches[n].registered);
+            }
+        }
+    }
+    (void)stageCount(scheme);
+    workspace.active = true;
+}
+
+void executeStage(
+        Workspace& workspace,
+        int stageIndex,
+        const std::vector<Field*>& fields,
+        std::vector<PatchWorkspace>& workspaces,
+        State::StateBundle& state,
+        FDM::IEquationSystemCoupling* equationSystem,
+        const AssembleRHS& assembleRHS,
+        const Publish& publish,
+        const Validate& validate) {
+    const int count = stageCount(workspace.scheme);
+    if (!workspace.active || stageIndex != workspace.nextStage
+        || stageIndex < 0 || stageIndex >= count) {
+        throw std::runtime_error(
+            "Explicit stage execution is inactive, out of range, or out of order.");
+    }
+    auto& storage = workspace.patches;
+
+    if (workspace.scheme == FDM::TimeScheme::Euler) {
+        assembleRHS(fields, workspaces, state.time);
+        for (size_t index = 0; index < fields.size(); ++index) {
+            Field* field = fields[index];
+            if (!field) continue;
+            Math::applyDivergence(*field, workspaces[index].residual, state.dt);
+            field->invalidateThermodynamicCache();
+            if (State::VariableRegistry* registry =
+                    registryFor(*field, fields, state, equationSystem)) {
                 registry->validateFor(*field);
                 for (const auto& variable : registry->variables()) {
-                    const auto policy = variable.descriptor.updatePolicy;
-                    if (!usesExplicitTableau(policy)) {
-                        continue;
-                    }
+                    if (!usesExplicitTableau(variable.descriptor.updatePolicy)) continue;
                     const std::vector<double> old = variable.value->values();
                     applyScalarStage(*variable.value, old, *variable.rhs,
                                      1.0, state.dt);
                     validateRegistered(variable, "Euler final");
                 }
+            }
         }
-    }
-    traceUpdatedConservative("Q after Euler update", fields, state);
-    publish(fields);
-    validate(fields, "Euler final");
-}
-
-void stepSSPRK3(const std::vector<Field*>& fields,
-                std::vector<PatchWorkspace>& workspaces,
-                State::StateBundle& state,
-                FDM::IEquationSystemCoupling* equationSystem,
-                const AssembleRHS& assembleRHS,
-                const Publish& publish,
-                const Validate& validate) {
-    std::vector<RKStorage> storage(fields.size());
-    for (size_t n = 0; n < fields.size(); ++n) {
-        if (!fields[n]) continue;
-        snapshotField(*fields[n], storage[n].q0);
-        if (auto* registry = registryFor(
-                *fields[n], fields, state, equationSystem)) {
-            snapshotRegistered(*registry, *fields[n], storage[n].registered);
-        }
-    }
-
-    const auto advanceStage = [&](double stageFraction,
-                                  double baseWeight,
-                                  double eulerWeight,
-                                  const char* label) {
-        assembleRHS(fields, workspaces, state.time + stageFraction * state.dt);
+        traceUpdatedConservative("Q after Euler update", fields, state);
+        publish(fields);
+        validate(fields, "Euler final");
+    } else if (workspace.scheme == FDM::TimeScheme::SSPRK3) {
+        static constexpr double stageFraction[] = {0.0, 1.0, 0.5};
+        static constexpr double baseWeight[] = {0.0, 0.75, 1.0 / 3.0};
+        static constexpr double eulerWeight[] = {1.0, 0.25, 2.0 / 3.0};
+        static constexpr const char* labels[] = {
+            "SSP-RK3 stage 1", "SSP-RK3 stage 2", "SSP-RK3 final"};
+        assembleRHS(fields, workspaces,
+                    state.time + stageFraction[stageIndex] * state.dt);
         for (size_t n = 0; n < fields.size(); ++n) {
             Field* field = fields[n];
             if (!field) continue;
             snapshotRHS(*field, workspaces[n].residual, storage[n].k1);
             applySSPStage(*field, storage[n].q0, storage[n].k1,
-                          baseWeight, eulerWeight, state.dt);
+                          baseWeight[stageIndex], eulerWeight[stageIndex], state.dt);
             field->invalidateThermodynamicCache();
             if (auto* registry = registryFor(*field, fields, state, equationSystem)) {
                 applyRegisteredSSPStage(
-                    *registry, storage[n].registered,
-                    baseWeight, eulerWeight, state.dt, label);
+                    *registry, storage[n].registered, baseWeight[stageIndex],
+                    eulerWeight[stageIndex], state.dt, labels[stageIndex]);
             }
         }
-        traceUpdatedConservative(label, fields, state);
+        traceUpdatedConservative(labels[stageIndex], fields, state);
         publish(fields);
-        validate(fields, label);
-    };
-
-    advanceStage(0.0, 0.0, 1.0, "SSP-RK3 stage 1");
-    advanceStage(1.0, 0.75, 0.25, "SSP-RK3 stage 2");
-    advanceStage(0.5, 1.0 / 3.0, 2.0 / 3.0, "SSP-RK3 final");
-}
-
-void stepRK4(const std::vector<Field*>& fields,
-             std::vector<PatchWorkspace>& workspaces,
-             State::StateBundle& state,
-             FDM::IEquationSystemCoupling* equationSystem,
-             const AssembleRHS& assembleRHS,
-             const Publish& publish,
-             const Validate& validate) {
-    std::vector<RKStorage> storage(fields.size());
-    for (size_t n = 0; n < fields.size(); ++n) {
-        if (!fields[n]) continue;
-        snapshotField(*fields[n], storage[n].q0);
-        if (auto* registry = registryFor(
-                *fields[n], fields, state, equationSystem)) {
-            snapshotRegistered(*registry, *fields[n], storage[n].registered);
-        }
-    }
-
-    assembleRHS(fields, workspaces, state.time);
-    for (size_t n = 0; n < fields.size(); ++n) {
+        validate(fields, labels[stageIndex]);
+    } else if (stageIndex == 0) {
+        assembleRHS(fields, workspaces, state.time);
+        for (size_t n = 0; n < fields.size(); ++n) {
         if (fields[n]) snapshotRHS(*fields[n], workspaces[n].residual, storage[n].k1);
         if (fields[n]) {
             if (auto* registry = registryFor(
                     *fields[n], fields, state, equationSystem))
                 captureRegisteredRHS(*registry, storage[n].registered, 1);
         }
-    }
-    validate(fields, "RK4 stage 1");
+        }
+        validate(fields, "RK4 stage 1");
 
     for (size_t n = 0; n < fields.size(); ++n) {
         if (fields[n]) applyStage(*fields[n], storage[n].q0, storage[n].k1, 0.5, state.dt);
@@ -403,6 +392,7 @@ void stepRK4(const std::vector<Field*>& fields,
     traceUpdatedConservative("Q after RK4 stage 2 update", fields, state);
     publish(fields);
     validate(fields, "RK4 stage 2");
+    } else if (stageIndex == 1) {
     assembleRHS(fields, workspaces, state.time + 0.5 * state.dt);
     for (size_t n = 0; n < fields.size(); ++n) {
         if (fields[n]) snapshotRHS(*fields[n], workspaces[n].residual, storage[n].k2);
@@ -426,6 +416,7 @@ void stepRK4(const std::vector<Field*>& fields,
     traceUpdatedConservative("Q after RK4 stage 3 update", fields, state);
     publish(fields);
     validate(fields, "RK4 stage 3");
+    } else if (stageIndex == 2) {
     assembleRHS(fields, workspaces, state.time + 0.5 * state.dt);
     for (size_t n = 0; n < fields.size(); ++n) {
         if (fields[n]) snapshotRHS(*fields[n], workspaces[n].residual, storage[n].k3);
@@ -449,6 +440,7 @@ void stepRK4(const std::vector<Field*>& fields,
     traceUpdatedConservative("Q after RK4 stage 4 update", fields, state);
     publish(fields);
     validate(fields, "RK4 stage 4");
+    } else {
     assembleRHS(fields, workspaces, state.time + state.dt);
     for (size_t n = 0; n < fields.size(); ++n) {
         if (fields[n]) snapshotRHS(*fields[n], workspaces[n].residual, storage[n].k4);
@@ -471,6 +463,10 @@ void stepRK4(const std::vector<Field*>& fields,
     traceUpdatedConservative("Q after RK4 final update", fields, state);
     publish(fields);
     validate(fields, "RK4 final");
+    }
+
+    ++workspace.nextStage;
+    if (workspace.nextStage == count) workspace.active = false;
 }
 
 void advance(
@@ -482,12 +478,11 @@ void advance(
         const AssembleRHS& assembleRHS,
         const Publish& publish,
         const Validate& validate) {
-    if (scheme == FDM::TimeScheme::Euler) {
-        stepEuler(fields, workspaces, state, equationSystem, assembleRHS, publish, validate);
-    } else if (scheme == FDM::TimeScheme::SSPRK3) {
-        stepSSPRK3(fields, workspaces, state, equationSystem, assembleRHS, publish, validate);
-    } else {
-    stepRK4(fields, workspaces, state, equationSystem, assembleRHS, publish, validate);
+    Workspace workspace;
+    begin(workspace, fields, state, scheme, equationSystem);
+    for (int stage = 0; stage < stageCount(scheme); ++stage) {
+        executeStage(workspace, stage, fields, workspaces, state,
+                     equationSystem, assembleRHS, publish, validate);
     }
 }
 
