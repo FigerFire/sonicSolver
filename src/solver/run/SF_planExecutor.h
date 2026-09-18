@@ -44,12 +44,6 @@ public:
                         const OpRegistry& operations,
                         const PlanTraceContext* trace = nullptr);
 
-    /// @brief Transitional leaf entry removed after explicit control migration.
-    static void executeOperation(
-        const System::CompiledSolvePlan& plan,
-        const System::OpId& operation,
-        const OpRegistry& operations,
-        const PlanTraceContext* trace = nullptr);
 };
 
 } // namespace SF::Run

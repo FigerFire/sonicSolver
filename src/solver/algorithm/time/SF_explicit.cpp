@@ -469,21 +469,4 @@ void executeStage(
     if (workspace.nextStage == count) workspace.active = false;
 }
 
-void advance(
-    const std::vector<Field*>& fields,
-    std::vector<PatchWorkspace>& workspaces,
-        State::StateBundle& state,
-        FDM::TimeScheme scheme,
-        FDM::IEquationSystemCoupling* equationSystem,
-        const AssembleRHS& assembleRHS,
-        const Publish& publish,
-        const Validate& validate) {
-    Workspace workspace;
-    begin(workspace, fields, state, scheme, equationSystem);
-    for (int stage = 0; stage < stageCount(scheme); ++stage) {
-        executeStage(workspace, stage, fields, workspaces, state,
-                     equationSystem, assembleRHS, publish, validate);
-    }
-}
-
 } // namespace SF::Time::Explicit

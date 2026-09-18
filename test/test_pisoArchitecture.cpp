@@ -175,10 +175,6 @@ int main() {
     require(System::SolvePlanner::requiredOperations(genericPlan)
                 == std::vector<System::OpId>{"op.a","op.b"},
             "recursive operation discovery lost a nested Plan leaf");
-    trace.clear();
-    Run::PlanExecutor::executeOperation(genericPlan,"op.b",genericOps);
-    require(trace == std::vector<std::string>{"b"},
-            "transitional leaf execution did not dispatch through the Plan");
     bool missingIdVisible = false;
     try {
         System::CompiledSolvePlan missingPlan;

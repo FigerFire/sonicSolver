@@ -16,6 +16,7 @@
 #include "solver/equation/compressible/SF_compressible.h"
 #include "core/state/SF_state.h"
 #include "solver/algorithm/SF_patchWorkspace.h"
+#include "solver/algorithm/pressureBased/SF_corrector.h"
 #include "solver/system/SF_resolvedSimulationSystem.h"
 #include "solver/system/SF_stateRealizer.h"
 
@@ -65,8 +66,7 @@ public:
         const System::ResolvedSimulationSystem& system);
 
     void bindServices(FDM::SolverServices services) override;
-    void bindSolveStages(
-        const std::vector<FDM::SolveStage>& stages) override;
+    void bindSolvePlan(const System::CompiledSolvePlan& plan) override;
     void prepare(FDM::SolverState& state) override;
 
     /// @brief 推进 bundle 中全部 density-based patches。
@@ -86,6 +86,7 @@ private:
     Boundary::Applicator boundaryApplicator_;
     Equation::Compressible::System equations_;
     std::unique_ptr<FDM::IFlowAlgorithm> flowAlgorithm_;
+    std::unique_ptr<PressureBased::Corrector> genericPisoCorrector_;
 
     FDM::SolverServices services_;
     State::StateBundle* state_ = nullptr;
@@ -95,12 +96,15 @@ private:
     bool densitySolveBlockActive_ = false;
     bool pressurePredictorActive_ = false;
     bool pressureCorrectionActive_ = false;
+    bool monolithicImmersedActive_ = false;
+    System::OpId immersedPlanOperation_;
     System::StateRealization realizedState_;
 
     void bindState(State::StateBundle& state);
     void ensureWorkspaces(const std::vector<Field*>& fields);
     /// @brief 保持 pressure-based single-field route 的既有实现。
     void stepPressure(Field& field, double maximumTimeStep);
+    void stepPressureGeneric(Field& field, double maximumTimeStep);
     void stepDensity(const std::vector<Field*>& fields,
                      double maximumTimeStep);
 
@@ -109,9 +113,6 @@ private:
                               double time, double dt);
 
     void correctTransportModel(const std::vector<Field*>& fields);
-    void finishDensityStep(const std::vector<Field*>& fields,
-                           const FDM::FlowAlgorithmResult& flowResult);
-
     /// @brief Emit a structured time-step message through the observer hook.
     void emitTimeStep();
     void emitConvectionContract();

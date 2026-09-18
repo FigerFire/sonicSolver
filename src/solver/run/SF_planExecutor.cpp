@@ -92,15 +92,6 @@ void executeNode(
     operations.invoke(node.operation,execution);
 }
 
-void findOperations(
-        const System::SolvePlanNode& node,
-        const System::OpId& operation,
-        std::vector<const System::SolvePlanNode*>& matches) {
-    if (node.operation == operation) matches.push_back(&node);
-    for (const auto& child : node.children) {
-        findOperations(child,operation,matches);
-    }
-}
 }
 void OpRegistry::bind(System::OpId id, Operation operation) {
     if (id.empty() || !operation) throw std::runtime_error("Cannot bind an empty plan operation.");
@@ -133,20 +124,4 @@ void PlanExecutor::execute(
     executeNode(plan.root,operations,trace,loops,execution);
 }
 
-void PlanExecutor::executeOperation(
-        const System::CompiledSolvePlan& plan,
-        const System::OpId& operation,
-        const OpRegistry& operations,
-        const PlanTraceContext* trace) {
-    std::vector<const System::SolvePlanNode*> matches;
-    findOperations(plan.root,operation,matches);
-    if (matches.size() != 1) {
-        throw std::runtime_error(
-            "Compiled solve plan must contain exactly one leaf for operation '"
-            +operation+"'; found "+std::to_string(matches.size())+".");
-    }
-    std::vector<LoopFrame> loops;
-    ExecutionContext execution;
-    executeNode(*matches.front(),operations,trace,loops,execution);
-}
 } // namespace SF::Run

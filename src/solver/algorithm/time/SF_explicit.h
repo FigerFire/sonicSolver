@@ -63,15 +63,4 @@ void executeStage(
     const Publish& publish,
     const Validate& validate);
 
-/// Transitional full-step driver retained only for the infrastructure commit.
-void advance(
-    const std::vector<Field*>& fields,
-    std::vector<PatchWorkspace>& workspaces,
-    State::StateBundle& state,
-    FDM::TimeScheme scheme,
-    FDM::IEquationSystemCoupling* equationSystem,
-    const AssembleRHS& assembleRHS,
-    const Publish& publish,
-    const Validate& validate);
-
 } // namespace SF::Time::Explicit

@@ -1,4 +1,11 @@
 /// @file SF_compressible.cpp
+/// @brief 注册 numerical callbacks，由 CompiledSolvePlan 驱动 timestep。
+///
+/// Data flow:
+///   StateBundle + numerical providers -> OpRegistry
+///       -> CompiledSolvePlan -> PlanExecutor -> committed state/time
+///
+/// 本文件不拥有 RK stage loop；stage 数学由 Time::Explicit 实现。
 /// @brief 单流体可压缩算法的边界、RHS、时间步与校正流程实现。
 
 /*--------------Sonic Fluid-------------------*/
@@ -9,10 +16,13 @@
 #include "solver/algorithm/SF_densityBasedRHS.h"
 #include "solver/algorithm/time/SF_explicit.h"
 #include "solver/algorithm/SF_highOrderTrace.h"
+#include "solver/run/SF_planExecutor.h"
+#include "solver/system/SF_solvePlan.h"
 #include "SF_numericsPolicy.h"
 #include "SF_physicalState.h"
 #include "SF_rusanovEOS.h"
 #include "solver/algorithm/SF_solverAlgorithm.h"
+#include "methods/numerics/time/SF_Euler.h"
 
 #include <cmath>
 #include <iomanip>
@@ -27,46 +37,56 @@ CompressibleAlgorithm::CompressibleAlgorithm(
     : config_(std::move(config))
     , resolved_(system)
     , boundaryApplicator_(config_.boundaries)
-    , equations_(system.equationDefinitions)
+    , equations_(system.executableSystem.equationDefinitions)
     , flowAlgorithm_(FDM::makeFlowAlgorithm(config_)) {
     FDM::validateNumericsConfig(config_.numerics);
+    if (system.runtime.status == System::RuntimeStatus::Runnable) {
+        genericPisoCorrector_ = std::make_unique<PressureBased::Corrector>(
+            config_.boundaries,config_.pressure,
+            config_.numerics.idealGasGamma);
+    }
 }
 
-void CompressibleAlgorithm::bindSolveStages(
-        const std::vector<FDM::SolveStage>& stages) {
+void CompressibleAlgorithm::bindSolvePlan(
+        const System::CompiledSolvePlan& plan) {
     if (solveStagesBound_) {
         throw std::runtime_error(
-            "CompressibleAlgorithm solve stages are already bound.");
+            "CompressibleAlgorithm solve plan is already bound.");
     }
-    if (stages.size() != resolved_.solveBlocks.size()) {
+    if (&plan != &resolved_.solvePlan) {
         throw std::runtime_error(
-            "CompressibleAlgorithm workflow does not match the resolved solve blocks.");
+            "CompressibleAlgorithm received a plan other than its resolved plan.");
     }
-    for (size_t index = 0; index < stages.size(); ++index) {
-        const auto& stage = stages[index];
-        const auto& block = resolved_.solveBlocks[index];
-        if (stage.id != block.id || stage.equations != block.equations
-            || stage.constraints != block.constraints
-            || stage.strategy != block.strategyKind) {
-            throw std::runtime_error(
-                "CompressibleAlgorithm workflow stage '" + stage.id
-                + "' differs from resolved solve block '" + block.id + "'.");
-        }
+    for (const auto& block : plan.blocks) {
         densitySolveBlockActive_ = densitySolveBlockActive_
-            || stage.strategy == FDM::SolveStrategyKind::ExplicitTimeIntegration;
+            || block.strategyKind == FDM::SolveStrategyKind::ExplicitTimeIntegration;
         pressurePredictorActive_ = pressurePredictorActive_
-            || stage.strategy == FDM::SolveStrategyKind::SegregatedPredictor;
+            || block.strategyKind == FDM::SolveStrategyKind::SegregatedPredictor;
         pressureCorrectionActive_ = pressureCorrectionActive_
-            || stage.strategy == FDM::SolveStrategyKind::PressureCorrection;
+            || block.strategyKind == FDM::SolveStrategyKind::PressureCorrection;
+        monolithicImmersedActive_ = monolithicImmersedActive_
+            || block.strategyKind == FDM::SolveStrategyKind::MonolithicKKT;
+    }
+    const auto required = System::SolvePlanner::requiredOperations(plan);
+    for (const auto& operation : required) {
+        if (operation != "ibm.constraint.project"
+            && operation != "ibm.kkt.solve") continue;
+        if (!immersedPlanOperation_.empty()) {
+            throw std::runtime_error(
+                "Single-fluid execution received multiple IBM Plan operations.");
+        }
+        immersedPlanOperation_ = operation;
     }
     if (config_.numerics.solver == FDM::SolverAlgorithm::DensityBased) {
         if (!densitySolveBlockActive_) {
             throw std::runtime_error(
                 "Density execution requires an explicit-time solve strategy.");
         }
-    } else if (!pressurePredictorActive_ || !pressureCorrectionActive_) {
+    } else if (!pressurePredictorActive_
+               || (!pressureCorrectionActive_ && !monolithicImmersedActive_)) {
         throw std::runtime_error(
-            "Pressure execution requires typed predictor and correction strategies.");
+            "Pressure execution requires a typed predictor and either a "
+            "pressure-correction or monolithic IBM strategy.");
     }
     solveStagesBound_ = true;
 }
@@ -83,7 +103,7 @@ void CompressibleAlgorithm::bindServices(FDM::SolverServices services) {
 void CompressibleAlgorithm::prepare(FDM::SolverState& state) {
     if (!servicesBound_ || !solveStagesBound_) {
         throw std::runtime_error(
-            "CompressibleAlgorithm requires services and solve stages before state preparation.");
+            "CompressibleAlgorithm requires services and a solve plan before state preparation.");
     }
     if (!state.bundle) {
         throw std::runtime_error(
@@ -273,7 +293,7 @@ void CompressibleAlgorithm::stepPressure(Field& field, double maximumTimeStep) {
         prepareBoundaryState({&field}, state_->time + state_->dt, state_->dt);
     };
     const FDM::FlowAlgorithmResult flowResult =
-        flowAlgorithm_->correct(flowContext, state_->dt);
+        flowAlgorithm_->correct(flowContext,state_->dt);
     const bool immersedForcingCorrected =
         flowResult.performedCorrection && services_.immersed.constraint != nullptr;
     if (immersedForcingCorrected && services_.executionRuntime) {
@@ -304,108 +324,226 @@ void CompressibleAlgorithm::stepPressure(Field& field, double maximumTimeStep) {
     emitTimeStep();
 }
 
-void CompressibleAlgorithm::finishDensityStep(
-        const std::vector<Field*>& fields,
-        const FDM::FlowAlgorithmResult& flowResult) {
-    // All patches share one mathematical lifecycle.  DensityBasedRHS/Time
-    // already completed spatial stage barriers; Runtime remains responsible
-    // for distributed publication.  Commit model history before exposing the
-    // now read-ready timestep to observers and output.
-    DensityBasedRHS::publishCorrectedConservativeState(
-        flowResult.wroteConservativeState, services_);
-    if (flowResult.performedCorrection) {
-        validateDensityStateClosure(fields, "flow correction");
+void CompressibleAlgorithm::stepPressureGeneric(
+        Field& field, double maximumTimeStep) {
+    if (!genericPisoCorrector_) {
+        throw std::runtime_error(
+            "Generic PISO plan has no pressure operator provider.");
+    }
+    if (state_->patches.size() != 1 || state_->patches.front() != &field) {
+        throw std::runtime_error(
+            "Generic PISO capability currently requires exactly one patch.");
+    }
+    if (!state_->transported.empty() || services_.transportModel
+        || services_.equationSystem || services_.immersed.boundary
+        || services_.immersed.constraint || services_.immersed.system) {
+        throw std::runtime_error(
+            "Generic PISO capability supports laminar single-fluid state "
+            "without transported, phase, turbulence, or IBM services.");
+    }
+
+    PressureBased::CorrectionSummary pressureSummary;
+    Run::OpRegistry operations;
+    operations.bind("pressure.prepare",[&] {
+        if (!std::isfinite(maximumTimeStep) || maximumTimeStep <= 0.0) {
+            throw std::runtime_error(
+                "Generic PISO requires a finite positive time-step limit.");
+        }
+        prepareBoundaryState({&field},state_->time,0.0);
+        ensureWorkspaces({&field});
+        state_->dt = state_->equations
+            ? Numerics::RusanovEOS::deltaT(
+                field,*state_->equations,config_.numerics.cfl)
+            : deltaT(field,config_.numerics.cfl,
+                     config_.numerics.idealGasGamma);
+        if (services_.executionRuntime) {
+            state_->dt = services_.executionRuntime->globalMinimum(state_->dt);
+        }
+        state_->dt = std::min({state_->dt,config_.numerics.maxDeltaT,
+                               maximumTimeStep});
+    });
+    operations.bind("momentum.assemble",[&] {
+        DensityBasedRHS::assembleAllPatches(
+            {&field},workspaces_,config_,equations_,*state_,services_,
+            boundaryApplicator_,state_->time);
+    });
+    operations.bind("momentum.solve",[&] {
+        Time::forwardEuler(field,workspaces_.front().residual,state_->dt);
+        DensityBasedRHS::publishIntegratedState({&field},*state_,services_);
+        validateStateClosure(field,"Euler final");
+    });
+    operations.bind("pressure.boundary.prepare",[&] {
+        prepareBoundaryState(
+            {&field},state_->time+state_->dt,state_->dt);
+        genericPisoCorrector_->setExecutionRuntime(
+            services_.executionRuntime);
+        genericPisoCorrector_->setInterfaceJumpProvider({});
+    });
+    operations.bind("pressure.assemble",[&] {
+        genericPisoCorrector_->assemble({&field},state_->dt);
+    });
+    operations.bind("pressure.solve",[&] {
+        genericPisoCorrector_->solve();
+    });
+    operations.bind("pressure.update.prepare",[&] {
+        genericPisoCorrector_->preparePressureUpdate();
+    });
+    operations.bind("velocity.correct",[&] {
+        genericPisoCorrector_->correctVelocity();
+    });
+    operations.bind("flux.correct",[&] {
+        genericPisoCorrector_->correctFlux();
+    });
+    operations.bind("pressure.correction.commit",[&] {
+        pressureSummary = genericPisoCorrector_->commitPressureUpdate();
+    });
+    operations.bind("pressure.step.commit",[&] {
+        validateStateClosure(field,"flow correction");
         if (services_.observer) {
+            std::ostringstream detail;
+            detail << "iterations=" << pressureSummary.iterations
+                   << ", residual=" << pressureSummary.finalResidual
+                   << ", maxDiv(before)="
+                   << pressureSummary.maxDivergenceBefore
+                   << ", maxDiv(after)="
+                   << pressureSummary.maxDivergenceAfter
+                   << ", interfaceFaces=" << pressureSummary.interfaceFaces
+                   << ", maxJump(target/correction)="
+                   << pressureSummary.maxTargetPressureJump << "/"
+                   << pressureSummary.maxCorrectionPressureJump
+                   << ", HYPRE(rebuilds/solves)="
+                   << pressureSummary.structureRebuilds << "/"
+                   << pressureSummary.linearSolves;
             services_.observer->onSolverMessage({
                 FDM::SolverMessageKind::StateClosure,
-                "Flow correction", flowResult.detail,
-                state_->step, state_->time, state_->dt});
+                "Flow correction",detail.str(),
+                state_->step,state_->time,state_->dt});
         }
-    }
-    if (services_.equationSystem) {
-        services_.equationSystem->commitStep(fields, state_->dt);
-    }
-    prepareBoundaryState(fields, state_->time + state_->dt, state_->dt);
-    state_->time += state_->dt;
-    ++state_->step;
-    emitTimeStep();
+        prepareBoundaryState(
+            {&field},state_->time+state_->dt,state_->dt);
+        state_->time += state_->dt;
+        ++state_->step;
+        emitTimeStep();
+    });
+    Run::PlanExecutor::execute(resolved_.solvePlan,operations);
 }
 
 void CompressibleAlgorithm::stepDensity(
         const std::vector<Field*>& fields, double maximumTimeStep) {
-    if (!std::isfinite(maximumTimeStep) || maximumTimeStep <= 0.0) {
-        throw std::runtime_error(
-            "SolverAlgorithm::CompressibleAlgorithm requires a finite positive time-step limit.");
-    }
-    HighOrderTrace::beginPhysicalStep(state_->step);
-    if (HighOrderTrace::activeFor(state_->step)) {
-        HighOrderTrace::conservative("initial Q", fields);
-        HighOrderTrace::gamma(config_, *state_->equations);
-    }
-    prepareBoundaryState(fields, state_->time, 0.0);
-    if (HighOrderTrace::activeFor(state_->step)) {
-        HighOrderTrace::conservative(
-            "boundary-prepared Q", fields, true);
-    }
-
-    double localDt = std::numeric_limits<double>::max();
-    for (Field* field : fields) {
-        if (!field) continue;
-        localDt = std::min(localDt, Numerics::RusanovEOS::deltaT(
-            *field, *state_->equations, config_.numerics.cfl));
-    }
-    state_->dt = services_.executionRuntime
-        ? services_.executionRuntime->globalMinimum(localDt) : localDt;
-    state_->dt = std::min({state_->dt, config_.numerics.maxDeltaT,
-                           maximumTimeStep});
-    if (HighOrderTrace::activeFor(state_->step)) {
-        for (std::size_t patch = 0; patch < fields.size(); ++patch) {
-            if (!fields[patch]) continue;
-            const double legacyDt = deltaT(
-                *fields[patch], config_.numerics.cfl,
-                config_.numerics.idealGasGamma);
-            const double equationDt = Numerics::RusanovEOS::deltaT(
-                *fields[patch], *state_->equations, config_.numerics.cfl);
-            std::cout << std::setprecision(17)
-                      << "[SF TRACE] dt patch=" << patch
-                      << " legacy=" << legacyDt
-                      << " equationSetRusanov=" << equationDt
-                      << " active=" << state_->dt << '\n';
-        }
-    }
-
-    if (services_.equationSystem) {
-        services_.equationSystem->beginStep(fields, state_->dt);
-    }
-    correctTransportModel(fields);
-
-    ensureWorkspaces(fields);
-    Time::Explicit::advance(
-        fields, workspaces_, *state_, config_.numerics.time, services_.equationSystem,
-        [this](const std::vector<Field*>& patches,
-               std::vector<PatchWorkspace>& workspaces, double stageTime) {
-            DensityBasedRHS::assembleAllPatches(
-                patches, workspaces, config_, equations_, *state_, services_,
-                boundaryApplicator_, stageTime);
-        },
-        [this](const std::vector<Field*>& patches) {
-            DensityBasedRHS::publishIntegratedState(
-                patches, *state_, services_);
-        },
-        [this](const std::vector<Field*>& patches, const char* stage) {
-            validateDensityStateClosure(patches, stage);
-        });
-
+    Time::Explicit::Workspace explicitWorkspace;
+    FDM::FlowAlgorithmResult flowResult;
     FDM::FlowAlgorithmContext flowContext;
     flowContext.fields = fields;
-    flowContext.targetTime = state_->time + state_->dt;
     flowContext.executionRuntime = services_.executionRuntime;
     flowContext.equationSystem = services_.equationSystem;
     flowContext.immersed = services_.immersed;
     flowContext.prepareBoundaryState = [this, &fields]() {
         prepareBoundaryState(fields, state_->time + state_->dt, state_->dt);
     };
-    finishDensityStep(fields, flowAlgorithm_->correct(flowContext, state_->dt));
+
+    Run::OpRegistry operations;
+    operations.bind("flow.step.prepare",[&] {
+        if (!std::isfinite(maximumTimeStep) || maximumTimeStep <= 0.0) {
+            throw std::runtime_error(
+                "SolverAlgorithm::CompressibleAlgorithm requires a finite positive time-step limit.");
+        }
+        HighOrderTrace::beginPhysicalStep(state_->step);
+        if (HighOrderTrace::activeFor(state_->step)) {
+            HighOrderTrace::conservative("initial Q", fields);
+            HighOrderTrace::gamma(config_, *state_->equations);
+        }
+        prepareBoundaryState(fields, state_->time, 0.0);
+        if (HighOrderTrace::activeFor(state_->step)) {
+            HighOrderTrace::conservative("boundary-prepared Q", fields, true);
+        }
+    });
+    operations.bind("flow.dt.compute",[&] {
+        double localDt = std::numeric_limits<double>::max();
+        for (Field* field : fields) {
+            if (!field) continue;
+            localDt = std::min(localDt, Numerics::RusanovEOS::deltaT(
+                *field, *state_->equations, config_.numerics.cfl));
+        }
+        state_->dt = services_.executionRuntime
+            ? services_.executionRuntime->globalMinimum(localDt) : localDt;
+        state_->dt = std::min({state_->dt, config_.numerics.maxDeltaT,
+                               maximumTimeStep});
+        if (HighOrderTrace::activeFor(state_->step)) {
+            for (std::size_t patch = 0; patch < fields.size(); ++patch) {
+                if (!fields[patch]) continue;
+                const double legacyDt = deltaT(
+                    *fields[patch], config_.numerics.cfl,
+                    config_.numerics.idealGasGamma);
+                const double equationDt = Numerics::RusanovEOS::deltaT(
+                    *fields[patch], *state_->equations, config_.numerics.cfl);
+                std::cout << std::setprecision(17)
+                          << "[SF TRACE] dt patch=" << patch
+                          << " legacy=" << legacyDt
+                          << " equationSetRusanov=" << equationDt
+                          << " active=" << state_->dt << '\n';
+            }
+        }
+    });
+    operations.bind("flow.step.begin",[&] {
+        if (services_.equationSystem) {
+            services_.equationSystem->beginStep(fields, state_->dt);
+        }
+        correctTransportModel(fields);
+        ensureWorkspaces(fields);
+        Time::Explicit::begin(
+            explicitWorkspace,fields,*state_,config_.numerics.time,
+            services_.equationSystem);
+    });
+    operations.bind("explicit.stage.execute",
+        [&](const Run::ExecutionContext& context) {
+            Time::Explicit::executeStage(
+                explicitWorkspace,context.stageIndex,fields,workspaces_,*state_,
+                services_.equationSystem,
+                [this](const std::vector<Field*>& patches,
+                       std::vector<PatchWorkspace>& workspaces,
+                       double stageTime) {
+                    DensityBasedRHS::assembleAllPatches(
+                        patches,workspaces,config_,equations_,*state_,services_,
+                        boundaryApplicator_,stageTime);
+                },
+                [this](const std::vector<Field*>& patches) {
+                    DensityBasedRHS::publishIntegratedState(
+                        patches,*state_,services_);
+                },
+                [this](const std::vector<Field*>& patches,const char* stage) {
+                    validateDensityStateClosure(patches,stage);
+                });
+        });
+    if (!immersedPlanOperation_.empty()) {
+        operations.bind(immersedPlanOperation_,[&] {
+            flowContext.targetTime = state_->time + state_->dt;
+            flowResult = flowAlgorithm_->correct(flowContext,state_->dt);
+        });
+    }
+    operations.bind("flow.step.commit",[&] {
+        DensityBasedRHS::publishCorrectedConservativeState(
+            flowResult.wroteConservativeState,services_);
+        if (flowResult.performedCorrection) {
+            validateDensityStateClosure(fields,"flow correction");
+            if (services_.observer) {
+                services_.observer->onSolverMessage({
+                    FDM::SolverMessageKind::StateClosure,"Flow correction",
+                    flowResult.detail,state_->step,state_->time,state_->dt});
+            }
+        }
+        if (services_.equationSystem) {
+            services_.equationSystem->commitStep(fields,state_->dt);
+        }
+        prepareBoundaryState(fields,state_->time+state_->dt,state_->dt);
+    });
+    operations.bind("time.commit",[&] {
+        state_->time += state_->dt;
+        ++state_->step;
+        emitTimeStep();
+    });
+    const Run::PlanTraceContext trace{
+        state_->step,state_->time,&state_->dt};
+    Run::PlanExecutor::execute(resolved_.solvePlan,operations,&trace);
 }
 
 FDM::StepResult CompressibleAlgorithm::advance(FDM::SolverState& state) {
@@ -416,7 +554,7 @@ FDM::StepResult CompressibleAlgorithm::advance(FDM::SolverState& state) {
     }
     if (!solveStagesBound_) {
         result.message =
-            "CompressibleAlgorithm requires bindSolveStages before advance.";
+            "CompressibleAlgorithm requires bindSolvePlan before advance.";
         return result;
     }
     if (!state.bundle) {
@@ -426,8 +564,14 @@ FDM::StepResult CompressibleAlgorithm::advance(FDM::SolverState& state) {
     bindState(*state.bundle);
     if (densitySolveBlockActive_) {
         stepDensity(state.bundle->patches, state.maximumTimeStep);
-    } else if (pressurePredictorActive_ && pressureCorrectionActive_) {
-        stepPressure(state.bundle->singlePatch(), state.maximumTimeStep);
+    } else if (pressurePredictorActive_
+               && (pressureCorrectionActive_ || monolithicImmersedActive_)) {
+        if (resolved_.runtime.status == System::RuntimeStatus::Runnable) {
+            stepPressureGeneric(
+                state.bundle->singlePatch(),state.maximumTimeStep);
+        } else {
+            stepPressure(state.bundle->singlePatch(),state.maximumTimeStep);
+        }
     } else {
         result.message =
             "CompressibleAlgorithm has no executable bound solve block.";
