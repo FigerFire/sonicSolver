@@ -1,7 +1,16 @@
 #pragma once
 
-/// @file SF_densityBasedTime.h
-/// @brief Density-based 显式 stage algebra；空间 RHS 由调用者提供。
+/// @file SF_explicit.h
+/// @brief 通用显式时间积分 contract；给定 state、dt 与 RHS provider，执行
+///        Euler、SSPRK3 或 RK4 的 stage snapshot、组合、发布与验证。
+///
+/// Data flow:
+///   State_n + dt + RHS callback
+///       -> stage state / RHS snapshot
+///       -> explicit update and publish
+///       -> State_{n+1}
+///
+/// 本文件不选择 governing equations、MPI topology 或 global timestep loop。
 
 #include "SF_config.h"
 #include "SF_interfaces.h"
@@ -11,8 +20,9 @@
 #include <functional>
 #include <vector>
 
-namespace SF::SolverAlgorithm::DensityBasedTime {
+namespace SF::Time::Explicit {
 
+using SolverAlgorithm::PatchWorkspace;
 using AssembleRHS = std::function<void(const std::vector<Field*>&,
                                        std::vector<PatchWorkspace>&, double)>;
 using Publish = std::function<void(const std::vector<Field*>&)>;
@@ -30,4 +40,4 @@ void advance(
     const Publish& publish,
     const Validate& validate);
 
-} // namespace SF::SolverAlgorithm::DensityBasedTime
+} // namespace SF::Time::Explicit

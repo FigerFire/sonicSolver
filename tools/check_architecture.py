@@ -178,6 +178,64 @@ def main() -> int:
         authority_errors.append(
             "Workflow does not propagate the typed solve strategy to runtime stages")
 
+
+    # application/run is an orchestration boundary. Concrete execution
+    # composition and numerical services must have their own owners.
+    run_dir = root / "src/app/application/run"
+    allowed_run_files = {
+        "SF_run.h", "SF_run.cpp", "SF_runFlow.h", "SF_runFlow.cpp",
+    }
+    unexpected_run_files = sorted(
+        path.name for path in run_dir.iterdir()
+        if path.is_file() and path.suffix in SOURCE_SUFFIXES
+        and path.name not in allowed_run_files)
+    if unexpected_run_files:
+        authority_errors.append(
+            "application/run contains non-orchestration files: "
+            + ", ".join(unexpected_run_files))
+
+    obsolete_paths = [
+        "src/solver/algorithm/SF_densityBasedTime.h",
+        "src/solver/algorithm/SF_densityBasedTime.cpp",
+        "src/app/application/run/SF_equationCoupling.h",
+        "src/app/application/run/SF_equationCoupling.cpp",
+        "src/app/application/run/SF_interfaceCoupling.h",
+        "src/app/application/run/SF_interfaceCoupling.cpp",
+        "src/app/application/run/SF_services.h",
+        "src/app/application/run/SF_services.cpp",
+        "src/app/application/run/SF_runtime.h",
+        "src/app/application/run/SF_runtime.cpp",
+        "src/app/application/run/SF_output.h",
+        "src/app/application/run/SF_output.cpp",
+    ]
+    for obsolete in obsolete_paths:
+        if (root / obsolete).exists():
+            authority_errors.append(
+                "obsolete responsibility path still exists: " + obsolete)
+
+    explicit_time = root / "src/solver/algorithm/time/SF_explicit.cpp"
+    if not explicit_time.is_file():
+        authority_errors.append("generic explicit time integrator is missing")
+    else:
+        explicit_source = explicit_time.read_text(errors="replace")
+        if "app/application/run" in explicit_source:
+            authority_errors.append(
+                "explicit time integration depends on application/run")
+    coupling_dir = root / "src/solver/equation/coupling"
+    for path in coupling_dir.glob("*.*"):
+        content = path.read_text(errors="replace")
+        if "app/application/execution" in content \
+                or "app/application/run" in content:
+            authority_errors.append(
+                "equation coupling depends on application execution: "
+                + relative(root, path))
+
+    source_text = "\n".join(
+        path.read_text(errors="replace") for path in files)
+    if "DensityBasedTime" in source_text or "SF_densityBasedTime" in source_text:
+        authority_errors.append(
+            "DensityBasedTime naming still owns explicit integration")
+
     if not args.quiet:
         print(f"Architecture dependency check: {len(files)} source files")
         print(f"Known dependency debt: {len(known_debt)} allowlisted entries")

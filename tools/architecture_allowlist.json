@@ -26,8 +26,7 @@
     "SF_zeroGradient.h": ["src/solver/boundary/reconstruction/ILW/SF_zeroGradient.h", "src/solver/boundary/reconstruction/linear/SF_zeroGradient.h"],
     "SF_eulerian.h": ["src/solver/algorithm/pressureBased/eulerian/SF_eulerian.h", "src/solver/discretization/eulerian/SF_eulerian.h", "src/solver/equation/eulerian/SF_eulerian.h"],
     "SF_model.h": ["src/app/application/model/SF_model.h", "src/core/model/SF_model.h"],
-    "SF_equationCoupling.h": ["src/app/application/run/SF_equationCoupling.h", "src/core/interfaces/SF_equationCoupling.h"],
-    "SF_application.h": ["src/app/application/SF_application.h", "src/app/gui/Application/SF_application.h"],
-    "SF_output.h": ["src/app/application/model/SF_output.h", "src/app/application/run/SF_output.h"]
+    "SF_equationCoupling.h": ["src/solver/equation/coupling/SF_equationCoupling.h", "src/core/interfaces/SF_equationCoupling.h"],
+    "SF_application.h": ["src/app/application/SF_application.h", "src/app/gui/Application/SF_application.h"]
   }
 }

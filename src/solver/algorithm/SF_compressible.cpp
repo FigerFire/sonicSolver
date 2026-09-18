@@ -7,7 +7,7 @@
 
 #include "solver/algorithm/SF_compressible.h"
 #include "solver/algorithm/SF_densityBasedRHS.h"
-#include "solver/algorithm/SF_densityBasedTime.h"
+#include "solver/algorithm/time/SF_explicit.h"
 #include "solver/algorithm/SF_highOrderTrace.h"
 #include "SF_numericsPolicy.h"
 #include "SF_physicalState.h"
@@ -380,7 +380,7 @@ void CompressibleAlgorithm::stepDensity(
     correctTransportModel(fields);
 
     ensureWorkspaces(fields);
-    DensityBasedTime::advance(
+    Time::Explicit::advance(
         fields, workspaces_, *state_, config_.numerics.time, services_.equationSystem,
         [this](const std::vector<Field*>& patches,
                std::vector<PatchWorkspace>& workspaces, double stageTime) {

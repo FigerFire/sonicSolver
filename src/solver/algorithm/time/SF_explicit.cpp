@@ -2,15 +2,19 @@
 /*---------copyright by Li Pengfei------------*/
 /*----------code by LPF, 2026.07.11-----------*/
 
-/// @file SF_densityBasedTime.cpp
-/// @brief Density-based patches and registered scalars share one explicit tableau.
+/// @file SF_explicit.cpp
+/// @brief 对 patch state 与 registered scalars 执行同一显式时间格式。
 ///
-/// Qn remains owned by StateBundle.  This file only constructs temporary RK
-/// stage state and combines existing RHS snapshots.  The supplied RHS callback
-/// completes every patch's spatial work and its canonical/MPI barriers before
-/// a stage update; it is deliberately the only place that knows those details.
+/// Data flow:
+///   authoritative StateBundle state + dt
+///       -> temporary Euler/SSPRK3/RK4 snapshots
+///       -> caller-provided RHS evaluation
+///       -> stage publish/validation
+///       -> committed stage state
+///
+/// StateBundle owns Qn and clock；本文件不决定方程、边界顺序或 MPI topology。
 
-#include "solver/algorithm/SF_densityBasedTime.h"
+#include "solver/algorithm/time/SF_explicit.h"
 #include "solver/algorithm/SF_highOrderTrace.h"
 
 #include "methods/numerics/structured/SF_structured.h"
@@ -20,7 +24,9 @@
 #include <string>
 #include <vector>
 
-namespace SF::SolverAlgorithm::DensityBasedTime {
+namespace SF::Time::Explicit {
+using SolverAlgorithm::PatchWorkspace;
+namespace HighOrderTrace = SolverAlgorithm::HighOrderTrace;
 namespace {
 
 struct ScalarRKStorage {
@@ -485,4 +491,4 @@ void advance(
     }
 }
 
-} // namespace SF::SolverAlgorithm::DensityBasedTime
+} // namespace SF::Time::Explicit

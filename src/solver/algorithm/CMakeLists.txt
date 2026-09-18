@@ -7,8 +7,8 @@ add_library(SF_solverAlgorithm STATIC
     SF_compressible.h
     SF_densityBasedRHS.cpp
     SF_densityBasedRHS.h
-    SF_densityBasedTime.cpp
-    SF_densityBasedTime.h
+    time/SF_explicit.cpp
+    time/SF_explicit.h
     SF_solverAlgorithm.cpp
     densityBased/SF_correction.cpp
     densityBased/SF_densityBased.h
