@@ -272,23 +272,35 @@ State::VariableRegistry* registryFor(
 
 } // namespace
 
-int stageCount(FDM::TimeScheme scheme) {
-    return FDM::explicitStageCount(scheme);
+void forwardEuler(Field& field, const Residual& residual, double dt) {
+    Math::applyDivergence(field,residual,dt);
+    field.invalidateThermodynamicCache();
 }
 
 void begin(Workspace& workspace,
            const std::vector<Field*>& fields,
            State::StateBundle& state,
-           FDM::TimeScheme scheme,
+           const FDM::TimeRecipe& recipe,
            FDM::IEquationSystemCoupling* equationSystem) {
     if (workspace.active) {
         throw std::runtime_error("Explicit workspace is already active.");
     }
-    workspace.scheme = scheme;
+    if (recipe.topology() != FDM::TimeTopology::ExplicitStages
+        || recipe.stageCount() <= 0) {
+        throw std::runtime_error(
+            "Time::Explicit requires an ExplicitStages time recipe.");
+    }
+    if (recipe.id() != FDM::TimeRecipeId::ForwardEuler
+        && recipe.id() != FDM::TimeRecipeId::SSPRK3
+        && recipe.id() != FDM::TimeRecipeId::ClassicalRK4) {
+        throw std::runtime_error(
+            "Time::Explicit has no provider for the selected time recipe.");
+    }
+    workspace.recipe = recipe;
     workspace.nextStage = 0;
     workspace.patches.clear();
     workspace.patches.resize(fields.size());
-    if (scheme != FDM::TimeScheme::Euler) {
+    if (recipe.id() != FDM::TimeRecipeId::ForwardEuler) {
         for (size_t n = 0; n < fields.size(); ++n) {
             if (!fields[n]) continue;
             snapshotField(*fields[n], workspace.patches[n].q0);
@@ -299,7 +311,6 @@ void begin(Workspace& workspace,
             }
         }
     }
-    (void)stageCount(scheme);
     workspace.active = true;
 }
 
@@ -313,7 +324,7 @@ void executeStage(
         const AssembleRHS& assembleRHS,
         const Publish& publish,
         const Validate& validate) {
-    const int count = stageCount(workspace.scheme);
+    const int count = workspace.recipe.stageCount();
     if (!workspace.active || stageIndex != workspace.nextStage
         || stageIndex < 0 || stageIndex >= count) {
         throw std::runtime_error(
@@ -321,13 +332,12 @@ void executeStage(
     }
     auto& storage = workspace.patches;
 
-    if (workspace.scheme == FDM::TimeScheme::Euler) {
+    if (workspace.recipe.id() == FDM::TimeRecipeId::ForwardEuler) {
         assembleRHS(fields, workspaces, state.time);
         for (size_t index = 0; index < fields.size(); ++index) {
             Field* field = fields[index];
             if (!field) continue;
-            Math::applyDivergence(*field, workspaces[index].residual, state.dt);
-            field->invalidateThermodynamicCache();
+            forwardEuler(*field,workspaces[index].residual,state.dt);
             if (State::VariableRegistry* registry =
                     registryFor(*field, fields, state, equationSystem)) {
                 registry->validateFor(*field);
@@ -343,7 +353,7 @@ void executeStage(
         traceUpdatedConservative("Q after Euler update", fields, state);
         publish(fields);
         validate(fields, "Euler final");
-    } else if (workspace.scheme == FDM::TimeScheme::SSPRK3) {
+    } else if (workspace.recipe.id() == FDM::TimeRecipeId::SSPRK3) {
         static constexpr double stageFraction[] = {0.0, 1.0, 0.5};
         static constexpr double baseWeight[] = {0.0, 0.75, 1.0 / 3.0};
         static constexpr double eulerWeight[] = {1.0, 0.25, 2.0 / 3.0};
@@ -367,7 +377,8 @@ void executeStage(
         traceUpdatedConservative(labels[stageIndex], fields, state);
         publish(fields);
         validate(fields, labels[stageIndex]);
-    } else if (stageIndex == 0) {
+    } else if (workspace.recipe.id() == FDM::TimeRecipeId::ClassicalRK4
+               && stageIndex == 0) {
         assembleRHS(fields, workspaces, state.time);
         for (size_t n = 0; n < fields.size(); ++n) {
         if (fields[n]) snapshotRHS(*fields[n], workspaces[n].residual, storage[n].k1);

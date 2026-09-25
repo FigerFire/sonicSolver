@@ -3,7 +3,8 @@
 /// @file SF_stateRealizer.h
 /// @brief Resolved unknowns 到 StateBundle 已有 storage 的启动阶段绑定。
 
-#include "SF_resolvedSimulationSystem.h"
+#include "core/system/SF_equationIR.h"
+#include "SF_runtimeRequirements.h"
 #include "core/state/SF_stateBundle.h"
 
 #include <vector>
@@ -24,12 +25,14 @@ public:
 
 private:
     friend StateRealization realizeState(
-        const ResolvedSimulationSystem&, State::StateBundle&);
+        const ExecutableEquationSystem&, const RuntimeRequirements&,
+        State::StateBundle&);
     std::vector<RealizedUnknown> unknowns_;
 };
 
 /// @brief 一次性解析并验证 unknown storage；不分配或复制数值数组。
 StateRealization realizeState(
-    const ResolvedSimulationSystem& system, State::StateBundle& state);
+    const ExecutableEquationSystem& equations,
+    const RuntimeRequirements& requirements, State::StateBundle& state);
 
 } // namespace SF::System

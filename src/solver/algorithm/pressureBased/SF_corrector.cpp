@@ -72,8 +72,8 @@ bool unknown(const Field& field, int i, int j, int k) {
 }
 
 double density(const Field& field, int i, int j, int k) {
-    const int count = field.hasEquationSet()
-        ? field.equationSet()->densityVariableCount() : 1;
+    const int count = field.hasStateModel()
+        ? field.stateModel()->densityVariableCount() : 1;
     double result = 0.0;
     for (int variable = 0; variable < count; ++variable) {
         result += field(i,j,k,variable);
@@ -86,10 +86,10 @@ double density(const Field& field, int i, int j, int k) {
 }
 
 std::array<int, 3> momentum(const Field& field) {
-    if (field.hasEquationSet()) return {
-        field.equationSet()->momentumIndex(0),
-        field.equationSet()->momentumIndex(1),
-        field.equationSet()->momentumIndex(2)};
+    if (field.hasStateModel()) return {
+        field.stateModel()->momentumIndex(0),
+        field.stateModel()->momentumIndex(1),
+        field.stateModel()->momentumIndex(2)};
     return {RU, RV, RW};
 }
 
@@ -208,7 +208,24 @@ Corrector::Corrector(FDM::BoundaryConfig boundaries,
                      double idealGasGamma)
     : boundaries_(std::move(boundaries)), config_(std::move(config)),
       idealGasGamma_(idealGasGamma),
-      linearSolver_(config_.workflow.pressure) {}
+      linearSolver_(config_.linear.pressure) {}
+
+struct Corrector::Workspace {
+    std::vector<Field*> fields;
+    double dt = 0.0;
+    FieldRowMaps maps;
+    std::vector<std::vector<unsigned char>> fixed;
+    LinearAlgebra::SparseSystem matrix;
+    std::vector<std::vector<double>> correction;
+    std::vector<std::vector<double>> targetPressure;
+    CorrectionSummary summary;
+    bool solved = false;
+    bool pressurePrepared = false;
+    bool velocityCorrected = false;
+    bool fluxCorrected = false;
+};
+
+Corrector::~Corrector() = default;
 
 CorrectionSummary Corrector::correct(Field& field, double dt) {
     return correct(std::vector<Field*>{&field}, dt);
@@ -216,47 +233,63 @@ CorrectionSummary Corrector::correct(Field& field, double dt) {
 
 CorrectionSummary Corrector::correct(
         const std::vector<Field*>& fields, double dt) {
+    assemble(fields,dt);
+    solve();
+    correctVelocity();
+    preparePressureUpdate();
+    correctFlux();
+    return commitPressureUpdate();
+}
+
+void Corrector::assemble(
+        const std::vector<Field*>& fields, double dt) {
+    if (workspace_) {
+        throw std::runtime_error(
+            "pressure correction workspace is already active.");
+    }
     if (!std::isfinite(dt) || dt <= 0.0) {
         throw std::runtime_error(
             "pressureBase requires finite positive dt.");
     }
-    if (config_.workflow.type != FDM::SolverAlgorithm::PressureBased) {
-        throw std::runtime_error(
-            "pressureBase requires system/solverProperties.");
-    }
-    FDM::validateSolverProperties(config_.workflow);
+    // pressure correction 只在 compiled plan 要求 pressure.* operations 时才
+    // 被构造与调用；这里只校验 typed coupling/linear-solver 配置本身。
+    FDM::validatePressureCorrectionConfig(config_);
     if (fields.size() > 1 && !runtime_) {
         throw std::runtime_error(
             "multi-field pressureBase requires Parallelism services.");
     }
-    const FieldRowMaps maps = makeRowMaps(fields, runtime_);
+    auto workspace = std::make_unique<Workspace>();
+    workspace->fields = fields;
+    workspace->dt = dt;
+    workspace->maps = makeRowMaps(fields, runtime_);
+    const FieldRowMaps& maps = workspace->maps;
     if (maps.last < maps.first || maps.total <= 0) {
         throw std::runtime_error(
             "pressureBase has no pressure unknowns.");
     }
-    if (config_.workflow.referenceCell < 0
-        || config_.workflow.referenceCell >= maps.total) {
+    if (config_.reference.referenceCell < 0
+        || config_.reference.referenceCell >= maps.total) {
         throw std::runtime_error(
             "pressureBase referenceCell is outside pressure matrix.");
     }
 
-    std::vector<std::vector<unsigned char>> fixed(fields.size());
+    workspace->fixed.resize(fields.size());
     for (size_t block = 0; block < fields.size(); ++block) {
         Field& field = *fields[block];
-        fixed[block].assign((size_t)field.TotalSize(), 0);
+        workspace->fixed[block].assign((size_t)field.TotalSize(), 0);
         for (const auto& boundary : boundaries_.energyFromPressure) {
             if (boundary.type != FIXED_VALUE) continue;
             const auto set = field.getAllSets().find(boundary.name);
             if (set == field.getAllSets().end()) continue;
             for (int cell : set->second) {
                 if (cell >= 0 && cell < field.TotalSize()) {
-                    fixed[block][(size_t)cell] = 1;
+                    workspace->fixed[block][(size_t)cell] = 1;
                 }
             }
         }
     }
 
-    LinearAlgebra::SparseSystem matrix;
+    LinearAlgebra::SparseSystem& matrix = workspace->matrix;
     matrix.firstRow = maps.first;
     matrix.lastRow = maps.last;
     matrix.globalSize = maps.total;
@@ -264,7 +297,7 @@ CorrectionSummary Corrector::correct(
     matrix.rows.reserve(localRows);
     matrix.rhs.reserve(localRows);
     matrix.initialGuess.assign(localRows, 0.0);
-    CorrectionSummary summary;
+    CorrectionSummary& summary = workspace->summary;
     for (size_t block = 0; block < fields.size(); ++block) {
         Field& field = *fields[block];
         const RowMap& map = maps.fields[block];
@@ -280,7 +313,7 @@ CorrectionSummary Corrector::correct(
             summary.maxDivergenceBefore = std::max(
                 summary.maxDivergenceBefore, std::abs(div));
             ++summary.correctedCells;
-            if (row.globalRow == config_.workflow.referenceCell) {
+            if (row.globalRow == config_.reference.referenceCell) {
                 row.columns = {row.globalRow};
                 row.values = {1.0};
                 matrix.rows.push_back(std::move(row));
@@ -288,7 +321,7 @@ CorrectionSummary Corrector::correct(
                 continue;
             }
             const double rho = density(field, i, j, k);
-            const double soundSquared = field.hasEquationSet()
+            const double soundSquared = field.hasStateModel()
                 ? std::pow(field.thermodynamicState(i,j,k).soundSpeed, 2)
                 : idealGasGamma_ * Boundary::pressureAt(field,i,j,k) / rho;
             if (!std::isfinite(soundSquared) || soundSquared <= 0.0) {
@@ -307,7 +340,7 @@ CorrectionSummary Corrector::correct(
                     const auto global = map.global[(size_t)neighbour];
                     if (field.CellFlag(ni,nj,nk) != FLUID_CELL
                         || (global < 0
-                            && !fixed[block][(size_t)neighbour])) continue;
+                            && !workspace->fixed[block][(size_t)neighbour])) continue;
                     const double h = spacing(field,i,j,k,ni,nj,nk);
                     const double coefficient = 0.5
                         * (1.0/rho + 1.0/density(field,ni,nj,nk))/(h*h);
@@ -316,7 +349,7 @@ CorrectionSummary Corrector::correct(
                     const int leftK = sign > 0 ? k : nk;
                     const FaceCorrectionJump jump = pressureCorrectionJump(
                         jumpCondition, field, leftI, leftJ, leftK, axis,
-                        config_.workflow.pressureRelaxation);
+                        config_.coupling.pressureRelaxation);
                     if (jump.active) {
                         const double oriented = sign > 0
                             ? jump.correctionRightMinusLeft
@@ -354,36 +387,83 @@ CorrectionSummary Corrector::correct(
         }
     }
 
-    const auto result = linearSolver_.solve(matrix);
-    summary.iterations = result.iterations;
-    summary.finalResidual = result.relativeResidual;
-    summary.structureRebuilds =
+    workspace_ = std::move(workspace);
+}
+
+void Corrector::solve() {
+    if (!workspace_ || workspace_->solved) {
+        throw std::runtime_error(
+            "pressure correction solve requires one assembled system.");
+    }
+    const auto result = linearSolver_.solve(workspace_->matrix);
+    workspace_->summary.iterations = result.iterations;
+    workspace_->summary.finalResidual = result.relativeResidual;
+    workspace_->summary.structureRebuilds =
         linearSolver_.statistics().structureRebuilds;
-    summary.linearSolves = linearSolver_.statistics().solves;
-    std::vector<std::vector<double>> correction(fields.size());
+    workspace_->summary.linearSolves = linearSolver_.statistics().solves;
+    workspace_->correction.resize(workspace_->fields.size());
     size_t solutionRow = 0;
-    for (size_t block = 0; block < fields.size(); ++block) {
-        const RowMap& map = maps.fields[block];
-        correction[block].assign((size_t)fields[block]->TotalSize(), 0.0);
+    for (size_t block = 0; block < workspace_->fields.size(); ++block) {
+        const RowMap& map = workspace_->maps.fields[block];
+        workspace_->correction[block].assign(
+            (size_t)workspace_->fields[block]->TotalSize(), 0.0);
         for (int cell : map.localCells) {
-            correction[block][(size_t)cell] = result.solution[solutionRow++];
+            workspace_->correction[block][(size_t)cell] =
+                result.solution[solutionRow++];
         }
     }
     if (runtime_) {
         std::vector<State::DistributedFieldView> views;
-        views.reserve(fields.size());
-        for (size_t block = 0; block < fields.size(); ++block) {
+        views.reserve(workspace_->fields.size());
+        for (size_t block = 0; block < workspace_->fields.size(); ++block) {
             views.push_back(State::workspaceView(
-                "pressureCorrection", (int)block, *fields[block],
-                correction[block], 1, fields[block]->NG(),
+                "pressureCorrection", (int)block, *workspace_->fields[block],
+                workspace_->correction[block], 1,
+                workspace_->fields[block]->NG(),
                 State::HaloSyncStage::None));
         }
         runtime_->synchronizeTransient(views);
     }
+    workspace_->solved = true;
+}
 
-    for (size_t block = 0; block < fields.size(); ++block) {
-        Field& field = *fields[block];
-        const RowMap& map = maps.fields[block];
+void Corrector::preparePressureUpdate() {
+    if (!workspace_ || !workspace_->velocityCorrected
+        || workspace_->pressurePrepared) {
+        throw std::runtime_error(
+            "pressure update requires one solved correction.");
+    }
+    workspace_->targetPressure.resize(workspace_->fields.size());
+    for (size_t block = 0; block < workspace_->fields.size(); ++block) {
+        Field& field = *workspace_->fields[block];
+        const RowMap& map = workspace_->maps.fields[block];
+        auto& pressure = workspace_->targetPressure[block];
+        pressure.assign((size_t)field.TotalSize(),0.0);
+        for (int cell : map.localCells) {
+            int i=0,j=0,k=0;
+            field.getIJK(cell,i,j,k);
+            pressure[(size_t)cell] = Boundary::pressureAt(field,i,j,k)
+                + config_.coupling.pressureRelaxation
+                    * workspace_->correction[block][(size_t)cell];
+            if (!std::isfinite(pressure[(size_t)cell])
+                || pressure[(size_t)cell] <= 0.0) {
+                throw std::runtime_error(
+                    "pressureBase produced non-positive pressure.");
+            }
+        }
+    }
+    workspace_->pressurePrepared = true;
+}
+
+void Corrector::correctVelocity() {
+    if (!workspace_ || !workspace_->solved
+        || workspace_->velocityCorrected) {
+        throw std::runtime_error(
+            "velocity correction requires one solved pressure correction.");
+    }
+    for (size_t block = 0; block < workspace_->fields.size(); ++block) {
+        Field& field = *workspace_->fields[block];
+        const RowMap& map = workspace_->maps.fields[block];
         const auto momentumIndex = momentum(field);
         const FDM::IInterfaceJumpCondition* jumpCondition =
             interfaceJumpProvider_ ? interfaceJumpProvider_(field) : nullptr;
@@ -396,16 +476,16 @@ CorrectionSummary Corrector::correct(
                 int ip=0,jp=0,kp=0,im=0,jm=0,km=0;
                 offset(axis,1,ip,jp,kp); offset(axis,-1,im,jm,km);
                 const auto coordinateMetric = metric(field,axis,i,j,k);
-                const double upper = correction[block]
+                const double upper = workspace_->correction[block]
                     [index(field,i+ip,j+jp,k+kp)];
-                const double lower = correction[block]
+                const double lower = workspace_->correction[block]
                     [index(field,i+im,j+jm,k+km)];
                 double knownJump = 0.0;
                 if (field.CellFlag(i+ip,j+jp,k+kp) == FLUID_CELL) {
                     const FaceCorrectionJump upperJump =
                         pressureCorrectionJump(
                             jumpCondition, field, i,j,k,axis,
-                            config_.workflow.pressureRelaxation);
+                            config_.coupling.pressureRelaxation);
                     if (upperJump.active) {
                         knownJump += upperJump.correctionRightMinusLeft;
                     }
@@ -415,7 +495,7 @@ CorrectionSummary Corrector::correct(
                         pressureCorrectionJump(
                             jumpCondition, field,
                             i+im,j+jm,k+km,axis,
-                            config_.workflow.pressureRelaxation);
+                            config_.coupling.pressureRelaxation);
                     if (lowerJump.active) {
                         knownJump += lowerJump.correctionRightMinusLeft;
                     }
@@ -428,22 +508,52 @@ CorrectionSummary Corrector::correct(
             }
             for (int component = 0; component < 3; ++component) {
                 field(i,j,k,momentumIndex[(size_t)component]) -=
-                    config_.workflow.momentumRelaxation*dt
+                    config_.coupling.momentumRelaxation*workspace_->dt
                     * gradient[(size_t)component];
             }
-            const double pressure = Boundary::pressureAt(field,i,j,k)
-                + config_.workflow.pressureRelaxation
-                    * correction[block][(size_t)cell];
-            if (!std::isfinite(pressure) || pressure <= 0.0) {
-                throw std::runtime_error(
-                    "pressureBase produced non-positive pressure.");
-            }
-            if (field.hasEquationSet()) {
+        }
+        for (int cell : map.localCells) {
+            int i=0,j=0,k=0; field.getIJK(cell,i,j,k);
+            workspace_->summary.maxDivergenceAfter=std::max(
+                workspace_->summary.maxDivergenceAfter,
+                std::abs(divergence(field,momentumIndex,i,j,k)));
+        }
+    }
+    workspace_->velocityCorrected = true;
+}
+
+void Corrector::correctFlux() {
+    if (!workspace_ || !workspace_->velocityCorrected
+        || !workspace_->pressurePrepared) {
+        throw std::runtime_error(
+            "flux correction requires corrected velocity.");
+    }
+    // This FDM path owns no persistent pressure face-flux field. Numerical
+    // face flux is reconstructed from the corrected cell state at the next
+    // spatial assembly, so correction means invalidating that derived view.
+    workspace_->fluxCorrected = true;
+}
+
+CorrectionSummary Corrector::commitPressureUpdate() {
+    if (!workspace_ || !workspace_->fluxCorrected) {
+        throw std::runtime_error(
+            "pressure-state commit requires completed velocity/flux correction.");
+    }
+    for (size_t block = 0; block < workspace_->fields.size(); ++block) {
+        Field& field = *workspace_->fields[block];
+        const RowMap& map = workspace_->maps.fields[block];
+        const auto momentumIndex = momentum(field);
+        for (int cell : map.localCells) {
+            int i=0,j=0,k=0;
+            field.getIJK(cell,i,j,k);
+            const double pressure = workspace_->targetPressure[block][(size_t)cell];
+            if (field.hasStateModel()) {
                 std::vector<double> state((size_t)field.NVar());
-                for (int variable=0; variable<field.NVar(); ++variable)
+                for (int variable=0; variable<field.NVar(); ++variable) {
                     state[(size_t)variable]=field(i,j,k,variable);
-                field(i,j,k,field.equationSet()->energyIndex()) =
-                    field.equationSet()->totalEnergyFromPressure(
+                }
+                field(i,j,k,field.stateModel()->energyIndex()) =
+                    field.stateModel()->totalEnergyFromPressure(
                         state.data(),field.NVar(),pressure);
             } else {
                 const double rho = density(field,i,j,k);
@@ -456,13 +566,10 @@ CorrectionSummary Corrector::correct(
                 field(i,j,k,E)=pressure/(idealGasGamma_-1.0)+kinetic;
             }
         }
-        for (int cell : map.localCells) {
-            int i=0,j=0,k=0; field.getIJK(cell,i,j,k);
-            summary.maxDivergenceAfter=std::max(
-                summary.maxDivergenceAfter,
-                std::abs(divergence(field,momentumIndex,i,j,k)));
-        }
+        field.invalidateThermodynamicCache();
     }
+    const CorrectionSummary summary = workspace_->summary;
+    workspace_.reset();
     return summary;
 }
 

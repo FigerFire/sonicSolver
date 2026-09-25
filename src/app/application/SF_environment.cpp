@@ -8,12 +8,23 @@
 #include "app/application/output/SF_fields.h"
 #include "SF_resultWriter.h"
 #include "app/application/model/SF_runtimeConfig.h"
-#include "app/application/system/SF_inspection.h"
+#include "app/application/SF_inspection.h"
 
 #include "core/interfaces/SF_log.h"
 
 #include <string>
 #include <vector>
+
+
+// CaseConfig + compiled inspection
+//         ↓
+// 创建 MPI / mesh / Field / IBM runtime
+//         ↓
+// 决定 execution domain
+//         ↓
+// 做 runtime-level validation
+//         ↓
+// 得到 ExecutionEnvironment
 
 namespace SF::Application::Environment {
 namespace {
@@ -36,6 +47,7 @@ bool resolveSingleFieldLayout(const MultiBlockMesh& mesh,
 bool build(ExecutionEnvironment& env,
            const CaseConfig& caseConfig,
            const CaseInspection& inspection,
+           const System::RuntimeRequirements& requirements,
            int& argc, char**& argv,
            ResultWriter& writer) {
     const FDM::SolverConfig& solverConfig = caseConfig.solver;
@@ -49,8 +61,7 @@ bool build(ExecutionEnvironment& env,
     // 而不是旧代码里 solver == PressureBased 这一身份判断。
     const bool needsDistributedContext =
         caseConfig.parallel.enabled
-        || solverConfig.numerics.solver
-               == FDM::SolverAlgorithm::PressureBased;
+        || System::requiresRuntimeService(requirements,"mpi.initialized");
 
     env.parallel = std::make_unique<Parallel::ParallelContext>(
         argc, argv, needsDistributedContext);
@@ -151,7 +162,7 @@ bool build(ExecutionEnvironment& env,
             || !singleFieldLayout;
         if (useMultiFieldMPI) {
             env.domain = DomainKind::DistributedMultiPatch;
-            // runMultiPatch 自行完成 empty-dimensions 与 setupLocalPatches；
+            // executeMulti 自行完成 empty-dimensions 与 setupLocalPatches；
             // 此处不执行 single-field 的 IBM collective 检查。
             return true;
         }
@@ -176,7 +187,7 @@ bool build(ExecutionEnvironment& env,
         env.parallel->configureSingle(
             &env.parallelMesh.haloExchangePlan(), env.localBlockId,
             &env.parallelMesh.blocks(), canonicalInterfaceFlux);
-        // 保守量尚未由 EquationSet 从用户初值闭合。初始 halo 必须等
+        // 保守量尚未由 FluidStateModel 从用户初值闭合。初始 halo 必须等
         // StateBundle 注册后由 ExecutionRuntime 的显式 ReadHalo contract
         // 触发；此处交换会把零初始化 payload 错当作 canonical 流场状态。
     } else {
@@ -212,7 +223,7 @@ bool build(ExecutionEnvironment& env,
 }
 
 bool validate(ExecutionEnvironment& env) {
-    // multi-patch runner 在 runMultiPatch 内部完成 setupLocalPatches 与错误
+    // multi-patch runner 在 executeMulti 内部完成 setupLocalPatches 与错误
     // 处理，此处只校验 single-field 路径的 IBM distributed precondition。
     if (env.domain == DomainKind::DistributedMultiPatch) {
         return true;
@@ -249,7 +260,11 @@ int buildMeshOnly(const CaseConfig& caseConfig,
                   int& argc, char**& argv,
                   ResultWriter& writer) {
     const MeshRuntimeConfig meshConfig =
-        Runtime::makeMeshRuntimeConfig(caseConfig, caseConfig.solver);
+        Runtime::makeMeshRuntimeConfig(
+            caseConfig,caseConfig.solver,
+            caseConfig.solver.numerics.recipes.convection
+                ? caseConfig.solver.numerics.recipes.convection->haloWidth()
+                : 0);
 
     Parallel::ParallelContext parallel(argc, argv, false);
     writer.setParallelCoordinator(&parallel.coordinator());

@@ -10,7 +10,8 @@
 ///
 /// 调用者提供 runtime synchronization；本文件不拥有 timestep 或 runner authority。
 
-#include "SF_interfaces.h"
+#include "core/interfaces/SF_equationCoupling.h"
+#include "core/interfaces/SF_executionRuntime.h"
 #include "core/state/SF_state.h"
 
 #include <memory>
@@ -28,10 +29,10 @@ void registerInterfaceState(
     State::VariableRegistry& registry);
 
 /// @brief 单 Field 的 OneFluid 界面方程生命周期适配器。
-class InterfaceEquationCoupling final
+class InterfaceEquationProvider final
     : public FDM::IEquationSystemCoupling {
 public:
-    InterfaceEquationCoupling(
+    InterfaceEquationProvider(
         Physics::InterfaceModels::Model& model,
         State::VariableRegistry& variables,
         FDM::IExecutionRuntime& runtime);
@@ -56,10 +57,10 @@ private:
 };
 
 /// @brief 多 patch OneFluid 界面方程生命周期和 canonical 标量同步。
-class MultiPatchInterfaceEquationCoupling final
+class MultiPatchInterfaceEquationProvider final
     : public FDM::IEquationSystemCoupling {
 public:
-    MultiPatchInterfaceEquationCoupling(
+    MultiPatchInterfaceEquationProvider(
         MultiBlockMesh& mesh,
         const std::vector<int>& localPatchIds,
         FDM::IExecutionRuntime& runtime,

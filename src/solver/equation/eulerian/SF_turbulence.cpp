@@ -21,7 +21,7 @@ void PhaseEquationAssembler::attachTurbulence(
             (void)equation;
             turbulenceSolvers_.push_back(
                 std::make_unique<LinearAlgebra::SolverSession>(
-                    config_.turbulence));
+                    config_.linear.turbulence));
         }
     }
 }

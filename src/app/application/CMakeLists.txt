@@ -1,20 +1,10 @@
 add_library(SF_caseAdapter STATIC
     model/SF_model.cpp
     model/SF_output.cpp
-    model/compatibility/SF_binding.cpp
+    model/SF_nativeBinding.cpp
     model/compatibility/SF_compatibility.cpp
-    model/compatibility/SF_controlReader.cpp
     model/compatibility/SF_documents.cpp
-    model/compatibility/SF_fieldReader.cpp
-    model/compatibility/SF_ibmReader.cpp
-    model/compatibility/SF_levelSetFieldReader.cpp
-    model/compatibility/SF_phaseChangeReader.cpp
-    model/compatibility/SF_sourceReader.cpp
-    model/compatibility/SF_thermoReader.cpp
-    model/compatibility/private/SF_eulerianPropertiesParser.cpp
-    model/compatibility/private/SF_phaseAssignmentParser.cpp
-    model/compatibility/private/SF_phaseDefinitionParser.cpp
-    model/compatibility/private/SF_phaseFieldModels.cpp
+    model/compatibility/SF_nativeDecode.cpp
     model/compatibility/private/SF_sourceParserUtils.cpp
  )
 target_include_directories(SF_caseAdapter PRIVATE
@@ -23,31 +13,29 @@ target_include_directories(SF_caseAdapter PRIVATE
     ${CMAKE_SOURCE_DIR}/src/infrastructure/mesh
     ${CMAKE_SOURCE_DIR}/src/infrastructure/mesh/createMesh
 )
-target_link_libraries(SF_caseAdapter PUBLIC SF_io SF_physics SF_solverConfig SF_timeDriver SF_resultWriter PRIVATE SF_param)
+target_link_libraries(SF_caseAdapter PUBLIC SF_io SF_physics SF_solverConfig SF_timeDriver SF_resultWriter)
 set_lib_output(SF_caseAdapter application)
 
 add_library(SF_application STATIC
     SF_application.cpp
+    SF_hostCapabilities.cpp
     SF_environment.cpp
-    SF_preflight.cpp
+    SF_inspection.cpp
     adapters/SF_ibmAdapters.cpp
     execution/SF_eulerian.cpp
-    execution/SF_executionBuilder.cpp
+    execution/SF_execution.cpp
+    execution/SF_flowLoop.cpp
     execution/SF_multiPatch.cpp
     execution/SF_singleFluid.cpp
     model/SF_runtimeConfig.cpp
     output/SF_fields.cpp
     output/SF_report.cpp
-    system/SF_inspection.cpp
-    run/SF_runFlow.cpp
-    run/SF_run.cpp
 )
 target_include_directories(SF_application PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}
     ${CMAKE_CURRENT_SOURCE_DIR}/adapters
     ${CMAKE_CURRENT_SOURCE_DIR}/execution
     ${CMAKE_CURRENT_SOURCE_DIR}/output
-    ${CMAKE_CURRENT_SOURCE_DIR}/run
 )
 target_link_libraries(SF_application PUBLIC
     SF_headers
@@ -69,5 +57,4 @@ target_link_libraries(SF_application PUBLIC
     SF_physics
     SF_turbulence
 )
-target_link_libraries(SF_application PRIVATE SF_param)
 set_lib_output(SF_application application)

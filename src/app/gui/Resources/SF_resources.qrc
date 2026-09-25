@@ -1,0 +1,46 @@
+<RCC>
+    <!--
+        普通 GUI 图标资源。
+        alias 是 C++ 里使用的稳定路径，工具栏图标使用短文件名。
+    -->
+    <qresource prefix="/sonic/icons">
+        <file alias="logo.png">icons/logo.png</file>
+        <file alias="set-directory.png">icons/setDirectory.png</file>
+        <file alias="geometry.png">icons/geo.png</file>
+        <file alias="mesh.png">icons/mesh.png</file>
+        <file alias="solver.png">icons/solver.png</file>
+        <file alias="turbulence.png">icons/turbulenCe.png</file>
+        <file alias="initial-condition.png">icons/initialCondition.png</file>
+        <file alias="boundary-condition.png">icons/boudaryCondition.png</file>
+        <file alias="ibm.png">icons/IBM.png</file>
+        <file alias="ilw.png">icons/ILW.png</file>
+        <file alias="mrf.png">icons/MRF.png</file>
+        <file alias="output.png">icons/output.png</file>
+        <file alias="parallel.png">icons/parallel.png</file>
+        <file alias="slice.png">icons/slice.png</file>
+        <file alias="surfaceView.png">icons/surfaceView.png</file>
+        <file alias="meshView.png">icons/meshView.png</file>
+        <file alias="perspective-on.png">icons/perspective-on.png</file>
+        <file alias="perspective-off.png">icons/perspective-off.png</file>
+        <file alias="play.png">icons/play.png</file>
+        <file alias="pause.png">icons/pause.png</file>
+        <file alias="previous.png">icons/previous.png</file>
+        <file alias="next.png">icons/next.png</file>
+        <file alias="first.png">icons/first.png</file>
+        <file alias="final.png">icons/final.png</file>
+        <file alias="vertex.png">icons/vertex.png</file>
+        <file alias="line.png">icons/line.png</file>
+        <file alias="arc.png">icons/arc.png</file>
+        <file alias="length.png">icons/length.png</file>
+        <file alias="angle.png">icons/angle.png</file>
+        <file alias="trim.png">icons/trim.png</file>
+        <file alias="extrude.png">icons/extrude.png</file>
+        <file alias="revolve.png">icons/revolve.png</file>
+        <file alias="pX.png">icons/pX.png</file>
+        <file alias="nX.png">icons/nX.png</file>
+        <file alias="pY.png">icons/pY.png</file>
+        <file alias="nY.png">icons/nY.png</file>
+        <file alias="pZ.png">icons/pZ.png</file>
+        <file alias="nZ.png">icons/nZ.png</file>
+    </qresource>
+</RCC>

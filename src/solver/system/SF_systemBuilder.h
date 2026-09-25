@@ -3,6 +3,7 @@
 /// @file SF_systemBuilder.h
 /// @brief 从冻结配置构造 ResolvedSimulationSystem。
 
+#include "SF_buildRequest.h"
 #include "SF_resolvedSimulationSystem.h"
 
 namespace SF::System {

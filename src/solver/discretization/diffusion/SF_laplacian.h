@@ -39,7 +39,7 @@ namespace CENTRAL2 {
 /// @param Pr Prandtl number.
 /// @param enabled Enables/disables viscous assembly without reading globals.
 /// @param transportModel 可选的有效粘度/湍流闭合接口。
-inline void laplacian(Field& field, Residual& residual, double mu, double Pr, bool enabled,
+inline void laplacian(Field& field, Residual& residual, double mu, double Pr,
                       double idealGasGamma,
                       double idealGasConstant,
                       const FDM::ITransportModel* transportModel = nullptr);
@@ -49,7 +49,7 @@ inline void laplacian(Field& field, Residual& residual, double mu, double Pr, bo
 /// @param mu     动力粘度
 /// @param Pr     普朗特数 (默认 0.72)
 inline void laplacian(Field& field, Residual& residual, double mu, double Pr = 0.72) {
-    laplacian(field, residual, mu, Pr, true, 1.4, 287.05);
+    laplacian(field, residual, mu, Pr, 1.4, 287.05);
 }
 
 /// @brief Assemble second-order central viscous flux divergence.
@@ -58,12 +58,10 @@ inline void laplacian(Field& field, Residual& residual, double mu, double Pr = 0
 /// @param Pr Prandtl number.
 /// @param enabled Enables/disables viscous assembly without reading globals.
 /// @param transportModel 可选的有效粘度/湍流闭合接口。
-inline void laplacian(Field& field, Residual& residual, double mu, double Pr, bool enabled,
+inline void laplacian(Field& field, Residual& residual, double mu, double Pr,
                       double idealGasGamma,
                       double idealGasConstant,
                       const FDM::ITransportModel* transportModel) {
-    if (!enabled) return;
-
     if (!Math::checkGhostDepth(field, 1, "CENTRAL2 viscous")) {
         std::exit(1);
     }
@@ -91,7 +89,7 @@ namespace CENTRAL4 {
 /// @param Pr Prandtl number.
 /// @param enabled Enables/disables viscous assembly without reading globals.
 /// @param transportModel 可选的有效粘度/湍流闭合接口。
-inline void laplacian(Field& field, Residual& residual, double mu, double Pr, bool enabled,
+inline void laplacian(Field& field, Residual& residual, double mu, double Pr,
                       double idealGasGamma,
                       double idealGasConstant,
                       const FDM::ITransportModel* transportModel = nullptr);
@@ -101,7 +99,7 @@ inline void laplacian(Field& field, Residual& residual, double mu, double Pr, bo
 /// @param mu     动力粘度
 /// @param Pr     普朗特数 (默认 0.72)
 inline void laplacian(Field& field, Residual& residual, double mu, double Pr = 0.72) {
-    laplacian(field, residual, mu, Pr, true, 1.4, 287.05);
+    laplacian(field, residual, mu, Pr, 1.4, 287.05);
 }
 
 /// @brief Assemble fourth-order central viscous flux divergence.
@@ -110,12 +108,10 @@ inline void laplacian(Field& field, Residual& residual, double mu, double Pr = 0
 /// @param Pr Prandtl number.
 /// @param enabled Enables/disables viscous assembly without reading globals.
 /// @param transportModel 可选的有效粘度/湍流闭合接口。
-inline void laplacian(Field& field, Residual& residual, double mu, double Pr, bool enabled,
+inline void laplacian(Field& field, Residual& residual, double mu, double Pr,
                       double idealGasGamma,
                       double idealGasConstant,
                       const FDM::ITransportModel* transportModel) {
-    if (!enabled) return;
-
     if (!Math::checkGhostDepth(field, 2, "CENTRAL4 viscous")) {
         std::exit(1);
     }
@@ -136,7 +132,6 @@ inline void laplacian(Field& field, Residual& residual, double mu, double Pr, bo
 inline void laplacianDispatch(
         Field& field, Residual& residual,
         FDM::ViscousScheme scheme,
-        bool enabled,
         double dynamicViscosity,
         double prandtl = 0.72,
         double idealGasGamma = 1.4,
@@ -144,12 +139,12 @@ inline void laplacianDispatch(
         const FDM::ITransportModel* transport = nullptr) {
     if (scheme == FDM::ViscousScheme::Central4) {
         CENTRAL4::laplacian(
-            field, residual, dynamicViscosity, prandtl, enabled,
+            field, residual, dynamicViscosity, prandtl,
             idealGasGamma, idealGasConstant, transport);
         return;
     }
     CENTRAL2::laplacian(
-        field, residual, dynamicViscosity, prandtl, enabled,
+        field, residual, dynamicViscosity, prandtl,
         idealGasGamma, idealGasConstant, transport);
 }
 

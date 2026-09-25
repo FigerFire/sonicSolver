@@ -53,7 +53,7 @@ inline void wenoDiv(Field& field, FluxField& fluxField, Residual& residual,
                     const char* schemeName,
                     int requiredGhost,
                     double gamma,
-                    const Physics::EquationSet::Model& thermodynamics,
+                    const Physics::FluidStateModel::Model& thermodynamics,
                     WenoCore&& wenoCore) {
     if (!Math::checkGhostDepth(field, requiredGhost, schemeName)) std::exit(1);
 
@@ -121,7 +121,7 @@ inline void div(Field& field, FluxField& fluxField, Residual& residual,
                 FDM::IBMBoundaryScheme ibmBoundary,
                 int requestedILWOrder,
                 double gamma,
-                const Physics::EquationSet::Model& thermodynamics) {
+                const Physics::FluidStateModel::Model& thermodynamics) {
     DivDetail::wenoDiv<4>(field, fluxField, residual, fluxMethod, dt, ibmBoundary,
                           requestedILWOrder, "WENO3",
                           Math::minGhostWENO3, gamma, thermodynamics,
@@ -146,7 +146,7 @@ inline void div(Field& field, FluxField& fluxField, Residual& residual,
                 FDM::IBMBoundaryScheme ibmBoundary,
                 int requestedILWOrder,
                 double gamma,
-                const Physics::EquationSet::Model& thermodynamics) {
+                const Physics::FluidStateModel::Model& thermodynamics) {
     DivDetail::wenoDiv<6>(field, fluxField, residual, fluxMethod, dt, ibmBoundary,
                           requestedILWOrder, "WENO5",
                           Math::minGhostWENO5, gamma, thermodynamics,
@@ -171,7 +171,7 @@ inline void div(Field& field, FluxField& fluxField, Residual& residual,
                 FDM::IBMBoundaryScheme ibmBoundary,
                 int requestedILWOrder,
                 double gamma,
-                const Physics::EquationSet::Model& thermodynamics) {
+                const Physics::FluidStateModel::Model& thermodynamics) {
     DivDetail::wenoDiv<6>(field, fluxField, residual, fluxMethod, dt, ibmBoundary,
                           requestedILWOrder, "TENO5",
                           Math::minGhostWENO5, gamma, thermodynamics,
@@ -196,7 +196,7 @@ inline void div(Field& field, FluxField& fluxField, Residual& residual,
                 FDM::IBMBoundaryScheme ibmBoundary,
                 int requestedILWOrder,
                 double gamma,
-                const Physics::EquationSet::Model& thermodynamics) {
+                const Physics::FluidStateModel::Model& thermodynamics) {
     DivDetail::wenoDiv<8>(field, fluxField, residual, fluxMethod, dt, ibmBoundary,
                           requestedILWOrder, "WENO7",
                           Math::minGhostWENO7, gamma, thermodynamics,
@@ -214,7 +214,7 @@ inline void divDispatch(
         FDM::IBMBoundaryScheme ibmBoundary,
         int ilwOrder,
         double idealGasGamma,
-        const Physics::EquationSet::Model& thermodynamics) {
+        const Physics::FluidStateModel::Model& thermodynamics) {
     switch (scheme) {
         case FDM::ConvectionScheme::WENO3:
             WENO3::div(field, fluxField, residual, flux, timeStep, ibmBoundary,

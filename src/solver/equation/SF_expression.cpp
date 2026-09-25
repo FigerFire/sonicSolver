@@ -1,7 +1,7 @@
 /// @file SF_expression.cpp
 /// @brief 强类型方程项表达式的存储、校验与遍历实现。
 
-#include "solver/equation/SF_expression.h"
+#include "core/system/SF_expression.h"
 
 #include <algorithm>
 

@@ -3,7 +3,7 @@
 
 #include "solver/algorithm/pressureBased/SF_kkt.h"
 
-#include "SF_equationSet.h"
+#include "SF_fluidStateModel.h"
 #include "SF_immersedSystem.h"
 #include "SF_thermodynamicClosure.h"
 #include "constraint/variational/SF_constraintBlock.h"
@@ -29,15 +29,15 @@ bool unknown(const Field& field, int i, int j, int k) {
         && !field.isSolverBoundaryPoint(i,j,k);
 }
 std::array<int,3> momentum(const Field& field) {
-    if (field.hasEquationSet()) return {
-        field.equationSet()->momentumIndex(0),
-        field.equationSet()->momentumIndex(1),
-        field.equationSet()->momentumIndex(2)};
+    if (field.hasStateModel()) return {
+        field.stateModel()->momentumIndex(0),
+        field.stateModel()->momentumIndex(1),
+        field.stateModel()->momentumIndex(2)};
     return {RU,RV,RW};
 }
 double density(const Field& field, int i, int j, int k) {
-    const int count=field.hasEquationSet()
-        ?field.equationSet()->densityVariableCount():1;
+    const int count=field.hasStateModel()
+        ?field.stateModel()->densityVariableCount():1;
     double result=0.0;
     for (int variable=0; variable<count; ++variable)
         result+=field(i,j,k,variable);
@@ -115,7 +115,7 @@ void MonolithicKKT::prepareLinearSystem(
         0,static_cast<std::int64_t>(dofs.size())-1,
         static_cast<std::int64_t>(dofs.size()),entries);
     linearSystem_=std::make_unique<LinearAlgebra::DistributedLinearSystem>(
-        config_.workflow.pressure,*numbering_);
+        config_.linear.pressure,*numbering_);
     numberedDofs_=dofs;
 }
 
@@ -124,12 +124,12 @@ KKTCorrectionSummary MonolithicKKT::correct(
         FDM::IImmersedConstraint& constraint) {
     if(!std::isfinite(dt)||dt<=0.0)
         throw std::runtime_error("surface KKT requires positive finite dt.");
-    if(config_.workflow.pressure.method!=FDM::KrylovMethod::FlexGMRES)
+    if(config_.linear.pressure.method!=FDM::KrylovMethod::FlexGMRES)
         throw std::runtime_error(
             "surface KKT is nonsymmetric and requires pressure solver "
             "flexGMRES in system/solverProperties.");
-    if(config_.workflow.momentumRelaxation!=1.0
-        ||config_.workflow.pressureRelaxation!=1.0)
+    if(config_.coupling.momentumRelaxation!=1.0
+        ||config_.coupling.pressureRelaxation!=1.0)
         throw std::runtime_error(
             "surface KKT requires momentumRelaxation=1 and "
             "pressureRelaxation=1 so the solved constraints are not altered.");
@@ -177,8 +177,8 @@ KKTCorrectionSummary MonolithicKKT::correct(
     };
 
     const int n=(int)cells.size();
-    if(config_.workflow.referenceCell<0
-       ||config_.workflow.referenceCell>=n)
+    if(config_.reference.referenceCell<0
+       ||config_.reference.referenceCell>=n)
         throw std::runtime_error(
             "surface KKT referenceCell is outside the pressure block.");
     const int markers=(int)surface.points.size();
@@ -313,7 +313,7 @@ KKTCorrectionSummary MonolithicKKT::correct(
         LinearAlgebra::GlobalDofRow equation(
             layout.pressure(row));
         int i=0,j=0,k=0;field.getIJK(cells[(size_t)row],i,j,k);
-        if(row==config_.workflow.referenceCell){
+        if(row==config_.reference.referenceCell){
             add(equation,layout.pressure(row),1.0);
             equation.setRightHandSide(0.0);
         }else{
@@ -323,7 +323,7 @@ KKTCorrectionSummary MonolithicKKT::correct(
                     velocityComponents[(size_t)(item.index%vectorCount)]),
                     cellVolume[(size_t)row]*item.value);
             }
-            const double soundSquared=field.hasEquationSet()
+            const double soundSquared=field.hasStateModel()
                 ?std::pow(field.thermodynamicState(i,j,k).soundSpeed,2)
                 :idealGasGamma_*Boundary::pressureAt(field,i,j,k)
                     /rho[(size_t)row];
@@ -445,12 +445,12 @@ KKTCorrectionSummary MonolithicKKT::correct(
             +solution.solution[layout.pressureSlot(cell)];
         if(!std::isfinite(pressure)||pressure<=0.0)
             throw std::runtime_error("surface KKT produced non-positive pressure.");
-        if(field.hasEquationSet()){
+        if(field.hasStateModel()){
             std::vector<double> state((size_t)field.NVar());
             for(int variable=0;variable<field.NVar();++variable)
                 state[(size_t)variable]=field(i,j,k,variable);
-            field(i,j,k,field.equationSet()->energyIndex())=
-                field.equationSet()->totalEnergyFromPressure(
+            field(i,j,k,field.stateModel()->energyIndex())=
+                field.stateModel()->totalEnergyFromPressure(
                     state.data(),field.NVar(),pressure);
         }else{
             const double kinetic=0.5*rho[(size_t)cell]*dot(corrected,corrected);

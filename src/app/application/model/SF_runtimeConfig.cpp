@@ -60,16 +60,18 @@ void appendMultiPhaseSetNames(
 
 MeshRuntimeConfig makeMeshRuntimeConfig(
         const CaseConfig& caseConfig,
-        const FDM::SolverConfig& solverConfig) {
+        const FDM::SolverConfig& solverConfig,
+        int requiredTermHaloWidth) {
     MeshRuntimeConfig config;
     config.initialConditions = solverConfig.initial;
     config.idealGasGamma = solverConfig.numerics.idealGasGamma;
     config.idealGasConstant = solverConfig.numerics.idealGasConstant;
-    config.convectionScheme = FDM::toString(
-        solverConfig.numerics.convection);
+    config.convectionScheme = solverConfig.numerics.recipes.convection
+        ? FDM::toString(solverConfig.numerics.recipes.convection->id())
+        : "unbound";
     config.ilwOrder = solverConfig.numerics.ilwOrder;
     config.requiredGhostLayers = std::max(
-        FDM::requiredGhostLayersForConvection(config.convectionScheme),
+        requiredTermHaloWidth,
         FDM::requiredGhostLayersForILW(config.ilwOrder));
     config.parallelEnabled = caseConfig.parallel.enabled;
     config.parallelProcessCount = caseConfig.parallel.processCount;
@@ -123,12 +125,12 @@ MeshRuntimeConfig makeMeshRuntimeConfig(
 }
 
 IBM::IBMRuntimeConfig makeIBMRuntimeConfig(
-        const FDM::SolverConfig& solverConfig) {
+        const FDM::SolverConfig& solverConfig,
+        int requiredTermHaloWidth) {
     IBM::IBMRuntimeConfig config;
     config.enabled = solverConfig.ibm.enabled;
     config.requiredGhostLayers = std::max(
-        FDM::requiredGhostLayersForConvection(
-            FDM::toString(solverConfig.numerics.convection)),
+        requiredTermHaloWidth,
         FDM::requiredGhostLayersForILW(solverConfig.numerics.ilwOrder));
     config.ilwEnabled =
         solverConfig.numerics.ibmBoundary == FDM::IBMBoundaryScheme::ILW;

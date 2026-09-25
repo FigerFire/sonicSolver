@@ -5,10 +5,12 @@
 
 #include "SF_config.h"
 #include "SF_field.h"
-#include "SF_interfaces.h"
+#include "core/interfaces/SF_executionRuntime.h"
+#include "core/interfaces/SF_equationCoupling.h"
 #include "solver/linearAlgebra/SF_linearAlgebra.h"
 
 #include <functional>
+#include <memory>
 
 namespace SF::PressureBased {
 
@@ -36,6 +38,7 @@ public:
     Corrector(FDM::BoundaryConfig boundaries,
               FDM::PressureCorrectionConfig config,
               double idealGasGamma);
+    ~Corrector();
 
     void setExecutionRuntime(FDM::IExecutionRuntime* runtime) {
         runtime_ = runtime;
@@ -47,6 +50,14 @@ public:
     /// @brief 求解压力修正并同步更新压力、动量和总能量。
     CorrectionSummary correct(Field& field, double dt);
     CorrectionSummary correct(const std::vector<Field*>& fields, double dt);
+
+    /// @brief Typed operations used by the structured PISO plan.
+    void assemble(const std::vector<Field*>& fields, double dt);
+    void solve();
+    void preparePressureUpdate();
+    void correctVelocity();
+    void correctFlux();
+    CorrectionSummary commitPressureUpdate();
     const LinearAlgebra::ReuseStatistics& reuseStatistics() const {
         return linearSolver_.statistics();
     }
@@ -58,6 +69,8 @@ private:
     LinearAlgebra::SolverSession linearSolver_;
     FDM::IExecutionRuntime* runtime_ = nullptr;
     InterfaceJumpProvider interfaceJumpProvider_;
+    struct Workspace;
+    std::unique_ptr<Workspace> workspace_;
 };
 
 } // namespace SF::PressureBased

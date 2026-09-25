@@ -20,7 +20,7 @@ class PhaseEquationAssembler {
 public:
     PhaseEquationAssembler(
         Physics::PhaseSystems::PhaseSystem& system,
-        const FDM::SolverPropertiesConfig& config,
+        const FDM::PressureCorrectionConfig& config,
         PhaseSolverWorkspace& workspace);
 
     void setExecutionRuntime(FDM::IExecutionRuntime* runtime) {
@@ -60,7 +60,7 @@ public:
 
 private:
     Physics::PhaseSystems::PhaseSystem& system_;
-    const FDM::SolverPropertiesConfig& config_;
+    const FDM::PressureCorrectionConfig& config_;
     PhaseSolverWorkspace& workspace_;
     LinearAlgebra::DistributedRowMap rowMap_;
     std::vector<std::unique_ptr<LinearAlgebra::SolverSession>>

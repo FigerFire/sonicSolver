@@ -19,7 +19,7 @@
 
 namespace SF::Equation::Coupling {
 
-void registerLegacyState(
+void registerMixtureState(
         Physics::Multiphase::MultiPhaseModel& model,
         const Field& field,
         std::vector<double>& phaseMassRHS,
@@ -60,33 +60,33 @@ void registerLegacyState(
     }
 }
 
-void CoupledTransportModel::setTurbulence(FDM::ITransportModel* model) {
+void CompositeTransportProvider::setTurbulence(FDM::ITransportModel* model) {
     turbulence_ = model;
 }
 
-void CoupledTransportModel::setMultiPhase(
+void CompositeTransportProvider::setMultiPhase(
         Physics::Multiphase::MultiPhaseModel* model) {
     multiPhase_ = model;
 }
 
-void CoupledTransportModel::setInterfaceModel(FDM::ITransportModel* model) {
+void CompositeTransportProvider::setInterfaceModel(FDM::ITransportModel* model) {
     interfaceModel_ = model;
 }
 
-bool CoupledTransportModel::active() const {
+bool CompositeTransportProvider::active() const {
     return turbulence_ != nullptr || multiPhase_ != nullptr
         || interfaceModel_ != nullptr;
 }
 
-void CoupledTransportModel::applyBoundary(const Field& field) {
+void CompositeTransportProvider::applyBoundary(const Field& field) {
     if (turbulence_) turbulence_->applyBoundary(field);
 }
 
-void CoupledTransportModel::correct(const Field& field, double dt) {
+void CompositeTransportProvider::correct(const Field& field, double dt) {
     if (turbulence_) turbulence_->correct(field, dt);
 }
 
-double CoupledTransportModel::dynamicViscosity(
+double CompositeTransportProvider::dynamicViscosity(
         const Field& field, int i, int j, int k,
         double laminarMu) const {
     double mu = laminarMu;
@@ -116,7 +116,7 @@ void appendUnique(std::vector<std::string>& destination,
 } // namespace
 
 std::vector<std::string>
-CoupledTransportModel::distributedReadFields() const {
+CompositeTransportProvider::distributedReadFields() const {
     std::vector<std::string> result;
     if (turbulence_) appendUnique(
         result, turbulence_->distributedReadFields());
@@ -126,7 +126,7 @@ CoupledTransportModel::distributedReadFields() const {
 }
 
 std::vector<std::string>
-CoupledTransportModel::distributedWriteFields() const {
+CompositeTransportProvider::distributedWriteFields() const {
     std::vector<std::string> result;
     if (turbulence_) appendUnique(
         result, turbulence_->distributedWriteFields());
@@ -135,7 +135,7 @@ CoupledTransportModel::distributedWriteFields() const {
     return result;
 }
 
-int CoupledTransportModel::distributedHaloDepth() const {
+int CompositeTransportProvider::distributedHaloDepth() const {
     int depth = 0;
     if (turbulence_) depth = std::max(
         depth, turbulence_->distributedHaloDepth());
@@ -144,27 +144,27 @@ int CoupledTransportModel::distributedHaloDepth() const {
     return depth;
 }
 
-HomogeneousPhaseChangeCoupling::HomogeneousPhaseChangeCoupling(
-        Physics::EquationSet::HomogeneousPhaseChange& model)
+HomogeneousPhaseChangeProvider::HomogeneousPhaseChangeProvider(
+        Physics::FluidStateModel::HomogeneousPhaseChange& model)
     : model_(model) {}
 
-void HomogeneousPhaseChangeCoupling::assembleRHS(
+void HomogeneousPhaseChangeProvider::assembleRHS(
         Field& field, Residual& residual, double dt) {
     model_.assemble(field, residual, dt);
 }
 
-void HomogeneousPhaseChangeCoupling::commitStep(Field&, double) {
+void HomogeneousPhaseChangeProvider::commitStep(Field&, double) {
     Physics::PhaseChange::reportDiagnostics(model_.diagnostics());
 }
 
-LegacyMultiphaseEquationCoupling::LegacyMultiphaseEquationCoupling(
+MixtureEquationProvider::MixtureEquationProvider(
         Physics::Multiphase::MultiPhaseModel& model,
         std::vector<double>& rhs,
         State::VariableRegistry& variables,
         FDM::IExecutionRuntime& runtime)
     : model_(model), rhs_(rhs), variables_(variables), runtime_(runtime) {}
 
-void LegacyMultiphaseEquationCoupling::beginStep(Field& field, double dt) {
+void MixtureEquationProvider::beginStep(Field& field, double dt) {
     if (!model_.isMixture()) {
         model_.advance(field, dt);
         std::vector<Execution::FieldAccess> writes;
@@ -172,25 +172,25 @@ void LegacyMultiphaseEquationCoupling::beginStep(Field& field, double dt) {
             writes.push_back(Execution::writeOwned(variable.descriptor.name));
         }
         if (!writes.empty()) {
-            runtime_.finalize({"legacy multiphase begin-step update", writes});
+            runtime_.finalize({"multiphase mixture begin-step update", writes});
         }
     }
 }
 
-void LegacyMultiphaseEquationCoupling::prepareRHS(Field& field, double) {
+void MixtureEquationProvider::prepareRHS(Field& field, double) {
     model_.applyAuxiliaryBoundaryConditions(field);
     std::vector<Execution::FieldAccess> reads;
     for (const auto& variable : variables_.variables()) {
         reads.push_back(Execution::readHalo(variable.descriptor.name, 1));
     }
     if (!reads.empty()) {
-        runtime_.prepare({"legacy multiphase auxiliary stencil", reads});
+        runtime_.prepare({"multiphase mixture auxiliary stencil", reads});
     }
     model_.applyAuxiliaryBoundaryConditions(field);
     model_.updateFlowCoupling(field);
 }
 
-void LegacyMultiphaseEquationCoupling::assembleRHS(
+void MixtureEquationProvider::assembleRHS(
         Field& field, Residual& residual, double dt) {
     if (model_.isMixture()) {
         model_.assembleIntegratedRHS(field, residual, rhs_, dt);
@@ -199,41 +199,41 @@ void LegacyMultiphaseEquationCoupling::assembleRHS(
     }
 }
 
-void LegacyMultiphaseEquationCoupling::commitStep(Field& field, double) {
+void MixtureEquationProvider::commitStep(Field& field, double) {
     model_.commitTimeLevel(field);
     std::vector<Execution::FieldAccess> writes;
     for (const auto& variable : variables_.variables()) {
         writes.push_back(Execution::writeOwned(variable.descriptor.name));
     }
     if (!writes.empty()) {
-        runtime_.finalize({"legacy multiphase committed state", writes});
+        runtime_.finalize({"multiphase mixture committed state", writes});
         std::vector<Execution::FieldAccess> reads;
         for (const auto& variable : variables_.variables()) {
             reads.push_back(Execution::readHalo(variable.descriptor.name, 1));
         }
-        runtime_.prepare({"legacy multiphase committed halo", reads});
+        runtime_.prepare({"multiphase mixture committed halo", reads});
     }
     model_.applyAuxiliaryBoundaryConditions(field);
     model_.updateFlowCoupling(field);
 }
 
-State::VariableRegistry* LegacyMultiphaseEquationCoupling::variables(Field&) {
+State::VariableRegistry* MixtureEquationProvider::variables(Field&) {
     return variables_.empty() ? nullptr : &variables_;
 }
 
-MultiPatchLegacyEquationCoupling::MultiPatchLegacyEquationCoupling(
+MultiPatchMixtureEquationProvider::MultiPatchMixtureEquationProvider(
         MultiBlockMesh& mesh,
         const std::vector<int>& localPatchIds,
         FDM::IExecutionRuntime& runtime,
         std::vector<Physics::Multiphase::MultiPhaseModel>& models,
         std::vector<std::vector<double>>& rhs,
         std::vector<State::VariableRegistry>& variables,
-        std::vector<CoupledTransportModel>& transports)
+        std::vector<CompositeTransportProvider>& transports)
     : mesh_(mesh), localPatchIds_(localPatchIds), runtime_(runtime)
     , models_(models), rhs_(rhs), variables_(variables)
     , transports_(transports) {}
 
-void MultiPatchLegacyEquationCoupling::beginStep(
+void MultiPatchMixtureEquationProvider::beginStep(
         const std::vector<Field*>&, double dt) {
     bool modified = false;
     for (int patchId : localPatchIds_) {
@@ -257,18 +257,18 @@ void MultiPatchLegacyEquationCoupling::beginStep(
         }
     }
     if (modified && !writes.empty()) {
-        runtime_.finalize({"multi-patch legacy begin-step update", writes});
+        runtime_.finalize({"multi-patch mixture begin-step update", writes});
     }
 }
 
-void MultiPatchLegacyEquationCoupling::prepareRHS(
+void MultiPatchMixtureEquationProvider::prepareRHS(
         const std::vector<Field*>&, double) {
     for (int patchId : localPatchIds_) {
         models_.at((size_t)patchId).applyAuxiliaryBoundaryConditions(
             mesh_.block((size_t)patchId).field);
     }
     const auto halo = auxiliaryHaloContract(
-        "multi-patch legacy auxiliary stencil");
+        "multi-patch mixture auxiliary stencil");
     if (!halo.accesses.empty()) runtime_.prepare(halo);
     for (int patchId : localPatchIds_) {
         auto& model = models_.at((size_t)patchId);
@@ -278,7 +278,7 @@ void MultiPatchLegacyEquationCoupling::prepareRHS(
     }
 }
 
-void MultiPatchLegacyEquationCoupling::assembleRHS(
+void MultiPatchMixtureEquationProvider::assembleRHS(
         const std::vector<Field*>& fields,
         const std::vector<Residual*>& residuals, double dt) {
     if (fields.size() != residuals.size()) {
@@ -301,7 +301,7 @@ void MultiPatchLegacyEquationCoupling::assembleRHS(
     }
 }
 
-void MultiPatchLegacyEquationCoupling::commitStep(
+void MultiPatchMixtureEquationProvider::commitStep(
         const std::vector<Field*>&, double) {
     for (int patchId : localPatchIds_) {
         models_.at((size_t)patchId).commitTimeLevel(
@@ -312,9 +312,9 @@ void MultiPatchLegacyEquationCoupling::commitStep(
         writes.push_back(Execution::writeOwned(access.field));
     }
     if (!writes.empty()) {
-        runtime_.finalize({"multi-patch legacy committed state", writes});
+        runtime_.finalize({"multi-patch mixture committed state", writes});
         runtime_.prepare(auxiliaryHaloContract(
-            "multi-patch legacy committed halo"));
+            "multi-patch mixture committed halo"));
     }
     for (int patchId : localPatchIds_) {
         auto& model = models_.at((size_t)patchId);
@@ -324,19 +324,19 @@ void MultiPatchLegacyEquationCoupling::commitStep(
     }
 }
 
-State::VariableRegistry* MultiPatchLegacyEquationCoupling::variables(
+State::VariableRegistry* MultiPatchMixtureEquationProvider::variables(
         Field& field) {
     auto& registry = variables_.at(findPatch(field));
     return registry.empty() ? nullptr : &registry;
 }
 
-const FDM::ITransportModel* MultiPatchLegacyEquationCoupling::transportModel(
+const FDM::ITransportModel* MultiPatchMixtureEquationProvider::transportModel(
         const Field& field) const {
     return &transports_.at(findPatch(field));
 }
 
 Execution::OperatorContract
-MultiPatchLegacyEquationCoupling::auxiliaryHaloContract(
+MultiPatchMixtureEquationProvider::auxiliaryHaloContract(
         const char* operation) const {
     Execution::OperatorContract contract;
     contract.name = operation;
@@ -357,7 +357,7 @@ MultiPatchLegacyEquationCoupling::auxiliaryHaloContract(
     return contract;
 }
 
-size_t MultiPatchLegacyEquationCoupling::findPatch(
+size_t MultiPatchMixtureEquationProvider::findPatch(
         const Field& field) const {
     for (size_t patchId = 0; patchId < mesh_.size(); ++patchId) {
         if (&mesh_.block(patchId).field == &field) return patchId;

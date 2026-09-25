@@ -10,24 +10,26 @@
 ///
 /// 调用者是 execution composition；本文件不拥有 timestep loop 或 runner selection。
 
-#include "SF_interfaces.h"
+#include "core/interfaces/SF_equationCoupling.h"
+#include "core/interfaces/SF_executionRuntime.h"
+#include "core/interfaces/SF_transportModel.h"
 #include "core/state/SF_state.h"
 
 #include <vector>
 
 namespace SF {
 class MultiBlockMesh;
-namespace Physics::EquationSet { class HomogeneousPhaseChange; }
+namespace Physics::FluidStateModel { class HomogeneousPhaseChange; }
 namespace Physics::Multiphase { class MultiPhaseModel; }
 namespace Equation::Coupling {
 
-void registerLegacyState(
+void registerMixtureState(
     Physics::Multiphase::MultiPhaseModel& model,
     const Field& field,
     std::vector<double>& phaseMassRHS,
     State::VariableRegistry& registry);
 
-class CoupledTransportModel final : public FDM::ITransportModel {
+class CompositeTransportProvider final : public FDM::ITransportModel {
 public:
     void setTurbulence(FDM::ITransportModel* model);
     void setMultiPhase(Physics::Multiphase::MultiPhaseModel* model);
@@ -47,21 +49,21 @@ private:
     FDM::ITransportModel* interfaceModel_ = nullptr;
 };
 
-class HomogeneousPhaseChangeCoupling final
+class HomogeneousPhaseChangeProvider final
     : public FDM::IEquationSystemCoupling {
 public:
-    explicit HomogeneousPhaseChangeCoupling(
-        Physics::EquationSet::HomogeneousPhaseChange& model);
+    explicit HomogeneousPhaseChangeProvider(
+        Physics::FluidStateModel::HomogeneousPhaseChange& model);
     void assembleRHS(Field& field, Residual& residual, double dt) override;
     void commitStep(Field&, double) override;
 private:
-    Physics::EquationSet::HomogeneousPhaseChange& model_;
+    Physics::FluidStateModel::HomogeneousPhaseChange& model_;
 };
 
-class LegacyMultiphaseEquationCoupling final
+class MixtureEquationProvider final
     : public FDM::IEquationSystemCoupling {
 public:
-    LegacyMultiphaseEquationCoupling(
+    MixtureEquationProvider(
         Physics::Multiphase::MultiPhaseModel& model,
         std::vector<double>& rhs,
         State::VariableRegistry& variables,
@@ -78,17 +80,17 @@ private:
     FDM::IExecutionRuntime& runtime_;
 };
 
-class MultiPatchLegacyEquationCoupling final
+class MultiPatchMixtureEquationProvider final
     : public FDM::IEquationSystemCoupling {
 public:
-    MultiPatchLegacyEquationCoupling(
+    MultiPatchMixtureEquationProvider(
         MultiBlockMesh& mesh,
         const std::vector<int>& localPatchIds,
         FDM::IExecutionRuntime& runtime,
         std::vector<Physics::Multiphase::MultiPhaseModel>& models,
         std::vector<std::vector<double>>& rhs,
         std::vector<State::VariableRegistry>& variables,
-        std::vector<CoupledTransportModel>& transports);
+        std::vector<CompositeTransportProvider>& transports);
     void beginStep(const std::vector<Field*>& fields, double dt) override;
     void prepareRHS(const std::vector<Field*>& fields, double dt) override;
     void assembleRHS(const std::vector<Field*>& fields,
@@ -107,7 +109,7 @@ private:
     std::vector<Physics::Multiphase::MultiPhaseModel>& models_;
     std::vector<std::vector<double>>& rhs_;
     std::vector<State::VariableRegistry>& variables_;
-    std::vector<CoupledTransportModel>& transports_;
+    std::vector<CompositeTransportProvider>& transports_;
 };
 
 } // namespace Equation::Coupling

@@ -36,7 +36,7 @@ inline double deltaT(const Field& field, double cfl, double gamma = 1.4) {
         double rv  = field(i, j, k, RV);
         double rw  = field(i, j, k, RW);
 
-        double p = field.hasEquationSet()
+        double p = field.hasStateModel()
             ? Numerics::requirePhysicalState("deltaT", field, i, j, k)
             : Numerics::requirePhysicalState(
                 "deltaT", rho, ru, rv, rw,

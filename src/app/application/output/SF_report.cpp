@@ -22,9 +22,10 @@ namespace SF::Application::Report {
 
 std::string multiPhaseSummary(
         const Physics::Multiphase::MultiPhaseConfig& config,
-        FDM::SolverAlgorithm solver) {
+        const std::string& flowLabel) {
     std::ostringstream os;
-    os << config.type << ", solver=" << FDM::toString(solver);
+    os << config.type;
+    if (!flowLabel.empty()) os << ", flow=" << flowLabel;
     if (!config.conservativeLayout.variables.empty()) {
         os << ", conserved=[";
         for (size_t i = 0; i < config.conservativeLayout.variables.size(); ++i) {
@@ -51,18 +52,21 @@ void broadcastSolverConfig(
         const FDM::SolverConfig& config,
         bool eulerianEulerian) {
     if (logFromThisProcess()) std::cout << std::endl;
-    broadcast("Solver             : ", FDM::toString(config.numerics.solver));
-    if (config.numerics.solver == FDM::SolverAlgorithm::PressureBased) {
-        const auto& pressure = config.pressure.workflow.pressure;
+    broadcast("Flow formulation   : ",
+              std::string("equations + coupling preset")
+                  + (eulerianEulerian ? " (Eulerian shared pressure)"
+                                      : ""));
+    {
+        const auto& pressure = config.pressure.linear.pressure;
         broadcast("Coupling algorithm : ",
-                  FDM::toString(config.pressure.workflow.algorithm));
+                  FDM::toString(config.pressure.coupling.preset));
         broadcast("Pressure solve     : ",
                   "HYPRE maxIter=" + std::to_string(pressure.maxIterations)
                   + ", relTol=" + formatTimeValue(pressure.relativeTolerance)
                   + ", pRelax=" + formatTimeValue(
-                      config.pressure.workflow.pressureRelaxation)
+                      config.pressure.coupling.pressureRelaxation)
                   + ", uRelax=" + formatTimeValue(
-                      config.pressure.workflow.momentumRelaxation));
+                      config.pressure.coupling.momentumRelaxation));
     }
     broadcast("CFL number       : ", config.numerics.cfl);
     broadcast("Maximum deltaT   : ", config.numerics.maxDeltaT);
@@ -70,19 +74,19 @@ void broadcastSolverConfig(
     broadcast("Formulation      : ", FDM::toString(config.numerics.formulation));
     if (eulerianEulerian) {
         broadcast("Phase convection   : ",
-                  FDM::toString(config.pressure.workflow.phaseConvection));
+                  FDM::toString(config.pressure.phaseTransport.convection));
         broadcast("Phase source CFL   : ",
-                  config.pressure.workflow.phaseSourceCfl);
+                  config.pressure.phaseTransport.sourceCfl);
         broadcast("Time scheme       : ", "implicitEuler");
     } else {
-        broadcast("Convection scheme : ",
-                  FDM::toString(config.numerics.convection));
-        broadcast("Reconstruction   : ",
-                  FDM::toString(config.numerics.reconstruction));
-        broadcast("Flux method       : ", FDM::toString(config.numerics.flux));
+        broadcast("Convection recipe : ",
+                  config.numerics.recipes.convection
+                    ? FDM::toString(config.numerics.recipes.convection->id())
+                    : "unbound");
         broadcast("Interface flux    : ",
                   FDM::toString(config.numerics.interfaceFlux));
-        broadcast("Time scheme       : ", FDM::toString(config.numerics.time));
+        broadcast("Time recipe       : ",
+                  FDM::toString(config.numerics.timeRecipe.id()));
     }
     if (config.ibm.enabled
         && config.ibm.method == FDM::IBMMethod::Ghost) {
@@ -92,7 +96,10 @@ void broadcastSolverConfig(
         broadcast("IBM WENO closure  : ", "not-applicable (forcing IBM)");
     }
     broadcast("ILW order         : ", config.numerics.ilwOrder);
-    broadcast("Viscous order     : ", FDM::toString(config.numerics.viscous));
+    broadcast("Diffusion recipe  : ",
+              config.numerics.recipes.diffusion
+                ? FDM::toString(config.numerics.recipes.diffusion->id())
+                : "not selected");
     broadcast("Source terms      : ", FDM::toString(config.sources.enabled));
     if (config.turbulence.enabled) {
         broadcast("Turbulence family : ",

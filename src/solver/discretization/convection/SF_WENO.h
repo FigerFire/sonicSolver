@@ -39,7 +39,7 @@ inline void storeLowOrderFaceFlux(
         Math::Dir direction,
         LowOrderFlux::Method method,
         double gamma,
-        const Physics::EquationSet::Model& thermodynamics) {
+        const Physics::FluidStateModel::Model& thermodynamics) {
     if (method != LowOrderFlux::Method::FirstOrderRusanov) {
         LowOrderFlux::storeFaceFlux(
             fluxField, field, i, j, k, direction, method, gamma);
@@ -263,7 +263,7 @@ inline void computeDirectionalFlux(Field& field, FluxField& fluxField,
                                        FDM::IBMBoundaryScheme::LowOrder,
                                    int requestedILWOrder = 0,
                                    double gamma = 1.4,
-                                   const Physics::EquationSet::Model* thermodynamics = nullptr) {
+                                   const Physics::FluidStateModel::Model* thermodynamics = nullptr) {
     const int* offsets = nullptr;
     if constexpr (NStencil == 4) offsets = Math::WENO3_OFFSETS;
     else if constexpr (NStencil == 6) offsets = Math::WENO5_OFFSETS;
@@ -285,7 +285,7 @@ inline void computeDirectionalFlux(Field& field, FluxField& fluxField,
             && ibmBoundary != FDM::IBMBoundaryScheme::ILW) {
             if (!thermodynamics) {
                 throw std::runtime_error(
-                    "Reconstructed convection requires an active EquationSet.");
+                    "Reconstructed convection requires an active FluidStateModel.");
             }
             storeLowOrderFaceFlux(
                 fluxField, field, i, j, k, d, fallbackMethod, gamma,
@@ -345,7 +345,7 @@ inline void computeDirectionalFlux(Field& field, FluxField& fluxField,
             }
             if (!thermodynamics) {
                 throw std::runtime_error(
-                    "Reconstructed convection requires an active EquationSet.");
+                    "Reconstructed convection requires an active FluidStateModel.");
             }
             storeLowOrderFaceFlux(
                 fluxField, field, i, j, k, d, fallbackMethod, gamma,
@@ -380,7 +380,7 @@ inline void computeAllFluxes(Field& field, FluxField& fluxField,
                                  FDM::IBMBoundaryScheme::LowOrder,
                              int requestedILWOrder = 0,
                              double gamma = 1.4,
-                             const Physics::EquationSet::Model* thermodynamics = nullptr) {
+                             const Physics::FluidStateModel::Model* thermodynamics = nullptr) {
     computeDirectionalFlux<NStencil>(
         field, fluxField, Math::XI, kernel, fallbackMethod, ibmBoundary,
         requestedILWOrder, gamma, thermodynamics);

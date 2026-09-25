@@ -15,8 +15,22 @@ target_link_libraries(SF_linearAlgebra PUBLIC
     SF_field
 )
 
-if(TARGET SF_hypreBackend)
-    target_link_libraries(SF_linearAlgebra PRIVATE SF_hypreBackend)
+# HYPRE 是 linear-algebra backend，因此它的实现、include 与 target ownership
+# 都在本目录，而不是 infrastructure/mpi。infrastructure 只提供
+# communicator/ownership；基础设施层不得反向依赖 solver。
+find_package(MPI QUIET COMPONENTS CXX)
+find_package(HYPRE QUIET CONFIG)
+if(MPI_CXX_FOUND AND HYPRE_FOUND)
+    target_sources(SF_linearAlgebra PRIVATE
+        backend/hypre/SF_hypreBackend.cpp
+    )
+    target_include_directories(SF_linearAlgebra PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/backend/hypre
+    )
+    target_link_libraries(SF_linearAlgebra PRIVATE
+        MPI::MPI_CXX
+        HYPRE::HYPRE
+    )
     target_compile_definitions(SF_linearAlgebra PUBLIC SF_USE_HYPRE=1)
     message(STATUS "Pressure linear workflow enabled: HYPRE + MPI")
 else()

@@ -9,7 +9,7 @@
 /// 本文件不选择 governing equations、MPI topology 或 global timestep loop。
 
 #include "SF_config.h"
-#include "SF_interfaces.h"
+#include "core/interfaces/SF_equationCoupling.h"
 #include "core/state/SF_state.h"
 #include "solver/algorithm/SF_patchWorkspace.h"
 
@@ -35,20 +35,21 @@ struct RKStorage {
 
 /// @brief Solver-owned storage spanning the stages of one explicit step.
 struct Workspace {
-    FDM::TimeScheme scheme = FDM::TimeScheme::Euler;
+    FDM::TimeRecipe recipe = FDM::builtInTimeRecipe(
+        FDM::TimeRecipeId::ForwardEuler);
     bool active = false;
     int nextStage = 0;
     std::vector<RKStorage> patches;
 };
 
-/// @brief Number of stages for a supported explicit scheme.
-int stageCount(FDM::TimeScheme scheme);
+/// @brief One forward-Euler update used by the explicit recipe and PISO predictor.
+void forwardEuler(Field& field, const Residual& residual, double dt);
 
 /// @brief Snapshot Q_n and registered variables required by the scheme.
 void begin(Workspace& workspace,
            const std::vector<Field*>& fields,
            State::StateBundle& state,
-           FDM::TimeScheme scheme,
+           const FDM::TimeRecipe& recipe,
            FDM::IEquationSystemCoupling* equationSystem);
 
 /// @brief Execute exactly one plan-selected explicit stage.

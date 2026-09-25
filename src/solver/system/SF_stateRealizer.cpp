@@ -21,14 +21,16 @@ const RealizedUnknown& StateRealization::at(std::string_view id) const {
 }
 
 StateRealization realizeState(
-        const ResolvedSimulationSystem& system, State::StateBundle& state) {
+        const ExecutableEquationSystem& equations,
+        const RuntimeRequirements& requirements, State::StateBundle& state) {
     state.validatePatches();
     StateRealization result;
-    result.unknowns_.reserve(system.unknowns.size());
-    for (const UnknownDescriptor& unknown : system.unknowns) {
+    result.unknowns_.reserve(equations.unknowns.size());
+    for (const UnknownDescriptor& unknown : equations.unknowns) {
         RealizedUnknown realized;
         realized.descriptor = &unknown;
         if (!unknown.runtimeStorageRequired
+            || unknown.storageBinding == StorageBinding::TransientWorkspace
             || unknown.storageBinding == StorageBinding::SpecializedExecutor) {
             result.unknowns_.push_back(std::move(realized));
             continue;
@@ -58,7 +60,7 @@ StateRealization realizeState(
         result.unknowns_.push_back(std::move(realized));
     }
     for (const WorkspaceRequirement& requirement
-         : system.workspaceRequirements) {
+         : requirements.workspaceRequirements) {
         const auto fields = state.distributed.select(
             requirement.id,State::HaloSyncStage::None);
         if (fields.size() != state.patches.size()) {

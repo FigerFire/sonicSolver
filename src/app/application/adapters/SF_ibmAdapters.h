@@ -11,7 +11,8 @@
 ///
 /// Adapter 不选择 solver runner、IBM 数学方法或 timestep lifecycle。
 
-#include "SF_interfaces.h"
+#include "core/interfaces/SF_boundaryPipeline.h"
+#include "core/interfaces/SF_executionRuntime.h"
 
 #include <vector>
 
