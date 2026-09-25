@@ -3,7 +3,7 @@
 /// @file SF_planExecutor.h
 /// @brief Runtime-neutral traversal of structured compiled control flow.
 
-#include "solver/system/SF_resolvedSimulationSystem.h"
+#include "core/system/SF_solveProgram.h"
 
 #include <functional>
 #include <vector>
@@ -32,6 +32,10 @@ public:
     void invoke(const System::OpId& id,
                 const ExecutionContext& context) const;
     [[nodiscard]] bool contains(const System::OpId& id) const;
+    /// @brief 只保留编译期已分配给当前 runtime provider 的 OpId。
+    void retain(const std::vector<System::OpId>& assigned);
+    /// @brief 复用同一 registry 时丢弃上一轮的 binding。
+    void clear() { entries_.clear(); }
 
 private:
     struct Entry { System::OpId id; ContextOperation operation; };
@@ -40,6 +44,10 @@ private:
 
 class PlanExecutor {
 public:
+    /// @brief Fail before execution if any Plan leaf lacks a provider.
+    static void validateBindings(const System::CompiledSolvePlan& plan,
+                                 const OpRegistry& operations);
+
     static void execute(const System::CompiledSolvePlan& plan,
                         const OpRegistry& operations,
                         const PlanTraceContext* trace = nullptr);

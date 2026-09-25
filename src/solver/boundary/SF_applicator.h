@@ -47,21 +47,21 @@ public:
     /// @param field Field whose real boundary points and ghost cells are updated.
     void apply(Field& field) {
         markSolverBoundaryMask(field);
-        if (field.hasEquationSet() && config_.ilwEnabled
-            && !field.equationSet()->perfectGasGamma()) {
+        if (field.hasStateModel() && config_.ilwEnabled
+            && !field.stateModel()->perfectGasGamma()) {
             throw std::runtime_error(
-                "EquationSet physical-boundary ILW currently requires a "
+                "FluidStateModel physical-boundary ILW currently requires a "
                 "PerfectGas thermodynamic capability.");
         }
-        if (field.hasEquationSet()) {
-            applyEquationSetDensity(field);
+        if (field.hasStateModel()) {
+            applyFluidStateModelDensity(field);
         } else {
             SF::Boundary::update<double>(
                 field, config_.density, RHO,
                 config_.ilwEnabled, config_.ilwOrder);
         }
-        const int momentum = field.hasEquationSet()
-            ? field.equationSet()->momentumIndex(0) : RU;
+        const int momentum = field.hasStateModel()
+            ? field.stateModel()->momentumIndex(0) : RU;
         SF::Boundary::update<Vector3>(
             field, config_.velocity, momentum,
             config_.ilwEnabled, config_.ilwOrder);
@@ -77,11 +77,11 @@ private:
     static double totalDensity(const Field& field,
                                int i, int j, int k) {
         double rho = 0.0;
-        const int count = field.equationSet()->densityVariableCount();
+        const int count = field.stateModel()->densityVariableCount();
         for (int v = 0; v < count; ++v) rho += field(i,j,k,v);
         if (!std::isfinite(rho) || rho <= 0.0) {
             throw std::runtime_error(
-                "EquationSet density boundary found non-positive total density.");
+                "FluidStateModel density boundary found non-positive total density.");
         }
         return rho;
     }
@@ -93,28 +93,28 @@ private:
             double targetDensity) {
         if (!std::isfinite(targetDensity) || targetDensity <= 0.0) {
             throw std::runtime_error(
-                "EquationSet fixed-density ghost state is non-positive; "
+                "FluidStateModel fixed-density ghost state is non-positive; "
                 "the prescribed boundary state is incompatible with its interior reflection.");
         }
         const double referenceDensity = totalDensity(
             field, compositionI, compositionJ, compositionK);
-        const int count = field.equationSet()->densityVariableCount();
+        const int count = field.stateModel()->densityVariableCount();
         for (int v = 0; v < count; ++v) {
             const double fraction =
                 field(compositionI,compositionJ,compositionK,v)
                 / referenceDensity;
             if (!std::isfinite(fraction) || fraction < 0.0) {
                 throw std::runtime_error(
-                    "EquationSet boundary composition contains an invalid partial density.");
+                    "FluidStateModel boundary composition contains an invalid partial density.");
             }
             field(i,j,k,v) = targetDensity*fraction;
         }
     }
 
-    void applyEquationSetDensity(Field& field) const {
-        const int count = field.equationSet()->densityVariableCount();
+    void applyFluidStateModelDensity(Field& field) const {
+        const int count = field.stateModel()->densityVariableCount();
         for (const auto& bc : config_.density) {
-            // A one-density PerfectGas EquationSet has the same conservative
+            // A one-density PerfectGas FluidStateModel has the same conservative
             // density variable as the established ILW kernel.  Reuse that
             // kernel so binding thermodynamics does not alter the boundary
             // reconstruction or its stage/order.

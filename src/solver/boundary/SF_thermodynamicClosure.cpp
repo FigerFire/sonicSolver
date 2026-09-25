@@ -115,7 +115,7 @@ double thermalConductivity(double dynamicViscosity, double prandtl) {
 } // namespace
 
 double pressureAt(const Field& field, int i, int j, int k) {
-    if (field.hasEquationSet()) {
+    if (field.hasStateModel()) {
         return field.thermodynamicState(i, j, k).pressure;
     }
     const double rho = requireLegacyDensity(
@@ -137,11 +137,11 @@ double pressureAt(const Field& field, int i, int j, int k) {
 }
 
 double temperatureAt(const Field& field, int i, int j, int k) {
-    if (field.hasEquationSet()) {
+    if (field.hasStateModel()) {
         const double temperature = field.thermodynamicState(i, j, k).temperature;
         if (!std::isfinite(temperature) || temperature <= 0.0) {
             throw std::runtime_error(
-                "EquationSet thermal boundary received invalid temperature.");
+                "FluidStateModel thermal boundary received invalid temperature.");
         }
         return temperature;
     }
@@ -167,11 +167,11 @@ void setEnergyFromPressure(Field& field, int i, int j, int k,
             + std::to_string(j) + "," + std::to_string(k) + "): p="
             + std::to_string(pressure) + " Pa.");
     }
-    if (field.hasEquationSet()) {
+    if (field.hasStateModel()) {
         std::vector<double> q((size_t)field.NVar(), 0.0);
         for (int v = 0; v < field.NVar(); ++v) q[(size_t)v] = field(i,j,k,v);
-        field(i,j,k,field.equationSet()->energyIndex()) =
-            field.equationSet()->totalEnergyFromPressure(
+        field(i,j,k,field.stateModel()->energyIndex()) =
+            field.stateModel()->totalEnergyFromPressure(
                 q.data(), field.NVar(), pressure);
         return;
     }
@@ -192,11 +192,11 @@ void setEnergyFromTemperature(Field& field, int i, int j, int k,
                   << temperature << std::endl;
         std::exit(1);
     }
-    if (field.hasEquationSet()) {
+    if (field.hasStateModel()) {
         std::vector<double> q((size_t)field.NVar(), 0.0);
         for (int v = 0; v < field.NVar(); ++v) q[(size_t)v] = field(i,j,k,v);
-        field(i,j,k,field.equationSet()->energyIndex()) =
-            field.equationSet()->totalEnergyFromTemperature(
+        field(i,j,k,field.stateModel()->energyIndex()) =
+            field.stateModel()->totalEnergyFromTemperature(
                 q.data(), field.NVar(), temperature);
         return;
     }
@@ -556,12 +556,12 @@ void updateEnergyFromThermalBoundary(
                                                si, sj, sk);
                     const double inwardDistance =
                         pointDistance(field, si, sj, sk, i, j, k);
-                    const double kappa = field.hasEquationSet()
+                    const double kappa = field.hasStateModel()
                         ? field.thermodynamicState(si, sj, sk).thermalConductivity
                         : thermalConductivity(dynamicViscosity, prandtl);
                     if (!std::isfinite(kappa) || kappa <= 0.0) {
                         throw std::runtime_error(
-                            "EquationSet heatFlux boundary requires explicit positive thermal conductivity.");
+                            "FluidStateModel heatFlux boundary requires explicit positive thermal conductivity.");
                     }
                     const double boundaryT =
                         temperatureAt(field, si, sj, sk)

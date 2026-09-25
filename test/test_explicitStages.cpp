@@ -2,11 +2,14 @@
 /// @brief Freezes Euler/SSP-RK3/RK4 stage mathematics after Plan lowering.
 
 #include "solver/algorithm/time/SF_explicit.h"
+#include "SF_config.h"
 
 #include <cmath>
 #include <cstdlib>
 #include <iostream>
+#include <stdexcept>
 #include <vector>
+#include "app/application/model/SF_configParser.h"
 
 namespace {
 
@@ -14,6 +17,15 @@ void require(bool condition, const char* message) {
     if (condition) return;
     std::cerr << "Explicit stage test failed: " << message << '\n';
     std::exit(1);
+}
+
+void requireUnsupportedRecipe(const char* name) {
+    try {
+        (void)SF::FDM::resolveTimeRecipe(name);
+    } catch (const std::invalid_argument&) {
+        return;
+    }
+    require(false,"obsolete time-recipe alias was silently accepted");
 }
 
 } // namespace
@@ -27,7 +39,8 @@ struct Outcome {
     bool active = false;
 };
 
-Outcome runConstantRhs(SF::FDM::TimeScheme scheme) {
+Outcome runConstantRhs(SF::FDM::TimeRecipeId id) {
+    const auto recipe = SF::FDM::builtInTimeRecipe(id);
     SF::Field field;
     field.setup(1,1,1,0,5);
     field(0,0,0,0) = 1.0;
@@ -47,8 +60,8 @@ Outcome runConstantRhs(SF::FDM::TimeScheme scheme) {
     Outcome outcome;
     SF::Time::Explicit::Workspace workspace;
     SF::Time::Explicit::begin(
-        workspace,fields,state,scheme,nullptr);
-    for (int stage = 0; stage < SF::Time::Explicit::stageCount(scheme);
+        workspace,fields,state,recipe,nullptr);
+    for (int stage = 0; stage < recipe.stageCount();
          ++stage) {
         SF::Time::Explicit::executeStage(
             workspace,stage,fields,workspaces,state,nullptr,
@@ -71,7 +84,10 @@ Outcome runConstantRhs(SF::FDM::TimeScheme scheme) {
 }
 
 int main() {
-    const Outcome euler = runConstantRhs(SF::FDM::TimeScheme::Euler);
+    requireUnsupportedRecipe("Euler");
+    requireUnsupportedRecipe("RK4");
+
+    const Outcome euler = runConstantRhs(SF::FDM::TimeRecipeId::ForwardEuler);
     require(euler.stageTimes.size() == 1
             && std::abs(euler.stageTimes[0]-2.0) < 1e-14,
             "Euler stage time changed");
@@ -80,7 +96,7 @@ int main() {
     require(euler.publishCount == 1 && euler.validateCount == 1,
             "Euler publish/validate positions changed");
 
-    const Outcome ssp = runConstantRhs(SF::FDM::TimeScheme::SSPRK3);
+    const Outcome ssp = runConstantRhs(SF::FDM::TimeRecipeId::SSPRK3);
 
     require(ssp.stageTimes.size() == 3,"wrong SSP-RK3 RHS count");
     require(std::abs(ssp.stageTimes[0]-2.0) < 1e-14
@@ -94,7 +110,7 @@ int main() {
     require(!ssp.active && ssp.nextStage == 3,
             "explicit workspace did not finish after the final stage");
 
-    const Outcome rk4 = runConstantRhs(SF::FDM::TimeScheme::RK4);
+    const Outcome rk4 = runConstantRhs(SF::FDM::TimeRecipeId::ClassicalRK4);
     require(rk4.stageTimes.size() == 4,"wrong RK4 RHS count");
     require(std::abs(rk4.stageTimes[0]-2.0) < 1e-14
             && std::abs(rk4.stageTimes[1]-2.05) < 1e-14

@@ -1,0 +1,94 @@
+# Boundary conditions. SonicFile accepts patch: condition: value.
+SonicFile:
+  object: fields
+  type: boundary
+T:
+  inlet: fixedValue: 317.36
+  outlet: zeroGradient
+  leftWall: zeroGradient
+  heatedWall: zeroGradient
+  frontBack: empty
+T.liquid:
+  inlet: fixedValue: 317.36
+  outlet: zeroGradient
+  leftWall: zeroGradient
+  heatedWall: zeroGradient
+  frontBack: empty
+T.vapor:
+  inlet: fixedValue: 331.25
+  outlet: zeroGradient
+  leftWall: zeroGradient
+  heatedWall: zeroGradient
+  frontBack: empty
+U:
+  inlet: fixedValue: [0, 1.631094448038, 0]
+  outlet: zeroGradient
+  leftWall: fixedValue: [0, 0, 0]
+  heatedWall: fixedValue: [0, 0, 0]
+  frontBack: empty
+U.liquid:
+  inlet: fixedValue: [0, 1.631094448038, 0]
+  outlet: zeroGradient
+  leftWall: fixedValue: [0, 0, 0]
+  heatedWall: fixedValue: [0, 0, 0]
+  frontBack: empty
+U.vapor:
+  inlet: fixedValue: [0, 1.631094448038, 0]
+  outlet: zeroGradient
+  leftWall: fixedValue: [0, 0, 0]
+  heatedWall: fixedValue: [0, 0, 0]
+  frontBack: empty
+alpha.liquid:
+  inlet: fixedValue: 0.999
+  outlet: zeroGradient
+  leftWall: zeroGradient
+  heatedWall: zeroGradient
+  frontBack: empty
+alpha.vapor:
+  inlet: fixedValue: 0.001
+  outlet: zeroGradient
+  leftWall: zeroGradient
+  heatedWall: zeroGradient
+  frontBack: empty
+epsilon:
+  inlet: fixedValue: 0.0017
+  outlet: zeroGradient
+  leftWall: zeroGradient
+  heatedWall: zeroGradient
+  frontBack: empty
+k:
+  inlet: fixedValue: 0.005
+  outlet: zeroGradient
+  leftWall: zeroGradient
+  heatedWall: zeroGradient
+  frontBack: empty
+omega:
+  inlet: fixedValue: 3.77777777778
+  outlet: zeroGradient
+  leftWall: fixedValue: 10.0
+  heatedWall: fixedValue: 10.0
+  frontBack: empty
+p:
+  inlet: zeroGradient
+  outlet: fixedValue: 1460000.0
+  leftWall: zeroGradient
+  heatedWall: zeroGradient
+  frontBack: empty
+rho:
+  inlet: fixedValue: 1240.88461120999
+  outlet: zeroGradient
+  leftWall: zeroGradient
+  heatedWall: zeroGradient
+  frontBack: empty
+rho.liquid:
+  inlet: fixedValue: 1240.88461120999
+  outlet: zeroGradient
+  leftWall: zeroGradient
+  heatedWall: zeroGradient
+  frontBack: empty
+rho.vapor:
+  inlet: fixedValue: 84.9728080234411
+  outlet: zeroGradient
+  leftWall: zeroGradient
+  heatedWall: zeroGradient
+  frontBack: empty

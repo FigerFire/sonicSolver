@@ -1,0 +1,16 @@
+<RCC>
+    <!--
+        启动动画图片资源。
+        源文件按顺序位于 src/app/gui/Splash/assets/frames/。
+        运行时只使用 :/sonic/splash/frame-XX.png，和具体算例文件名解耦。
+        普通 UI 图标请放到 src/app/gui/Resources/icons/，不要混入 splash assets。
+    -->
+    <qresource prefix="/sonic/splash">
+        <file alias="frame-00.png">assets/frames/frame-00.png</file>
+        <file alias="frame-01.png">assets/frames/frame-01.png</file>
+        <file alias="frame-02.png">assets/frames/frame-02.png</file>
+        <file alias="frame-03.png">assets/frames/frame-03.png</file>
+        <file alias="frame-04.png">assets/frames/frame-04.png</file>
+        <file alias="frame-05.png">assets/frames/frame-05.png</file>
+    </qresource>
+</RCC>

@@ -1,0 +1,10 @@
+# Physics model registry.
+SonicFile:
+  object: models
+  type: registry
+thermophysical:
+  type: thermophysical
+  file: models/thermophysical.yaml
+turbulence:
+  type: turbulence
+  file: models/turbulence.yaml

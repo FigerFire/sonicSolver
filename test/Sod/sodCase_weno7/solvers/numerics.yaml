@@ -1,0 +1,13 @@
+# Numerical methods.
+SonicFile:
+  object: solver
+  type: numerics
+time:
+  default: forwardEuler
+terms:
+  convection: weno7Rusanov
+transport:
+  type: CENTRAL2
+  enable: false
+  mu: 0.0
+  Pr: 0.72

@@ -1,0 +1,14 @@
+# sonicSolver createMesh interface topology
+tolerance 1e-09
+sourceBlocks 3
+uniquePhysicalPoints 18662
+sharedPointGroups 124
+branchPointGroups 0
+maxPointMultiplicity 2
+sharedFaceGroups 60
+maxFaceMultiplicity 2
+invalidFaceGroups 0
+
+# InterfacePairs
+block0.jMax <-> block1.jMin faces 30
+block1.jMax <-> block2.jMin faces 30

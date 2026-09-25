@@ -4,7 +4,8 @@
 /// @brief fitted/IBM geometry 与 algebraic/ILW 重构的统一边界管线。
 
 #include "SF_applicator.h"
-#include "SF_interfaces.h"
+#include "core/interfaces/SF_boundaryPipeline.h"
+#include "core/interfaces/SF_executionRuntime.h"
 
 namespace SF::Boundary {
 

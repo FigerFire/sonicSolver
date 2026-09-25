@@ -7,7 +7,7 @@
 #include "core/residual/SF_residual.h"
 #include "solver/algorithm/SF_patchWorkspace.h"
 #include "methods/numerics/structured/SF_structured.h"
-#include "core/state/SF_equationSet.h"
+#include "core/state/SF_fluidStateModel.h"
 
 #include <algorithm>
 #include <cerrno>
@@ -422,7 +422,7 @@ inline void workspaceAfterClear(const Field& field,
 }
 
 inline void gamma(const FDM::SolverConfig& config,
-                  const Physics::EquationSet::Model& equations) {
+                  const Physics::FluidStateModel::Model& equations) {
     if (!enabled()) return;
     const auto equationGamma = equations.perfectGasGamma();
     printPrefix(std::cout << std::setprecision(17))

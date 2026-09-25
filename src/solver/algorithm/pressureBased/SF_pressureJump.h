@@ -3,7 +3,7 @@
 /// @file SF_pressureJump.h
 /// @brief 压力校正离散使用的已知锐界面跳跃变换。
 
-#include "SF_interfaces.h"
+#include "core/interfaces/SF_equationCoupling.h"
 
 namespace SF::PressureBased {
 

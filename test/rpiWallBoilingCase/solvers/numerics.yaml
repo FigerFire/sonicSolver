@@ -1,0 +1,19 @@
+# Numerical methods.
+SonicFile:
+  object: solver
+  type: numerics
+transport: {}
+convection:
+  default: WENO3
+  flux: LaxFriedrichs
+time:
+  default: classicalRK4
+diffusion:
+  default: CENTRAL2
+sources:
+  default: Gravity+WallHeat
+pressureCorrection:
+  maxIterations: 3000
+  relativeTolerance: 0.01
+  pressureRelaxation: 0.001
+  velocityRelaxation: 0.1

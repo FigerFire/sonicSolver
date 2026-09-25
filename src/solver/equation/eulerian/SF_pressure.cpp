@@ -212,8 +212,8 @@ PhaseEquationAssembler::solvePressureCorrection() {
         throw std::runtime_error(
             "Eulerian pressure equation has no unknowns.");
     }
-    if (config_.referenceCell < 0
-        || config_.referenceCell >= rowMap_.total) {
+    if (config_.reference.referenceCell < 0
+        || config_.reference.referenceCell >= rowMap_.total) {
         throw std::runtime_error(
             "solverProperties referenceCell is outside pressure matrix.");
     }
@@ -229,7 +229,7 @@ PhaseEquationAssembler::solvePressureCorrection() {
         field.getIJK(cell, i, j, k);
         LinearAlgebra::SparseRow row;
         row.globalRow = rowMap_.global[(size_t)cell];
-        if (row.globalRow == config_.referenceCell) {
+        if (row.globalRow == config_.reference.referenceCell) {
             row.columns = {row.globalRow};
             row.values = {1.0};
             matrix.rows.push_back(std::move(row));
@@ -360,7 +360,7 @@ void PhaseEquationAssembler::correctAllPhases() {
         }
         const double pressure = system_.sharedPressure()
                                     .values()[(size_t)cell]
-            + config_.pressureRelaxation
+            + config_.coupling.pressureRelaxation
                 * correction.values()[(size_t)cell];
         if (!std::isfinite(pressure) || pressure <= 0.0) {
             throw std::runtime_error(

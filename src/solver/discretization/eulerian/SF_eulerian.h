@@ -8,7 +8,7 @@
 #include "SF_field.h"
 #include "methods/numerics/structured/SF_structured.h"
 #include "SF_scalarField.h"
-#include "solver/discretization/structured/SF_vectorCalculus.h"
+#include "methods/numerics/structured/SF_vectorCalculus.h"
 
 #include <array>
 #include <cmath>

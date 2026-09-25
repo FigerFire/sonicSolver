@@ -35,18 +35,18 @@ void registerInterfaceState(
                  model.primaryScalarRHS());
 }
 
-InterfaceEquationCoupling::InterfaceEquationCoupling(
+InterfaceEquationProvider::InterfaceEquationProvider(
         Physics::InterfaceModels::Model& model,
         State::VariableRegistry& variables,
         FDM::IExecutionRuntime& runtime)
     : model_(model), variables_(variables), runtime_(runtime) {}
 
-void InterfaceEquationCoupling::beginStep(Field& field, double dt) {
+void InterfaceEquationProvider::beginStep(Field& field, double dt) {
     (void)field;
     model_.beginTimeStep(dt);
 }
 
-void InterfaceEquationCoupling::prepareInterfaceState(Field& field) {
+void InterfaceEquationProvider::prepareInterfaceState(Field& field) {
     model_.applyBoundary(field);
     const int depth = Physics::Multiphase::HJWeno::requiredGhostLayers(
         model_.config().levelSet.advectionOrder);
@@ -60,21 +60,21 @@ void InterfaceEquationCoupling::prepareInterfaceState(Field& field) {
                       {Execution::readHalo("levelSetCurvature", 1)}});
 }
 
-void InterfaceEquationCoupling::prepareRHS(Field& field, double) {
+void InterfaceEquationProvider::prepareRHS(Field& field, double) {
     prepareInterfaceState(field);
     model_.assembleTransportRHS(field);
 }
 
-void InterfaceEquationCoupling::assembleRHS(
+void InterfaceEquationProvider::assembleRHS(
         Field& field, Residual& residual, double) {
     model_.addSourceTerms(field, residual);
 }
 
-void InterfaceEquationCoupling::preparePressureCorrection(Field& field) {
+void InterfaceEquationProvider::preparePressureCorrection(Field& field) {
     prepareInterfaceState(field);
 }
 
-void InterfaceEquationCoupling::commitStep(Field& field, double dt) {
+void InterfaceEquationProvider::commitStep(Field& field, double dt) {
     if (auto* levelSet = model_.levelSetState()) {
         const auto& config = model_.config();
         if (config.levelSet.reinitializationSteps > 0) {
@@ -102,21 +102,21 @@ void InterfaceEquationCoupling::commitStep(Field& field, double dt) {
     prepareInterfaceState(field);
 }
 
-State::VariableRegistry* InterfaceEquationCoupling::variables(Field&) {
+State::VariableRegistry* InterfaceEquationProvider::variables(Field&) {
     return variables_.empty() ? nullptr : &variables_;
 }
 
-const FDM::ITransportModel* InterfaceEquationCoupling::transportModel(
+const FDM::ITransportModel* InterfaceEquationProvider::transportModel(
         const Field&) const {
     return &model_;
 }
 
 const FDM::IInterfaceJumpCondition*
-InterfaceEquationCoupling::interfaceJumpCondition(const Field&) const {
+InterfaceEquationProvider::interfaceJumpCondition(const Field&) const {
     return &model_;
 }
 
-MultiPatchInterfaceEquationCoupling::MultiPatchInterfaceEquationCoupling(
+MultiPatchInterfaceEquationProvider::MultiPatchInterfaceEquationProvider(
         MultiBlockMesh& mesh,
         const std::vector<int>& localPatchIds,
         FDM::IExecutionRuntime& runtime,
@@ -125,7 +125,7 @@ MultiPatchInterfaceEquationCoupling::MultiPatchInterfaceEquationCoupling(
     : mesh_(mesh), localPatchIds_(localPatchIds), runtime_(runtime)
     , models_(models), variables_(variables) {}
 
-void MultiPatchInterfaceEquationCoupling::beginStep(
+void MultiPatchInterfaceEquationProvider::beginStep(
         const std::vector<Field*>&, double dt) {
     for (int patchId : localPatchIds_) {
         auto& model = *models_.at((size_t)patchId);
@@ -140,7 +140,7 @@ void MultiPatchInterfaceEquationCoupling::beginStep(
     }
 }
 
-void MultiPatchInterfaceEquationCoupling::prepareRHS(
+void MultiPatchInterfaceEquationProvider::prepareRHS(
         const std::vector<Field*>&, double) {
     for (int patchId : localPatchIds_) {
         auto& field = mesh_.block((size_t)patchId).field;
@@ -157,7 +157,7 @@ void MultiPatchInterfaceEquationCoupling::prepareRHS(
     publishCurvature("multi-patch level-set curvature stencil");
 }
 
-void MultiPatchInterfaceEquationCoupling::assembleRHS(
+void MultiPatchInterfaceEquationProvider::assembleRHS(
         const std::vector<Field*>& fields,
         const std::vector<Residual*>& residuals, double) {
     if (fields.size() != residuals.size()) {
@@ -174,7 +174,7 @@ void MultiPatchInterfaceEquationCoupling::assembleRHS(
     }
 }
 
-void MultiPatchInterfaceEquationCoupling::preparePressureCorrection(
+void MultiPatchInterfaceEquationProvider::preparePressureCorrection(
         const std::vector<Field*>&) {
     for (int patchId : localPatchIds_) {
         models_.at((size_t)patchId)->applyBoundary(
@@ -190,7 +190,7 @@ void MultiPatchInterfaceEquationCoupling::preparePressureCorrection(
     publishCurvature("multi-patch pressure-interface curvature stencil");
 }
 
-void MultiPatchInterfaceEquationCoupling::commitStep(
+void MultiPatchInterfaceEquationProvider::commitStep(
         const std::vector<Field*>&, double dt) {
     for (int patchId : localPatchIds_) {
         models_.at((size_t)patchId)->applyBoundary(
@@ -204,25 +204,25 @@ void MultiPatchInterfaceEquationCoupling::commitStep(
     }
 }
 
-State::VariableRegistry* MultiPatchInterfaceEquationCoupling::variables(
+State::VariableRegistry* MultiPatchInterfaceEquationProvider::variables(
         Field& field) {
     auto& registry = variables_.at(findPatch(field));
     return registry.empty() ? nullptr : &registry;
 }
 
 const FDM::ITransportModel*
-MultiPatchInterfaceEquationCoupling::transportModel(
+MultiPatchInterfaceEquationProvider::transportModel(
         const Field& field) const {
     return models_.at(findPatch(field)).get();
 }
 
 const FDM::IInterfaceJumpCondition*
-MultiPatchInterfaceEquationCoupling::interfaceJumpCondition(
+MultiPatchInterfaceEquationProvider::interfaceJumpCondition(
         const Field& field) const {
     return models_.at(findPatch(field)).get();
 }
 
-int MultiPatchInterfaceEquationCoupling::phiHaloDepth() const {
+int MultiPatchInterfaceEquationProvider::phiHaloDepth() const {
     int depth = 0;
     for (const auto& model : models_) {
         if (!model) continue;
@@ -238,13 +238,13 @@ int MultiPatchInterfaceEquationCoupling::phiHaloDepth() const {
     return depth;
 }
 
-void MultiPatchInterfaceEquationCoupling::preparePhiHalo(
+void MultiPatchInterfaceEquationProvider::preparePhiHalo(
         const char* operation) {
     runtime_.prepare({operation,
                       {Execution::readHalo("phi", phiHaloDepth())}});
 }
 
-void MultiPatchInterfaceEquationCoupling::publishCurvature(
+void MultiPatchInterfaceEquationProvider::publishCurvature(
         const char* operation) {
     runtime_.finalize({"multi-patch level-set geometry update",
                        {Execution::writeOwned("levelSetCurvature")}});
@@ -252,7 +252,7 @@ void MultiPatchInterfaceEquationCoupling::publishCurvature(
                       {Execution::readHalo("levelSetCurvature", 1)}});
 }
 
-size_t MultiPatchInterfaceEquationCoupling::findPatch(
+size_t MultiPatchInterfaceEquationProvider::findPatch(
         const Field& field) const {
     for (size_t patchId = 0; patchId < mesh_.size(); ++patchId) {
         if (&mesh_.block(patchId).field == &field) return patchId;

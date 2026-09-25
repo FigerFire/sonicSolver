@@ -1,0 +1,18 @@
+# Runtime configuration.
+SonicFile:
+  object: solver
+  type: runtime
+startTime: 0
+endTime: 5.0
+endStep: 500
+CFL: 0.5
+writeControl: timeStep
+writeInterval: 50
+output:
+  jobName: Sod
+  outputDir: result
+parallel:
+  enabled: true
+  nProcs: 4
+  split: [2, 2, 1]
+  haloTolerance: 1e-05

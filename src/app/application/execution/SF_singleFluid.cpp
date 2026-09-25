@@ -4,7 +4,7 @@
 /// Data flow:
 ///   Field + resolved system + case models
 ///       -> StateBundle / services / equation coupling
-///       -> compiled-plan-bound stepper and runFlow
+///       -> compiled-plan-bound stepper and flowLoop
 ///
 /// 本文件不定义 governing equations、RK 系数或 MPI ownership 规则。
 
@@ -12,9 +12,9 @@
 /*---------copyright by Li Pengfei------------*/
 /*----------code by LPF, 2026.08.04-----------*/
 
-#include "app/application/execution/SF_runners.h"
-#include "app/application/execution/SF_executionAssemblers.h"
-#include "app/application/run/SF_runFlow.h"
+#include "app/application/execution/SF_execution.h"
+#include "app/application/execution/SF_flowLoop.h"
+#include "app/application/execution/SF_flowLoop.h"
 
 #include "SF_resultWriter.h"
 #include "SF_IBM.h"
@@ -34,7 +34,7 @@
 #include "SF_multiphase.h"
 #include "app/application/output/SF_fields.h"
 #include "SF_pipeline.h"
-#include "solver/algorithm/SF_compressible.h"
+#include "solver/algorithm/SF_singleFluidStepper.h"
 #include "app/application/adapters/SF_ibmAdapters.h"
 #include "solver/algorithm/time/SF_time.h"
 #include "SF_turbulence.h"
@@ -45,7 +45,7 @@
 #include <stdexcept>
 #include <vector>
 
-namespace SF::Application::Runners::Detail {
+namespace SF::Application::Execution::Detail {
 
 int executeConservativeEquations(
         Field& field,
@@ -63,43 +63,51 @@ int executeConservativeEquations(
     using Report::formatRunControl;
     using Report::formatTimeStepStatus;
     using Report::multiPhaseSummary;
-    using Equation::Coupling::CoupledTransportModel;
-    using Equation::Coupling::HomogeneousPhaseChangeCoupling;
-    using Equation::Coupling::InterfaceEquationCoupling;
-    using Equation::Coupling::LegacyMultiphaseEquationCoupling;
+    using Equation::Coupling::CompositeTransportProvider;
+    using Equation::Coupling::HomogeneousPhaseChangeProvider;
+    using Equation::Coupling::InterfaceEquationProvider;
+    using Equation::Coupling::MixtureEquationProvider;
     using Equation::Coupling::registerInterfaceState;
-    using Equation::Coupling::registerLegacyState;
+    using Equation::Coupling::registerMixtureState;
     using Output::multiPhaseVTKScalars;
     using Output::interfaceVTKScalars;
     using Adapters::IBBoundaryAdapter;
     using Adapters::IBConstraintAdapter;
 
-    const bool ghostIBMActive = ibmEnabled && ibm.usesGhostCells();
-    const bool forcingIBMActive = ibmEnabled && ibm.usesForcing();
+    const bool ghostIBMActive =
+        System::requiresProvider(system,"ibm.boundary");
+    const bool forcingIBMActive =
+        System::requiresProvider(system,"ibm.constraint");
+    if (ghostIBMActive != (ibmEnabled && ibm.usesGhostCells())
+        || forcingIBMActive != (ibmEnabled && ibm.usesForcing())) {
+        throw std::runtime_error(
+            "Resolved IBM provider requirements do not match initialized IBM resources.");
+    }
 
     SF::Physics::Multiphase::MultiPhaseModel multiPhaseModel;
     std::unique_ptr<SF::Physics::InterfaceModels::Model> interfaceModel;
     const bool legacyMultiPhaseActive =
-        System::hasEquation(system, "E_LEGACY_ALPHA");
-    const bool interfaceActive = System::hasEquation(system, "E_LEVEL_SET");
+        System::requiresProvider(system,"equation.legacy-mixture");
+    const bool interfaceActive =
+        System::requiresProvider(system,"equation.level-set");
     const bool usesHomogeneousThermodynamics =
-        System::hasEquation(system, "E_PHASE_MASS");
+        System::requiresProvider(system,"thermodynamics.homogeneous");
     const bool multiPhaseActive = legacyMultiPhaseActive || interfaceActive;
-    if (interfaceActive && !solverConfig.numerics.timeSchemeDeclared) {
+    if (interfaceActive && !solverConfig.numerics.timeRecipeDeclared) {
         throw std::runtime_error(
             "OneFluidInterface requires an explicit "
             "system/fvSchemes ddtSchemes/default entry.");
     }
-    std::shared_ptr<const SF::Physics::EquationSet::HomogeneousMultiphaseEquationSet>
+    std::shared_ptr<const SF::Physics::FluidStateModel::HomogeneousMultiphaseStateModel>
         homogeneousEquations;
-    std::shared_ptr<const SF::Physics::EquationSet::SingleFluidEquationSet>
+    std::shared_ptr<const SF::Physics::FluidStateModel::SingleFluidStateModel>
         singleFluidEquations;
     if (usesHomogeneousThermodynamics) {
-        homogeneousEquations = SF::Physics::EquationSet::makeHomogeneous(
+        homogeneousEquations = SF::Physics::FluidStateModel::makeHomogeneous(
             caseConfig.multiPhase);
-        SF::Physics::EquationSet::initializeHomogeneousField(
+        SF::Physics::FluidStateModel::initializeHomogeneousField(
             field, caseConfig.multiPhase, homogeneousEquations);
-        SF::broadcast("EquationSet       : ",
+        SF::broadcast("FluidStateModel       : ",
                       "homogeneousMultiphase (generic thermodynamics, primary="
                       + std::to_string(homogeneousEquations->variableCount())
                       + ")");
@@ -107,7 +115,7 @@ int executeConservativeEquations(
     if ((!legacyMultiPhaseActive && !usesHomogeneousThermodynamics)
         || interfaceActive) {
         singleFluidEquations=
-            SF::Physics::EquationSet::makeSingleFluidPerfectGas(
+            SF::Physics::FluidStateModel::makeSingleFluidPerfectGas(
                 solverConfig.numerics.idealGasGamma,
                 solverConfig.numerics.idealGasConstant,
                 solverConfig.numerics.dynamicViscosity,
@@ -116,15 +124,15 @@ int executeConservativeEquations(
             // OneFluidInterface still advances the conservative density
             // system.  Its level-set coupling is auxiliary state, so bind the
             // existing PerfectGas EOS without reinitializing conservative Q.
-            field.setEquationSet(singleFluidEquations);
-            SF::broadcast("EquationSet       : ",
+            field.setStateModel(singleFluidEquations);
+            SF::broadcast("FluidStateModel       : ",
                           "singleFluid/perfectGas bound to one-fluid interface");
         } else if (ghostIBMActive || solverConfig.boundaries.ilwEnabled) {
             // IBM/ILW setup owns its existing conservative initialization.  The
-            // EquationSet is still the density solver's one thermodynamic
+            // FluidStateModel is still the density solver's one thermodynamic
             // binding and must be attached before the first timestep.
-            field.setEquationSet(singleFluidEquations);
-            SF::broadcast("EquationSet       : ",
+            field.setStateModel(singleFluidEquations);
+            SF::broadcast("FluidStateModel       : ",
                           "singleFluid/perfectGas attached to IBM/ILW state");
         } else if (caseConfig.time.startTime > 0.0) {
             if (solverConfig.initial.energy.empty()) {
@@ -134,18 +142,18 @@ int executeConservativeEquations(
                     "selected time directory.");
                 return -1;
             }
-            SF::Physics::EquationSet::initializeSingleFluidRestart(
+            SF::Physics::FluidStateModel::initializeSingleFluidRestart(
                 field,singleFluidEquations);
             SF::broadcast(
-                "EquationSet       : ",
+                "FluidStateModel       : ",
                 "singleFluid/perfectGas restart Q closure");
         } else {
-            SF::Physics::EquationSet::initializeSingleFluidField(
+            SF::Physics::FluidStateModel::initializeSingleFluidField(
                 field, singleFluidEquations,
                 solverConfig.initial.pressure,
                 solverConfig.initial.temperature);
             SF::broadcast(
-                "EquationSet       : ",
+                "FluidStateModel       : ",
                 "singleFluid/perfectGas cold start");
         }
     }
@@ -165,44 +173,42 @@ int executeConservativeEquations(
         SF::broadcast("MultiPhase model  : ",
                       multiPhaseSummary(
                           caseConfig.multiPhase,
-                          solverConfig.numerics.solver));
+                          caseConfig.compatFlowLabel));
     }
     SF::State::StateBundle stateBundle;
     stateBundle.patches = {&field};
-    stateBundle.equations = field.equationSet();
+    stateBundle.stateModel = field.stateModel();
     stateBundle.time = caseConfig.time.startTime;
 
-    SF::SolverAlgorithm::CompressibleAlgorithm solver(solverConfig, system);
-    std::unique_ptr<SF::Physics::EquationSet::HomogeneousPhaseChange>
+    std::unique_ptr<SF::Physics::FluidStateModel::HomogeneousPhaseChange>
         homogeneousPhaseChange;
-    std::unique_ptr<HomogeneousPhaseChangeCoupling>
+    std::unique_ptr<HomogeneousPhaseChangeProvider>
         homogeneousCoupling;
     if (homogeneousEquations && caseConfig.multiPhase.phaseChange.enabled) {
         homogeneousPhaseChange = std::make_unique<
-            SF::Physics::EquationSet::HomogeneousPhaseChange>(
+            SF::Physics::FluidStateModel::HomogeneousPhaseChange>(
                 caseConfig.multiPhase, homogeneousEquations);
         homogeneousPhaseChange->initialize(field);
         homogeneousCoupling =
-            std::make_unique<HomogeneousPhaseChangeCoupling>(
+            std::make_unique<HomogeneousPhaseChangeProvider>(
                 *homogeneousPhaseChange);
         SF::broadcast("Phase change      : ",
                       caseConfig.multiPhase.phaseChange.model
                       + " -> partialDensity, rhoE source=0");
     }
     SF::Turbulence::Manager turbulenceManager(solverConfig.turbulence);
-    CoupledTransportModel coupledTransport;
+    CompositeTransportProvider coupledTransport;
     auto& parallelCoordinator = parallel.coordinator();
     // A pressure-based serial case initializes an MPI-capable backend for
     // HYPRE, but one process still has serial ownership semantics.
-    Execution::Runtime executionRuntime(
+    ::SF::Execution::Runtime executionRuntime(
         parallel.active() && parallel.size() > 1
             ? &parallelCoordinator : nullptr);
     IBBoundaryAdapter immersedBoundary(&ibm);
     IBConstraintAdapter immersedConstraint(&ibm);
     Boundary::Applicator physicalBoundary(solverConfig.boundaries);
     const int conservativeHaloDepth = std::max(
-        FDM::requiredGhostLayersForConvection(
-            FDM::toString(solverConfig.numerics.convection)),
+        system.numericalSystem.requiredHaloWidth,
         FDM::requiredGhostLayersForILW(solverConfig.numerics.ilwOrder));
     Boundary::Pipeline boundaryPipeline({
         &physicalBoundary,
@@ -229,22 +235,22 @@ int executeConservativeEquations(
         immersedPorts.system = &ibm;
     }
     std::vector<double> multiPhaseAlphaRHS;
-    std::unique_ptr<LegacyMultiphaseEquationCoupling>
+    std::unique_ptr<MixtureEquationProvider>
         legacyMultiphaseCoupling;
-    std::unique_ptr<InterfaceEquationCoupling> interfaceCoupling;
+    std::unique_ptr<InterfaceEquationProvider> interfaceCoupling;
     if (legacyMultiPhaseActive) {
         coupledTransport.setMultiPhase(&multiPhaseModel);
-        registerLegacyState(
+        registerMixtureState(
             multiPhaseModel, field,
             multiPhaseAlphaRHS, stateBundle.transported);
         legacyMultiphaseCoupling =
-            std::make_unique<LegacyMultiphaseEquationCoupling>(
+            std::make_unique<MixtureEquationProvider>(
                 multiPhaseModel, multiPhaseAlphaRHS,
                 stateBundle.transported, executionRuntime);
     } else if (interfaceActive) {
         registerInterfaceState(
             *interfaceModel, field, stateBundle.transported);
-        interfaceCoupling = std::make_unique<InterfaceEquationCoupling>(
+        interfaceCoupling = std::make_unique<InterfaceEquationProvider>(
             *interfaceModel, stateBundle.transported, executionRuntime);
         coupledTransport.setInterfaceModel(interfaceModel.get());
     }
@@ -256,9 +262,9 @@ int executeConservativeEquations(
             || solverConfig.turbulence.model
                 == FDM::TurbulenceModelKind::kOmegaSST);
     if (transportedTurbulence
-        != System::hasSolveBlock(system,"S_TURBULENCE")) {
+        != System::requiresProvider(system,"equation.turbulence-transport")) {
         throw std::runtime_error(
-            "Resolved S_TURBULENCE does not match the active density "
+            "Resolved turbulence-equation provider does not match the active density "
             "turbulence equations.");
     }
     if (turbulenceActive) {
@@ -420,7 +426,7 @@ int executeConservativeEquations(
     executionRuntime.attachState(stateBundle);
     executionRuntime.prepare({
         "initialized conservative-state halo",
-        {Execution::readHalo("conservative", conservativeHaloDepth)}});
+        {::SF::Execution::readHalo("conservative", conservativeHaloDepth)}});
 
     if (initialOutputOnly) {
         if (caseConfig.time.writeByStep) saveStepVTK(0);
@@ -433,30 +439,23 @@ int executeConservativeEquations(
         else            saveTimeVTK(caseConfig.time.startTime);
     }
 
-    SF::FDM::SolverState solverState;
-    solverState.bundle=&stateBundle;
-    SF::FDM::SolverServices solverServices;
-    solverServices.boundaryPipeline=&boundaryPipeline;
-    solverServices.executionRuntime=&executionRuntime;
-    solverServices.observer=&solverObserver;
-    solverServices.immersed=immersedPorts;
-    if(coupledTransport.active()) {
-        solverServices.transportModel=&coupledTransport;
+    FDM::IEquationSystemCoupling* equationProvider = nullptr;
+    if (homogeneousCoupling) equationProvider = homogeneousCoupling.get();
+    if (legacyMultiphaseCoupling) {
+        equationProvider = legacyMultiphaseCoupling.get();
     }
-    if (homogeneousCoupling) solverServices.equationSystem = homogeneousCoupling.get();
-    if (legacyMultiphaseCoupling) solverServices.equationSystem = legacyMultiphaseCoupling.get();
-    if (interfaceCoupling) solverServices.equationSystem = interfaceCoupling.get();
-    solver.bindServices(solverServices);
-    return runFlow(
-        solver, solverState, plan, caseConfig.time,
+    if (interfaceCoupling) equationProvider = interfaceCoupling.get();
+    return runConservative(
+        solverConfig,system,plan,stateBundle,boundaryPipeline,
+        executionRuntime,solverObserver,immersedPorts,
+        coupledTransport.active() ? &coupledTransport : nullptr,
+        equationProvider,caseConfig.time,
         "Unified single-field",
         saveStepVTK,
         saveTimeVTK,
-        {},
         [&](bool finished) {
             return parallelCoordinator.allRanksAgree(finished);
-        },
-        [](const SF::FDM::StepResult& result) { return result.message; });
+        });
 }
 
-} // namespace SF::Application::Runners::Detail
+} // namespace SF::Application::Execution::Detail

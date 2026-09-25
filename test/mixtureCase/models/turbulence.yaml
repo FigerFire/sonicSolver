@@ -1,0 +1,8 @@
+# turbulence model module.
+SonicFile:
+  object: models
+  type: turbulence
+enabled: false
+simulationType: DNS
+RAS:
+  model: kEpsilon

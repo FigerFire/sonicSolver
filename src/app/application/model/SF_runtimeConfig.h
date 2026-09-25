@@ -19,8 +19,10 @@ namespace SF::Application::Runtime {
 
 MeshRuntimeConfig makeMeshRuntimeConfig(
     const CaseConfig& caseConfig,
-    const FDM::SolverConfig& solverConfig);
+    const FDM::SolverConfig& solverConfig,
+    int requiredTermHaloWidth);
 IBM::IBMRuntimeConfig makeIBMRuntimeConfig(
-    const FDM::SolverConfig& solverConfig);
+    const FDM::SolverConfig& solverConfig,
+    int requiredTermHaloWidth);
 
 } // namespace SF::Application::Runtime

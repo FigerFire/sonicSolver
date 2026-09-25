@@ -1,0 +1,19 @@
+# Runtime configuration.
+SonicFile:
+  object: solver
+  type: runtime
+startTime: 0
+endTime: 0.001
+endStep: 5
+CFL: 0.3
+maxDeltaT: 0.0001
+writeControl: timeStep
+writeInterval: 1
+output:
+  jobName: IBMCylinder
+  outputDir: result
+parallel:
+  enabled: true
+  nProcs: 4
+  split: [2, 1, 2]
+  haloTolerance: 1e-05

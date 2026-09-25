@@ -1,0 +1,13 @@
+# Physics model registry.
+SonicFile:
+  object: models
+  type: registry
+turbulence:
+  type: turbulence
+  file: models/turbulence.yaml
+MRF:
+  type: MRF
+  file: models/MRF.yaml
+impellerWall:
+  type: geometry
+  file: models/impellerWall.yaml

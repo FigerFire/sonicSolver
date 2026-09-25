@@ -19,9 +19,10 @@ namespace SF {
 namespace Physics::Multiphase { struct MultiPhaseConfig; }
 namespace Application::Report {
 
+/// @brief 多相模型摘要；flowLabel 是兼容输入标签（可为空），不是求解器身份。
 std::string multiPhaseSummary(
     const Physics::Multiphase::MultiPhaseConfig& config,
-    FDM::SolverAlgorithm solver);
+    const std::string& flowLabel);
 std::string formatTimeValue(double value);
 std::string formatTimeStepStatus(double time, double dt);
 void broadcastSolverConfig(

@@ -2,7 +2,6 @@ add_library(SF_discretization INTERFACE)
 target_sources(SF_discretization INTERFACE
     SF_discretization.h
     SF_deltaT.h
-    time/SF_time.h
     convection/SF_convection.h
     convection/SF_WENO.h
     convection/SF_div.h
@@ -11,7 +10,6 @@ target_sources(SF_discretization INTERFACE
     source/SF_source.h
     source/SF_sourceTerm.h
     structured/SF_structured.h
-    structured/SF_vectorCalculus.h
     eulerian/SF_eulerian.h
 )
 target_include_directories(SF_discretization INTERFACE
@@ -35,6 +33,4 @@ target_link_libraries(SF_discretization INTERFACE
     SF_weno5
     SF_teno5
     SF_weno7
-    SF_euler
-    SF_rk4
 )

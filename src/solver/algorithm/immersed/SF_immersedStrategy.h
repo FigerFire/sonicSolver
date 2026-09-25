@@ -23,21 +23,10 @@ struct StrategyContract {
 /// @brief 返回某一策略的数据契约；未知枚举直接失败。
 StrategyContract contract(FDM::IBMEnforcement enforcement);
 
-/// @brief 校验策略与顶层 flow algorithm 的数学阶段是否一致。
-///
-/// 这里只做阶段/能力检查，不负责调用 MPI，也不把策略替换成另一种策略。
-void validateForAlgorithm(const FDM::IBMForcingConfig& forcing,
-                          FDM::SolverAlgorithm algorithm);
+/// @brief 校验顺序约束投影 operation 的方法与能力。
+void validateProjectionProvider(const FDM::IImmersedSystem& system);
 
-/// @brief 以运行时统一方法选择校验 enforcement 所属的数学阶段。
-///
-/// Algorithm 只读取该中立 selection，不读取 IBMProperties，也不询问 legacy
-/// constraint adapter 来猜测压力基/密度基路由。
-void validateForAlgorithm(const FDM::ImmersedMethodSelection& selection,
-                          FDM::SolverAlgorithm algorithm);
-
-/// @brief 同时校验 selection 与模块实际声明的能力。
-void validateForAlgorithm(const FDM::IImmersedSystem& system,
-                          FDM::SolverAlgorithm algorithm);
+/// @brief 校验 monolithic KKT operation 的方法与能力。
+void validateMonolithicProvider(const FDM::IImmersedSystem& system);
 
 } // namespace SF::ImmersedAlgorithm

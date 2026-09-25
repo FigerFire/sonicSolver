@@ -3,7 +3,7 @@
 /// @file SF_assemblyPlan.h
 /// @brief Equation::Definition 到 specialized assembler 的非拥有 lowering。
 
-#include "solver/equation/SF_expression.h"
+#include "core/system/SF_expression.h"
 
 #include <string>
 #include <string_view>

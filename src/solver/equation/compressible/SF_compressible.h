@@ -3,8 +3,9 @@
 /// @file SF_compressible.h
 /// @brief 可压缩守恒方程定义及其离散绑定入口。
 
-#include "solver/equation/SF_expression.h"
+#include "core/system/SF_expression.h"
 #include "solver/equation/SF_assemblyPlan.h"
+#include "SF_configTypes.h"
 
 #include <memory>
 
@@ -16,15 +17,24 @@ namespace FDM {
 struct SolverConfig;
 class ITransportModel;
 }
-namespace Physics::EquationSet { class Model; }
+namespace Physics::FluidStateModel { class Model; }
 namespace Equation::Compressible {
 
 /// @brief 一次空间项装配所需的非拥有上下文。
 struct AssemblyContext {
-    const FDM::SolverConfig& config;
+    const FDM::TermRecipe* convection = nullptr;
+    const FDM::TermRecipe* diffusion = nullptr;
+    const std::vector<FDM::SourceKind>* sources = nullptr;
+    const FDM::SourceConfig* sourceParameters = nullptr;
     double timeStep = 0.0;
+    FDM::IBMBoundaryScheme ibmBoundary = FDM::IBMBoundaryScheme::LowOrder;
+    int ilwOrder = 0;
+    double dynamicViscosity = 0.0;
+    double prandtl = 0.72;
+    double idealGasGamma = 1.4;
+    double idealGasConstant = 287.05;
     const FDM::ITransportModel* transport = nullptr;
-    const Physics::EquationSet::Model* thermodynamics = nullptr;
+    const Physics::FluidStateModel::Model* thermodynamics = nullptr;
 };
 
 /// @brief 可压缩质量、动量和能量方程组。

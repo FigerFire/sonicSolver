@@ -1,0 +1,33 @@
+# multiPhase model module.
+SonicFile:
+  object: models
+  type: multiPhase
+multiPhase:
+  type: levelSet
+  defaultPhase: water
+  defaultSignedDistance: 0.01
+  advectionOrder: 5
+  wenoEpsilon: 1e-06
+  wenoPower: 2.0
+  advectFluidCellsOnly: true
+  reinitializationOrder: 5
+  reinitializationSteps: 0
+  pseudoTimeStep: 0.0
+  signSmoothingFactor: 1.0
+  geometryGradientTolerance: 1e-12
+  interfaceThickness: 0.0
+  narrowBandWidth: 0.02
+  surfaceTensionModel: none
+  surfaceTension: 0.0
+  massCorrection: false
+phases:
+  water:
+    role: liquid
+    density: 1000.0
+    viscosity: 0.001
+  air:
+    role: gas
+    density: 1.0
+    viscosity: 1.48e-05
+sets:
+  airCore: air

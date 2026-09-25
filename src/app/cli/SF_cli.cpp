@@ -5,8 +5,9 @@
 #include "SF_resultCommands.h"
 
 #include "app/application/SF_application.h"
-#include "app/application/system/SF_inspection.h"
+#include "app/application/SF_inspection.h"
 #include "app/application/output/SF_report.h"
+#include "app/application/model/SF_configParser.h"
 #include "core/config/SF_config.h"
 #include "core/interfaces/SF_log.h"
 #include "SF_systemPrinter.h"
@@ -68,8 +69,55 @@ std::filesystem::path optionalCaseDirectory(int argc, char* argv[]) {
                      : std::filesystem::path{};
 }
 
-// 命令行 - application转换层
+// 命令行 → RunRequest → application 运行入口。
 //
+// 保留 legacy 命令行语义（--initial-output / --steps / 默认 CASE）：
+//   --initial-output CASE    初始场输出后退出
+//   --steps N CASE           限制步数
+//   CASE                     直接运行
+// 解析在此完成；application 层只接收 RunRequest。
+int runWithArgs(int argc, char* argv[]) {
+    SF::Application::RunRequest request;
+    request.argc = argc;
+    request.argv = argv;
+
+    if (argc < 2) {
+        SF::broadcast("Usage: ", argv[0]);
+        SF::broadcast("Example: ", "./sonicSolver test/sodCase");
+        SF::broadcast("Initial output: ",
+                      "./sonicSolver --initial-output test/sodCase");
+        return 1;
+    }
+
+    int caseArgument = 1;
+    if (std::string(argv[1]) == "--initial-output") {
+        if (argc < 3) {
+            SF::broadcast("Fatal: ",
+                          "--initial-output requires a case file path.");
+            return 1;
+        }
+        request.initialOutputOnly = true;
+        caseArgument = 2;
+    }
+
+    if (std::string(argv[1]) == "--steps") {
+        if (argc != 4) {
+            throw std::runtime_error("Usage: sonicSolver --steps N CASE");
+        }
+        std::size_t consumed = 0;
+        request.stepLimit = std::stoi(argv[2], &consumed);
+        if (consumed != std::string(argv[2]).size()
+            || request.stepLimit <= 0) {
+            throw std::runtime_error("--steps requires a positive integer");
+        }
+        caseArgument = 3;
+    }
+
+    request.casePath = argv[caseArgument];
+    return SF::Application::run(request);
+}
+
+// 命令行 - application 转换层：把逻辑参数重组为 argv 后交给 runWithArgs。
 int runTranslated(const Args& arguments) {
     std::vector<std::string> translated;
     translated.reserve(arguments.size() + 1);
@@ -79,11 +127,11 @@ int runTranslated(const Args& arguments) {
     argv.reserve(translated.size() + 1);
     for (auto& argument : translated) argv.push_back(argument.data());
     argv.push_back(nullptr);
-    // 传入 SF::Application::run()，它会在内部解析参数。
-    return SF::Application::run(static_cast<int>(translated.size()), argv.data());
+    return runWithArgs(static_cast<int>(translated.size()), argv.data());
 }
 
-// 重组参数以便传入 SF::Application::run()，并在 run() 内部解析。
+// 把 `run` 子命令的 run-control 选项重组为 legacy argv 形态，再交给
+// runWithArgs 统一解析为 RunRequest。
 int runCommand(int argc, char* argv[]) {
     std::string casePath;
     std::string stepLimit;
@@ -229,7 +277,7 @@ void printWhy(const std::string& model, bool withMPI, bool detailed = false) {
 }
 
 void printRequirements(const SF::Application::CaseInspection& inspection) {
-    for (const auto& requirement : inspection.system.requirements) {
+    for (const auto& requirement : inspection.system.runtime.requirements) {
         const std::string state = requirement.required
             ? (requirement.available ? "OK" : "MISSING")
             : "not-required";
@@ -247,15 +295,18 @@ int checkCase(const std::string& path, bool detailed) {
         return 1;
     }
     if (detailed) {
-        printText(SF::System::describe(inspection.system));
+        printText(SF::System::describe(inspection.system)
+                  + SF::IBM::renderExplain(inspection.ibmExplain));
         printText("\nCompiled plan: " + inspection.system.solvePlan.root.name);
         return 0;
     }
     printText("Checking sonicSolver configuration...");
-    printText("  Flow:       " + std::string(
-        SF::FDM::toString(inspection.config.solver.numerics.solver)) + "  OK");
+    printText("  Flow:       equations + coupling preset  OK");
+    printText("  Coupling:   "
+        + std::string(SF::System::toString(inspection.system.coupling.status))
+        + " (" + inspection.system.coupling.preset + ")");
     printText("  State:      " + std::string(
-        SF::System::toString(inspection.system.templateOrigin)) + "  OK");
+        SF::System::toString(inspection.system.classification.templateOrigin)) + "  OK");
     printText("  Plan:       " + inspection.system.solvePlan.root.name + "  OK");
     printText("  IBM:        "
         + std::string(inspection.ibm.enabled ? "enabled" : "disabled") + "  OK");
@@ -316,9 +367,8 @@ void writeRecipe(const std::filesystem::path& directory,
           "output:\n  jobName: case\n  outputDir: result\n");
     write(directory / "solvers/numerics.yaml",
           "SonicFile:\n  object: solver\n  type: numerics\n"
-          "time:\n  default: Euler\nconvection:\n  default: TENO5\n"
-          "  formulation: conservativeFluxDifference\n  reconstruction: characteristic\n"
-          "  flux: StegerWarming\ndiffusion:\n  default: CENTRAL2\n");
+          "time:\n  default: forwardEuler\nterms:\n"
+          "  convection: teno5Steger\n");
     write(directory / "solvers/algorithm.yaml",
           "SonicFile:\n  object: solver\n  type: algorithm\ntype: densityBase\n");
     write(directory / "solvers/solvers.yaml",
@@ -447,10 +497,10 @@ int SF::CLI::run(int argc, char* argv[]) {
         if (command == "--steps" && argc == 3)
             return runTranslated({"--steps", argv[2], "."});
         if (command == "--initial-output" || command == "--steps")
-            return SF::Application::run(argc, argv);
+            return runWithArgs(argc, argv);
 
         // Allow the compact form `sonicSolver CASE`.
-        if (command.front() != '-') return SF::Application::run(argc, argv);
+        if (command.front() != '-') return runWithArgs(argc, argv);
         throw std::runtime_error("unknown option '" + command
                                  + "'; use sonicSolver --help");
     } catch (const std::exception& error) {

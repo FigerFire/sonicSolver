@@ -51,48 +51,22 @@ StrategyContract contract(FDM::IBMEnforcement enforcement) {
     return result;
 }
 
-void validateForAlgorithm(const FDM::IBMForcingConfig& forcing,
-                          FDM::SolverAlgorithm algorithm) {
-    FDM::validateIBMForcingSelection(forcing);
-    FDM::ImmersedMethodSelection selection;
-    selection.method = FDM::IBMMethod::VariationalForcing;
-    selection.support = forcing.constraintSupport;
-    selection.representation = forcing.representation;
-    selection.enforcement = forcing.enforcement;
-    selection.solid = forcing.solidModel;
-    validateForAlgorithm(selection, algorithm);
-}
-
-void validateForAlgorithm(const FDM::ImmersedMethodSelection& selection,
-                          FDM::SolverAlgorithm algorithm) {
+namespace {
+void validateSystem(const FDM::IImmersedSystem& system) {
+    const auto& selection = system.methodSelection();
+    const auto& capabilities = system.capabilities();
     const StrategyContract selected = contract(selection.enforcement);
-    if (selected.requiresPressureCorrection
-        && algorithm != FDM::SolverAlgorithm::PressureBased) {
-        throw std::runtime_error(
-            "IBM enforcement '" + selected.name
-            + "' requires a pressure-based pressure-correction stage.");
-    }
-    // 顺序型约束只要求一个已经完成流体 predictor/corrector 的状态；该数学
-    // 契约与 densityBased/pressureBased 无关。具体算法负责把它放在明确阶段，
-    // IBM 模块不再把求解器类型当作方法选择轴。
     if (!selected.implemented) {
         throw std::runtime_error(
             "IBM enforcement '" + selected.name
             + "' is declared but its equation assembly is not implemented "
               "in this build.");
     }
-}
-
-void validateForAlgorithm(const FDM::IImmersedSystem& system,
-                          FDM::SolverAlgorithm algorithm) {
-    const auto& selection = system.methodSelection();
-    const auto& capabilities = system.capabilities();
     if (selection.method != FDM::IBMMethod::VariationalForcing) {
         throw std::runtime_error(
-            "Flow correction received a non-variational IBM family; "
+            "IBM constraint operation received a non-variational family; "
             "ghost-cell IBM must stay in the boundary pipeline.");
     }
-    validateForAlgorithm(selection, algorithm);
 
     if (selection.hasSurfaceConstraint()
         && !capabilities.surfaceConstraint) {
@@ -139,18 +113,6 @@ void validateForAlgorithm(const FDM::IImmersedSystem& system,
         throw std::runtime_error(
             "Selected deformable IBM solid has no migrated equation block.");
     }
-    if (algorithm == FDM::SolverAlgorithm::DensityBased
-        && !capabilities.densityBased) {
-        throw std::runtime_error(
-            "Configured immersed system does not provide a density-based "
-            "enforcement stage.");
-    }
-    if (algorithm == FDM::SolverAlgorithm::PressureBased
-        && !capabilities.pressureBased) {
-        throw std::runtime_error(
-            "Configured immersed system does not provide a pressure-based "
-            "enforcement stage.");
-    }
     bool phasePort = false;
     for (const auto& port : system.fluidPorts()) {
         phasePort = phasePort || port.phaseIndex >= 0;
@@ -159,6 +121,35 @@ void validateForAlgorithm(const FDM::IImmersedSystem& system,
         throw std::runtime_error(
             "Phase-wise IBM fluidPorts were selected, but multiphase "
             "constraint assembly is not available.");
+    }
+}
+} // namespace
+
+void validateProjectionProvider(const FDM::IImmersedSystem& system) {
+    validateSystem(system);
+    const StrategyContract selected = contract(
+        system.methodSelection().enforcement);
+    if (selected.requiresPressureCorrection) {
+        throw std::runtime_error(
+            "ibm.constraint.project cannot execute enforcement '"
+            +selected.name+"'; it requires ibm.kkt.solve.");
+    }
+    if (!selected.requiresPredictedState) {
+        throw std::runtime_error(
+            "ibm.constraint.project requires a predicted-state constraint "
+            "enforcement provider.");
+    }
+}
+
+void validateMonolithicProvider(const FDM::IImmersedSystem& system) {
+    validateSystem(system);
+    const StrategyContract selected = contract(
+        system.methodSelection().enforcement);
+    if (!selected.requiresPressureCorrection
+        || system.methodSelection().enforcement
+            != FDM::IBMEnforcement::MonolithicKKT) {
+        throw std::runtime_error(
+            "ibm.kkt.solve requires a monolithic KKT enforcement provider.");
     }
 }
 

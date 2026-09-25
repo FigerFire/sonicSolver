@@ -1,0 +1,43 @@
+# Solver algorithm.
+SonicFile:
+  object: solver
+  type: algorithm
+type: pressureBase
+algorithm: PIMPLE
+PIMPLE:
+  outerCorrectors: 1
+  pressureCorrectors: 1
+  nonOrthogonalCorrectors: 0
+  momentumRelaxation: 1
+  pressureRelaxation: 1
+  referenceCell: 0
+  referencePressure: 101325
+linearSolvers:
+  pressure:
+    backend: hypre
+    solver: flexGMRES
+    preconditioner: boomerAMG
+    maxIterations: 1000
+    krylovDimension: 100
+    relativeTolerance: 1e-09
+    absoluteTolerance: 1e-12
+    structureRebuildInterval: 0
+    preconditionerRefreshInterval: 1
+  momentum:
+    backend: hypre
+    solver: flexGMRES
+    preconditioner: boomerAMG
+    maxIterations: 500
+    krylovDimension: 50
+    relativeTolerance: 1e-08
+    absoluteTolerance: 1e-12
+    structureRebuildInterval: 0
+  energy:
+    backend: hypre
+    solver: flexGMRES
+    preconditioner: boomerAMG
+    maxIterations: 500
+    krylovDimension: 50
+    relativeTolerance: 1e-08
+    absoluteTolerance: 1e-12
+    structureRebuildInterval: 0

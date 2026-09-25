@@ -92,6 +92,27 @@ void executeNode(
     operations.invoke(node.operation,execution);
 }
 
+void validateNode(
+        const System::SolvePlanNode& node,
+        const OpRegistry& operations) {
+    if (node.children.empty()) {
+        if (node.operation.empty()) {
+            throw std::runtime_error(
+                "CompiledSolvePlan leaf '"+node.id
+                +"' has no runtime operation ID.");
+        }
+        if (!operations.contains(node.operation)) {
+            throw std::runtime_error(
+                "CompiledSolvePlan requires runtime operation '"
+                +node.operation+"', but no numerical provider is bound.");
+        }
+        return;
+    }
+    for (const auto& child : node.children) {
+        validateNode(child,operations);
+    }
+}
+
 }
 void OpRegistry::bind(System::OpId id, Operation operation) {
     if (id.empty() || !operation) throw std::runtime_error("Cannot bind an empty plan operation.");
@@ -107,6 +128,13 @@ void OpRegistry::bind(System::OpId id, ContextOperation operation) {
     entries_.push_back({std::move(id),std::move(operation)});
 }
 bool OpRegistry::contains(const System::OpId& id) const { return std::any_of(entries_.begin(),entries_.end(),[&](const Entry& entry) { return entry.id == id; }); }
+void OpRegistry::retain(const std::vector<System::OpId>& assigned) {
+    entries_.erase(std::remove_if(entries_.begin(),entries_.end(),
+        [&](const Entry& entry) {
+            return std::find(assigned.begin(),assigned.end(),entry.id)
+                == assigned.end();
+        }),entries_.end());
+}
 void OpRegistry::invoke(
         const System::OpId& id,
         const ExecutionContext& context) const {
@@ -119,9 +147,16 @@ void PlanExecutor::execute(
         const System::CompiledSolvePlan& plan,
         const OpRegistry& operations,
         const PlanTraceContext* trace) {
+    validateBindings(plan,operations);
     std::vector<LoopFrame> loops;
     ExecutionContext execution;
     executeNode(plan.root,operations,trace,loops,execution);
+}
+
+void PlanExecutor::validateBindings(
+        const System::CompiledSolvePlan& plan,
+        const OpRegistry& operations) {
+    validateNode(plan.root,operations);
 }
 
 } // namespace SF::Run

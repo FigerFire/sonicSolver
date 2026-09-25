@@ -1,0 +1,48 @@
+# multiPhase model module.
+SonicFile:
+  object: models
+  type: multiPhase
+multiPhases: true
+phaseSystem: homogeneousMultiphase
+initialPressure: 100000.0
+mixture:
+  phases: [liquid, vapor]
+defaultPhase: vapor
+alpha:
+  fieldName: alpha.liquid
+  phase: liquid
+  defaultAlpha: 0.5
+  bounded: true
+  boundMode: diagnose
+  bounds: [0.0, 1.0]
+temperature:
+  enabled: true
+  fieldName: T
+  defaultValue: 374.0
+  bounded: true
+  boundMode: diagnose
+  bounds: [250.0, 1000.0]
+liquid:
+  role: liquid
+  thermoModel: stiffenedGas
+  gamma: 1.01
+  Cv: 4217.0
+  pInf: 15671580.0
+  e0: 0.0
+  density: 1000.0
+  volumeFraction: 0.5
+  mu: 0.001
+  Cp: 4217.0
+  k: 0.679
+vapor:
+  role: gas
+  thermoModel: stiffenedGas
+  gamma: 1.33
+  Cv: 1552.5
+  pInf: 0.0
+  e0: 2257000.0
+  density: 0.521693
+  volumeFraction: 0.5
+  mu: 1.23e-05
+  Cp: 2014.0
+  k: 0.0248

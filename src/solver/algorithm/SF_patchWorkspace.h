@@ -13,7 +13,7 @@ namespace SF::SolverAlgorithm {
 
 /// @brief 不拥有物理 state 的 patch-local residual/face-flux scratch storage。
 ///
-/// `CompressibleAlgorithm` 以 `StateBundle::patches` 的同一索引拥有此对象。
+/// `SingleFluidStepper` 以 `StateBundle::patches` 的同一索引拥有此对象。
 /// 它不进入 Field、StateBundle 或 ExecutionRuntime；后两者仅在同步阶段借用
 /// 其中的具体 storage。
 struct PatchWorkspace {

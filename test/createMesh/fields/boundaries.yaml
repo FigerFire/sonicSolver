@@ -1,0 +1,4 @@
+# Boundary conditions. SonicFile accepts patch: condition: value.
+SonicFile:
+  object: fields
+  type: boundary

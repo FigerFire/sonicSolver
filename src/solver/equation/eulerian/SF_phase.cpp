@@ -103,11 +103,11 @@ void PhaseEquationAssembler::bindAssemblyPlans(
 
 PhaseEquationAssembler::PhaseEquationAssembler(
         Physics::PhaseSystems::PhaseSystem& system,
-        const FDM::SolverPropertiesConfig& config,
+        const FDM::PressureCorrectionConfig& config,
         PhaseSolverWorkspace& workspace)
     : system_(system), config_(config), workspace_(workspace),
       rowMap_(makePhaseRowMap(system, nullptr)),
-      pressureSolver_(config.pressure) {
+      pressureSolver_(config.linear.pressure) {
     const size_t phaseCount = system_.phases().size();
     momentumSolvers_.reserve(3 * phaseCount);
     energySolvers_.reserve(phaseCount);
@@ -115,11 +115,11 @@ PhaseEquationAssembler::PhaseEquationAssembler(
         for (int component = 0; component < 3; ++component) {
             momentumSolvers_.push_back(
                 std::make_unique<LinearAlgebra::SolverSession>(
-                    config_.momentum));
+                    config_.linear.momentum));
         }
         energySolvers_.push_back(
             std::make_unique<LinearAlgebra::SolverSession>(
-                config_.energy));
+                config_.linear.energy));
     }
 }
 
@@ -277,12 +277,12 @@ void PhaseEquationAssembler::solveMomentumPredictors(double dt) {
                 const int cell = rowMap_.localCells[row];
                 const double old = predicted[(size_t)cell];
                 predicted[(size_t)cell] = old
-                    + config_.momentumRelaxation
+                    + config_.coupling.momentumRelaxation
                     * (result.solution[row] - old);
             }
         }
         for (double& value : workspace_.momentumDiagonal[phase].values()) {
-            value /= config_.momentumRelaxation;
+            value /= config_.coupling.momentumRelaxation;
         }
     }
 }

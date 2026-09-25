@@ -4,7 +4,7 @@
 /// Data flow:
 ///   decomposed mesh + local patch IDs + resolved system
 ///       -> patch StateBundle / adapters / output views
-///       -> existing stepper and runFlow
+///       -> existing stepper and flowLoop
 ///
 /// 本文件不实现 halo/COPY/SUM backend，也不改写数值 lifecycle。
 
@@ -12,8 +12,8 @@
 /*---------copyright by Li Pengfei------------*/
 /*----------code by LPF, 2026.08.04-----------*/
 
-#include "app/application/execution/SF_runners.h"
-#include "app/application/run/SF_runFlow.h"
+#include "app/application/execution/SF_execution.h"
+#include "app/application/execution/SF_flowLoop.h"
 
 #include "SF_resultWriter.h"
 #include "SF_MultiBlockMesh.h"
@@ -25,11 +25,11 @@
 #include "solver/equation/coupling/SF_interfaceCoupling.h"
 #include "SF_interfaceModel.h"
 #include "models/physics/interfaceModel/levelSet/SF_state.h"
-#include "models/physics/equationSet/SF_factory.h"
+#include "models/physics/fluidStateModel/SF_factory.h"
 #include "SF_parallelContext.h"
 #include "infrastructure/execution/SF_executionRuntime.h"
 #include "SF_numericsPolicy.h"
-#include "solver/algorithm/SF_compressible.h"
+#include "solver/algorithm/SF_singleFluidStepper.h"
 #include "SF_multiphase.h"
 #include "app/application/output/SF_fields.h"
 #include "SF_pipeline.h"
@@ -42,9 +42,9 @@
 #include <stdexcept>
 #include <vector>
 
-namespace SF::Application::Runners {
+namespace SF::Application::Execution {
 
-int runMultiPatch(
+int executeMulti(
         MultiBlockMesh& mesh,
         ResultWriter& writer,
         Parallel::ParallelContext& parallel,
@@ -55,11 +55,11 @@ int runMultiPatch(
         const CaseConfig& caseConfig,
         bool ibmEnabled,
         bool initialOutputOnly) {
-    using Equation::Coupling::CoupledTransportModel;
-    using Equation::Coupling::MultiPatchLegacyEquationCoupling;
-    using Equation::Coupling::MultiPatchInterfaceEquationCoupling;
+    using Equation::Coupling::CompositeTransportProvider;
+    using Equation::Coupling::MultiPatchMixtureEquationProvider;
+    using Equation::Coupling::MultiPatchInterfaceEquationProvider;
     using Equation::Coupling::registerInterfaceState;
-    using Equation::Coupling::registerLegacyState;
+    using Equation::Coupling::registerMixtureState;
     using Output::multiPhaseVTKScalars;
     using Output::interfaceVTKScalars;
     using Report::broadcastSolverConfig;
@@ -71,20 +71,18 @@ int runMultiPatch(
     // This is capability validation against the resolved system, not a
     // second workflow plan.  It stays next to the multi-patch adapter until
     // those numerical providers are operation-level implementations.
-    if (System::hasEquation(system, "E_PHASE_MASS")
-        || System::hasEquationPrefix(system, "E_CONTINUITY.")) {
+    if (System::requiresProvider(system,"thermodynamics.homogeneous")
+        || System::requiresProvider(system,"flow.eulerian-pressure")) {
         broadcast("Fatal execution capability: ",
             "the selected executable system has no multi-patch provider.");
         return -1;
     }
-    if (solverConfig.turbulence.enabled
-        && solverConfig.turbulence.family != FDM::TurbulenceFamily::None
-        && solverConfig.turbulence.family != FDM::TurbulenceFamily::DNS) {
+    if (System::requiresProvider(system,"equation.turbulence-transport")) {
         broadcast("Fatal execution capability: ",
             "multi-patch transported turbulence state is not implemented.");
         return -1;
     }
-    if (System::hasEquation(system, "E_LEGACY_ALPHA")
+    if (System::requiresProvider(system,"equation.legacy-mixture")
         && System::requiresCapability(system, "CanonicalScalarInterfaceFlux")
         && !mesh.haloExchangePlan().interfaces.empty()) {
         broadcast("Fatal execution capability: ",
@@ -122,12 +120,18 @@ int runMultiPatch(
         localFields.push_back(&mesh.block((size_t)patchId).field);
     }
 
-    if (ibmEnabled
+    const bool boundaryIBMRequired =
+        System::requiresProvider(system,"ibm.boundary");
+    if (boundaryIBMRequired != ibmEnabled) {
+        throw std::runtime_error(
+            "Multi-patch IBM resource does not match the compiled boundary provider requirement.");
+    }
+    if (boundaryIBMRequired
         && !ibm.setupLocalPatches(mesh, localPatchIds, parallel.rank())) {
         return -1;
     }
     parallel.exchangeInitial(mesh.blocks());
-    if (ibmEnabled) {
+    if (boundaryIBMRequired) {
         ibm.applyLocalPatches(
             mesh, localPatchIds, caseConfig.time.startTime, 0.0);
         parallel.exchangeInitial(mesh.blocks());
@@ -136,15 +140,16 @@ int runMultiPatch(
     std::vector<Physics::Multiphase::MultiPhaseModel> phaseModels;
     std::vector<std::unique_ptr<Physics::InterfaceModels::Model>>
         interfaceModels;
-    std::vector<CoupledTransportModel> transportModels;
+    std::vector<CompositeTransportProvider> transportModels;
     std::vector<std::vector<double>> phaseRHS;
     std::vector<State::VariableRegistry> variables;
     const bool legacyMultiPhaseActive =
-        System::hasEquation(system, "E_LEGACY_ALPHA");
-    const bool interfaceActive = System::hasEquation(system, "E_LEVEL_SET");
+        System::requiresProvider(system,"equation.legacy-mixture");
+    const bool interfaceActive =
+        System::requiresProvider(system,"equation.level-set");
     const bool multiPhaseActive =
         legacyMultiPhaseActive || interfaceActive;
-    if (interfaceActive && !solverConfig.numerics.timeSchemeDeclared) {
+    if (interfaceActive && !solverConfig.numerics.timeRecipeDeclared) {
         throw std::runtime_error(
             "OneFluidInterface requires an explicit "
             "system/fvSchemes ddtSchemes/default entry.");
@@ -164,7 +169,7 @@ int runMultiPatch(
             model.initializeConservedFromPrimitive(
                 mesh.block(blockId).field);
             transportModels[blockId].setMultiPhase(&model);
-            registerLegacyState(
+            registerMixtureState(
                 model, mesh.block(blockId).field,
                 phaseRHS[blockId], variables[blockId]);
         }
@@ -185,14 +190,13 @@ int runMultiPatch(
         broadcast("MultiPhase model  : ",
                   multiPhaseSummary(
                       caseConfig.multiPhase,
-                      solverConfig.numerics.solver)
+                      caseConfig.compatFlowLabel)
                   + " (blocks=" + std::to_string(mesh.size())
                   + ", local patches="
                   + std::to_string(localFields.size()) + ")");
     }
 
-    SolverAlgorithm::CompressibleAlgorithm solver(solverConfig, system);
-    Execution::Runtime executionRuntime(&coordinator);
+    ::SF::Execution::Runtime executionRuntime(&coordinator);
     FDM::FunctionObserver observer([](const FDM::SolverMessage& message) {
         if (message.kind == FDM::SolverMessageKind::TimeStep) {
             broadcast("Step time: ",
@@ -207,14 +211,13 @@ int runMultiPatch(
     });
 
     std::unique_ptr<MultiPatchIBAdapter> ibmAdapter;
-    if (ibmEnabled) {
+    if (boundaryIBMRequired) {
         ibmAdapter = std::make_unique<MultiPatchIBAdapter>(
                 &ibm, &mesh, &localPatchIds);
     }
     Boundary::Applicator physicalBoundary(solverConfig.boundaries);
     const int conservativeHaloDepth = std::max(
-        FDM::requiredGhostLayersForConvection(
-            FDM::toString(solverConfig.numerics.convection)),
+        system.numericalSystem.requiredHaloWidth,
         FDM::requiredGhostLayersForILW(solverConfig.numerics.ilwOrder));
     Boundary::Pipeline boundaryPipeline({
         &physicalBoundary,
@@ -222,16 +225,16 @@ int runMultiPatch(
         ibmAdapter.get(),
         ibmAdapter != nullptr,
         conservativeHaloDepth});
-    std::unique_ptr<MultiPatchLegacyEquationCoupling> equations;
-    std::unique_ptr<MultiPatchInterfaceEquationCoupling>
+    std::unique_ptr<MultiPatchMixtureEquationProvider> equations;
+    std::unique_ptr<MultiPatchInterfaceEquationProvider>
         interfaceEquations;
     if (legacyMultiPhaseActive) {
-        equations = std::make_unique<MultiPatchLegacyEquationCoupling>(
+        equations = std::make_unique<MultiPatchMixtureEquationProvider>(
             mesh, localPatchIds, executionRuntime, phaseModels, phaseRHS,
             variables, transportModels);
     } else if (interfaceActive) {
         interfaceEquations =
-            std::make_unique<MultiPatchInterfaceEquationCoupling>(
+            std::make_unique<MultiPatchInterfaceEquationProvider>(
                 mesh, localPatchIds, executionRuntime,
                 interfaceModels, variables);
     }
@@ -274,16 +277,14 @@ int runMultiPatch(
 
     State::StateBundle bundle;
     bundle.patches = localFields;
-    if (solverConfig.numerics.solver == FDM::SolverAlgorithm::DensityBased
-        && !System::hasEquation(system, "E_PHASE_MASS")
-        && !legacyMultiPhaseActive) {
-        bundle.equations = Physics::EquationSet::makeSingleFluidPerfectGas(
+    if (System::requiresProvider(system,"thermodynamics.single-fluid")) {
+        bundle.stateModel = Physics::FluidStateModel::makeSingleFluidPerfectGas(
             solverConfig.numerics.idealGasGamma,
             solverConfig.numerics.idealGasConstant,
             solverConfig.numerics.dynamicViscosity,
             solverConfig.numerics.prandtl);
         for (Field* field : bundle.patches) {
-            if (field) field->setEquationSet(bundle.equations);
+            if (field) field->setStateModel(bundle.stateModel);
         }
     }
     bundle.time = caseConfig.time.startTime;
@@ -304,23 +305,19 @@ int runMultiPatch(
             }
         }
     }
-    FDM::SolverState state;
-    state.bundle = &bundle;
-    FDM::SolverServices services;
-    services.boundaryPipeline = &boundaryPipeline;
-    services.executionRuntime = &executionRuntime;
-    services.observer = &observer;
-    if (ibmAdapter) services.immersed = {ibmAdapter.get(),nullptr,nullptr};
-    if (equations) services.equationSystem = equations.get();
-    if (interfaceEquations) services.equationSystem = interfaceEquations.get();
-    solver.bindServices(services);
-    return runFlow(
-        solver, state, plan, caseConfig.time, "Multi-patch density",
+    FDM::IEquationSystemCoupling* equationProvider = nullptr;
+    if (equations) equationProvider = equations.get();
+    if (interfaceEquations) equationProvider = interfaceEquations.get();
+    return Detail::runConservative(
+        solverConfig,system,plan,bundle,boundaryPipeline,executionRuntime,
+        observer,
+        ibmAdapter
+            ? FDM::ImmersedCouplingPorts{ibmAdapter.get(),nullptr,nullptr}
+            : FDM::ImmersedCouplingPorts{},
+        nullptr,equationProvider,caseConfig.time,"Multi-patch density",
         saveStep,
         saveTime,
-        {},
-        [&](bool finished) { return coordinator.allRanksAgree(finished); },
-        [](const FDM::StepResult& result) { return result.message; });
+        [&](bool finished) { return coordinator.allRanksAgree(finished); });
 }
 
-} // namespace SF::Application::Runners
+} // namespace SF::Application::Execution

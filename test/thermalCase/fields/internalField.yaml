@@ -1,0 +1,20 @@
+# Initial field values.
+SonicFile:
+  object: fields
+  type: internalField
+T:
+  default: 300
+  leftHalf: 350
+  rightHalf: 300
+U:
+  default: [0, 0, 0]
+  leftHalf: [0, 0, 0]
+  rightHalf: [0, 0, 0]
+p:
+  default: 0
+  leftHalf: 100000.0
+  rightHalf: 10000.0
+rho:
+  default: 0
+  leftHalf: 1.0
+  rightHalf: 0.125

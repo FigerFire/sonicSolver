@@ -1,0 +1,19 @@
+# Runtime configuration.
+SonicFile:
+  object: solver
+  type: runtime
+startTime: 0
+endTime: 0.002
+CFL: 0.3
+maxDeltaT: 0.001
+writeControl: runTime
+writeInterval: 0.001
+writeInitial: true
+output:
+  jobName: MixtureSod
+  outputDir: result
+parallel:
+  enabled: false
+  nProcs: 5
+  split: auto
+  haloTolerance: 1e-05

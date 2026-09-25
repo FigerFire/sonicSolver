@@ -132,10 +132,12 @@ inline const std::array<RegisteredContribution,3>& contributions() {
 ///
 /// @param field Field whose source array is cleared then updated in-place.
 /// @param config Explicit source configuration.
-inline void Sp(Field& field, Residual& residual, const FDM::SourceConfig& config) {
+inline void Sp(Field& field, Residual& residual,
+               const FDM::SourceConfig& parameters,
+               const std::vector<FDM::SourceKind>& boundSources) {
     residual.clearSource();
 
-    for (FDM::SourceKind kind : config.enabled) {
+    for (FDM::SourceKind kind : boundSources) {
         const auto found = std::find_if(
             contributions().begin(),contributions().end(),
             [kind](const RegisteredContribution& item) {
@@ -145,7 +147,7 @@ inline void Sp(Field& field, Residual& residual, const FDM::SourceConfig& config
             throw std::runtime_error(
                 "No density equation contribution is registered for SourceKind.");
         }
-        found->assemble(field,residual,config);
+        found->assemble(field,residual,parameters);
     }
 }
 

@@ -1,0 +1,35 @@
+# Built-in IBM module.
+SonicFile:
+  object: solver
+  type: IBM
+IBM:
+  enabled: true
+  type: variationalForcing
+  geometryFiles: [mesh/geometry/cube.stl]
+  forcing:
+    formulation: variationalDLM
+    algorithm: dfmImplicitPrescribed
+    constraintSupport: surface
+    representation: diffuseKernel
+    enforcement: monolithicKKT
+    solidModel: coupledRigid
+    constraintDomain: surface
+    coupling: monolithicKKT
+    motion: coupledRigid
+    motionMode: motivation
+    centerOfMass: [0.5, 0.5, 0.5]
+    linearVelocity: [0, 0, 0]
+    angularVelocity: [0, 0, 0]
+    energyCoupling: mechanicalWork
+    constraintTolerance: 1e-06
+    surfaceOperator:
+      kernel: wendlandC2
+      quadrature: triangleCentroid
+      supportRadius: 0.18
+      normalization: partitionOfUnity
+      spreading: adjoint
+    rigidBody:
+      mass: 5
+      momentOfInertia: [0.075, 0.075, 0.075]
+      externalForce: [10, 0, 0]
+      externalTorque: [0, 0, 0]

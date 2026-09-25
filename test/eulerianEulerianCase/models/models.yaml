@@ -1,0 +1,10 @@
+# Physics model registry.
+SonicFile:
+  object: models
+  type: registry
+multiPhase:
+  type: multiPhase
+  file: models/multiPhase.yaml
+MRF:
+  type: MRF
+  file: models/MRF.yaml
