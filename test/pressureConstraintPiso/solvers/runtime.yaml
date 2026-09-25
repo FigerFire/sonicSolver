@@ -1,0 +1,19 @@
+SonicFile:
+  object: solver
+  type: runtime
+startTime: 0
+endTime: 1e-5
+endStep: 1
+CFL: 0.1
+maxDeltaT: 1e-5
+writeControl: timeStep
+writeInterval: 1
+writeInitial: true
+output:
+  jobName: PressureConstraintPiso
+  outputDir: result
+parallel:
+  enabled: false
+  nProcs: 1
+  split: auto
+  haloTolerance: 1e-5

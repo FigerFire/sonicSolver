@@ -1,0 +1,52 @@
+# multiPhase model module.
+SonicFile:
+  object: models
+  type: multiPhase
+multiPhases: true
+phaseSystem: eulerianEulerian
+initialPressure: 101325.0
+phases: [water, air]
+referencePhase: water
+water:
+  model: perfectLiquid
+  role: liquid
+  rho: 998.2
+  alpha: 0.9
+  U: [0, 0, 0]
+  T: 300.0
+  mu: 0.001002
+  Cp: 4182.0
+  Cv: 4182.0
+  k: 0.598
+air:
+  model: perfectGas
+  role: gas
+  rho: 1.1766
+  alpha: 0.1
+  U: [0, 0, 0]
+  T: 300.0
+  mu: 1.846e-05
+  Cp: 1007.0
+  Cv: 718.0
+  gasConstant: 287.05
+  k: 0.0262
+interphaseModels:
+  phasePairs:
+    water_air:
+      continuousPhase: water
+      dispersedPhase: air
+      drag:
+        model: SchillerNaumann
+        diameter: 0.001
+      lift:
+        model: constantCoefficient
+        coefficient: 0.0
+      virtualMass:
+        model: constantCoefficient
+        coefficient: 0.5
+      wallLubrication:
+        model: none
+      turbulentDispersion:
+        model: none
+      heatTransfer:
+        model: RanzMarshall

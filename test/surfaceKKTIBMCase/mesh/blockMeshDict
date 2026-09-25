@@ -1,0 +1,28 @@
+FoamFile
+{
+    version 2.0;
+    format ascii;
+    class dictionary;
+    object blockMeshDict;
+}
+convertToMeters 1;
+vertices
+(
+    (0 0 0) (1 0 0) (1 1 0) (0 1 0)
+    (0 0 1) (1 0 1) (1 1 1) (0 1 1)
+);
+blocks
+(
+    hex (0 1 2 3 4 5 6 7) (16 16 16) simpleGrading (1 1 1)
+);
+edges ();
+boundary
+(
+    zMin { type wall; faces ((0 3 2 1)); }
+    zMax { type wall; faces ((4 5 6 7)); }
+    yMin { type wall; faces ((0 1 5 4)); }
+    xMax { type wall; faces ((1 2 6 5)); }
+    yMax { type wall; faces ((2 3 7 6)); }
+    xMin { type wall; faces ((3 0 4 7)); }
+);
+mergePatchPairs ();

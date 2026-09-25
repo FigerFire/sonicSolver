@@ -1,0 +1,76 @@
+# Boundary conditions. SonicFile accepts patch: condition: value.
+SonicFile:
+  object: fields
+  type: boundary
+T:
+  Left: fixedValue: 300.0
+  Right: zeroGradient
+  bottom: zeroGradient
+  top: zeroGradient
+  frontBack: empty
+T.air:
+  Left: fixedValue: 300.0
+  Right: zeroGradient
+  bottom: zeroGradient
+  top: zeroGradient
+  frontBack: empty
+T.water:
+  Left: fixedValue: 300.0
+  Right: zeroGradient
+  bottom: zeroGradient
+  top: zeroGradient
+  frontBack: empty
+U:
+  Left: fixedValue: [0, 0, 0]
+  Right: zeroGradient
+  bottom: fixedValue: [0, 0, 0]
+  top: fixedValue: [0, 0, 0]
+  frontBack: empty
+U.air:
+  Left: fixedValue: [0, 0, 0]
+  Right: zeroGradient
+  bottom: fixedValue: [0, 0, 0]
+  top: fixedValue: [0, 0, 0]
+  frontBack: empty
+U.water:
+  Left: fixedValue: [0, 0, 0]
+  Right: zeroGradient
+  bottom: fixedValue: [0, 0, 0]
+  top: fixedValue: [0, 0, 0]
+  frontBack: empty
+alpha.air:
+  Left: fixedValue: 0.1
+  Right: zeroGradient
+  bottom: zeroGradient
+  top: zeroGradient
+  frontBack: empty
+alpha.water:
+  Left: fixedValue: 0.9
+  Right: zeroGradient
+  bottom: zeroGradient
+  top: zeroGradient
+  frontBack: empty
+p:
+  Left: fixedValue: 101325.0
+  Right: zeroGradient
+  bottom: zeroGradient
+  top: zeroGradient
+  frontBack: empty
+rho:
+  Left: fixedValue: 998.2
+  Right: zeroGradient
+  bottom: zeroGradient
+  top: zeroGradient
+  frontBack: empty
+rho.air:
+  Left: fixedValue: 1.1766
+  Right: zeroGradient
+  bottom: zeroGradient
+  top: zeroGradient
+  frontBack: empty
+rho.water:
+  Left: fixedValue: 998.2
+  Right: zeroGradient
+  bottom: zeroGradient
+  top: zeroGradient
+  frontBack: empty

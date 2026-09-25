@@ -1,0 +1,6 @@
+# Case identity.
+SonicFile:
+  object: case
+  type: registry
+formatVersion: 1
+name: surfaceKKTIBMCase

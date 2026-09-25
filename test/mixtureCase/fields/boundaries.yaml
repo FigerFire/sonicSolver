@@ -1,0 +1,40 @@
+# Boundary conditions. SonicFile accepts patch: condition: value.
+SonicFile:
+  object: fields
+  type: boundary
+T:
+  inlet: fixedValue: 374.0
+  liquidInlet: fixedValue: 374.0
+  outlet: zeroGradient
+  sideWalls: zeroGradient
+  frontBack: empty
+U:
+  inlet: fixedValue: [0, 0, 0]
+  liquidInlet: fixedValue: [0, 0, 0]
+  outlet: zeroGradient
+  sideWalls: fixedValue: [0, 0, 0]
+  frontBack: empty
+epsilon:
+  inlet: fixedValue: 0.04
+  liquidInlet: fixedValue: 0.16
+  outlet: zeroGradient
+  sideWalls: fixedValue: 1e-08
+  frontBack: empty
+k:
+  inlet: fixedValue: 0.02
+  liquidInlet: fixedValue: 0.08
+  outlet: zeroGradient
+  sideWalls: fixedValue: 1e-08
+  frontBack: empty
+p:
+  inlet: zeroGradient
+  liquidInlet: zeroGradient
+  outlet: fixedValue: 100000.0
+  sideWalls: zeroGradient
+  frontBack: empty
+rho:
+  inlet: fixedValue: 1000.0
+  liquidInlet: fixedValue: 1000.0
+  outlet: zeroGradient
+  sideWalls: zeroGradient
+  frontBack: empty

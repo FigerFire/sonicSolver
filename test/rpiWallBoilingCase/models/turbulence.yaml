@@ -1,0 +1,20 @@
+# turbulence model module.
+SonicFile:
+  object: models
+  type: turbulence
+enabled: true
+simulationType: RAS
+phases: [liquid]
+walls: [leftWall, heatedWall]
+turbulentPrandtl: 0.9
+coupleMomentum: true
+coupleEnergy: true
+RAS:
+  model: kEpsilon
+  Cmu: 0.09
+  C1: 1.44
+  C2: 1.92
+  sigmaK: 1.0
+  sigmaEpsilon: 1.3
+  kFloor: 1e-10
+  epsilonFloor: 1e-10

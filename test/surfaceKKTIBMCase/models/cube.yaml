@@ -1,0 +1,5 @@
+# cube model module.
+SonicFile:
+  object: models
+  type: geometry
+file: mesh/geometry/cube.stl

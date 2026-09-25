@@ -1,0 +1,59 @@
+#compdef sonicSolver
+
+_sonicSolver() {
+    local -a commands models recipes
+    commands=(
+        'run:resolve, validate, and run a case'
+        'check:validate a case without solving'
+        'explain:print the resolved mathematical system'
+        'doctor:print implementation diagnostics'
+        'models:list available models'
+        'why:explain model capability requirements'
+        'explain-model:explain one model descriptor'
+        'recipes:list case recipes'
+        'init:create a native case template'
+        'cleanCase:remove CASE/result contents'
+        'postProcess:open the unique result PVD'
+        '--help:show help'
+        '-h:show help'
+        '--initial-output:write initial fields'
+        '--steps:limit a run to N time steps'
+    )
+    models=(ghostCell peskinOriginal dfmExplicitSelfPropelled
+        dfmFractionalStepSelfPropelled dfmFractionalStepPrescribed
+        dfmImplicitPrescribed dfmImplicitSelfPropelled
+        dfmAugmentedLagrangian velocityForcingFTS velocityForcingBP)
+    recipes=(compressibleSingleFluid compressibleFixedImmersedBody
+        compressibleMovingBody selfPropelledBody levelSetSurfaceTension)
+
+    _arguments -C \
+        '1:command:->command' \
+        '*::argument:->argument'
+    case "$state" in
+        command)
+            _describe 'sonicSolver command' commands
+            ;;
+        argument)
+            case "$words[2]" in
+                models)
+                    _arguments '1:category:(ibm)' '--with[filter by capability]:backend:(mpi)'
+                    ;;
+                why|explain-model)
+                    _describe 'IBM model' models
+                    ;;
+                init)
+                    _arguments '1:case:_files -/' \
+                        '--recipe[case recipe]:recipe:(compressibleSingleFluid compressibleFixedImmersedBody compressibleMovingBody selfPropelledBody levelSetSurfaceTension)'
+                    ;;
+                run|check|explain|doctor|cleanCase|postProcess|--initial-output)
+                    _files -/
+                    ;;
+                *)
+                    _files -/
+                    ;;
+            esac
+            ;;
+    esac
+}
+
+_sonicSolver "$@"

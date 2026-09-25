@@ -1,42 +1,26 @@
-# src 源码导航
+# src 源码导航 — phase25B
 
-`src/` 只保留六个目录域。目录域用于归类，实际模块仍由各自的调度头文件和
-CMake target 独立维护，不能因为物理位置相邻就相互读取内部实现。
+`src/` 按职责分为六个域。完整的编译与运行契约见 [ARCHITECTURE.md](ARCHITECTURE.md)。
 
-```text
-src/
-├── app/             程序装配与 CLI/GUI 前端
-├── solver/          四层求解架构
-├── core/            公共状态、存储、配置和接口契约
-├── methods/         可复用纯数学工具与数值方法
-├── models/          物理、湍流、IBM 和初值模型
-└── infrastructure/  IO、网格与并行通信
-```
+| 目录 | 主要职责 |
+|---|---|
+| `core/` | Field、StateBundle、强类型配置、运行接口及中立 `core/system` 值类型 |
+| `models/` | 物理源项、湍流、IBM、相模型；向系统提供 contribution，不拥有全局 timestep |
+| `solver/system/` | 方程组合、变换、state realization、numerical compiler、SolvePlanner、ProviderResolver 和验证 |
+| `solver/algorithm/` | 现有数值 provider、solver workspace、显式单 stage 运算和 Eulerian 相执行 |
+| `solver/equation/`、`discretization/`、`boundary/`、`linearAlgebra/` | 方程装配、空间离散、边界闭合与线性后端 |
+| `infrastructure/` | IO、网格和 MPI/backend 实现 |
+| `methods/` | 可复用数学/几何方法及仍在迁移的数值工具 |
+| `app/` | case 解析、application composition、CLI/GUI、输出 |
 
-## 依赖方向
+当前重点入口：
 
-```text
-app
-  -> solver/algorithm
-       -> solver/equation
-            -> solver/discretization + solver/boundary
-                 -> solver/linearAlgebra（隐式项需要时）
+- `core/system/SF_equationIR.h`：Raw/Executable equation system 与 executable operation 的中立描述。
+- `core/system/SF_planFragment.h`、`SF_solveProgram.h`：控制流片段与编译计划值类型。
+- `solver/system/SF_systemBuilder.cpp`：启动阶段编译入口。
+- `solver/system/SF_providerResolver.cpp`：OpId 到 numerical provider 的唯一编译绑定。
+- `solver/system/SF_solvePlan.cpp`：通用 plan lowering；压力与 Eulerian 的顺序来自 contribution/fragment。
+- `solver/run/SF_planExecutor.cpp`：执行结构化计划，不选择物理方程。
+- `solver/algorithm/SF_singleFluidStepper.cpp`、`eulerian/SF_eulerianStepper.cpp`：绑定已分配的 operation 并调用现有数值 kernel。
 
-solver 按需调用 methods、models、core 和 infrastructure；
-methods 不依赖求解流程，core 不拥有具体物理模型。
-```
-
-## 目录入口
-
-- `app/application/SF_application.h`：case 装配和运行入口。
-- `solver/algorithm/SF_solverAlgorithm.h`：第一层，求解流程。
-- `solver/equation/SF_equation.h`：第二层，方程表达与组装。
-- `solver/discretization/SF_discretization.h`：第三层，方程项离散调度。
-- `solver/boundary/SF_boundary.h`：第三层，边界离散调度。
-- `solver/linearAlgebra/SF_linearAlgebra.h`：第四层，线性系统求解。
-- `methods/numerics/SF_numerics.h`：数值方法入口。
-- `methods/math/SF_math.h`：纯数学方法入口。
-- `core/config/SF_config.h`：强类型配置入口。
-
-新增代码时，先根据职责选择目录域，再通过所属模块的调度入口公开；不要新增
-跨目录域的大型 umbrella header，也不要把方程组装、数值核或 IO 混入同一个文件。
+模型贡献依赖 `core/system`，不能为了取得中立 IR 反向依赖 `solver/system`。并行状态和几何使用 owner→COPY，共享面只有一个 canonical flux，残差/源项/载荷使用 SUM；详见架构文档。

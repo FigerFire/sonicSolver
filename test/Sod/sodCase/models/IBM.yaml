@@ -1,0 +1,8 @@
+# Built-in IBM module.
+SonicFile:
+  object: solver
+  type: IBM
+IBM:
+  enabled: false
+  type: ghost
+  geometryFiles: []

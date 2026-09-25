@@ -1,884 +1,117 @@
-# SonicSolver Architecture — Equation Composition, System Formulation, Solve Planning
+# SonicSolver 架构 — phase25B
 
-**Revision:** 2026-09-24 v2  
-**Purpose:** converge the solver architecture after the pressure–velocity coupling design review.
+**版本：** 2026-09-25 · phase25B
+**状态：** 架构编译链已收口；部分 numerical provider 仍未实现。本文描述当前源码的实际 authority，不把计划接口等同于已经可运行的算法。
 
----
+## 1. 系统以方程而非 solver family 为中心
 
-## 1. One sentence architecture
-
-SonicSolver is not a collection of solver families.
-
-It is a system that:
+一个 case 独立说明主未知量、方程/约束、模型贡献、耦合 preset、时间 recipe、空间离散和运行环境。内置 Navier–Stokes 方程、湍流、IBM 及用户声明通过同一 composition path 汇入 RawEquationSystem。Preset 可以给出普通贡献与控制流片段，但不能暗中选择第二套运行流程。
 
 ```text
-composes equations
-    ↓
-formulates/transforms constrained equation systems
-    ↓
-derives executable equations/operators
-    ↓
-plans their execution
-    ↓
-binds numerical/runtime providers
-    ↓
-executes
+CaseConfig + BuildRequest
+        │
+        ├─ Built-in presets
+        ├─ Model SystemContribution
+        └─ User additions / modifications
+        ↓
+RawEquationSystem                         WHAT: physical equations/constraints
+        ↓ TransformationPipeline
+ExecutableEquationSystem                  WHAT: derived equations + operations
+        ↓ compileStateRealization
+CompiledStateRealization                  STATE: unknown/storage roles
+        ↓ NumericalCompiler
+CompiledNumericalSystem                   HOW: term recipes, dt/time/phase policy
+        ↓ PlanFragment + SolvePlanner
+CompiledSolvePlan                         ORDER: sequence/loop/stage/OpId
+        ↓ ProviderResolver
+ResolvedOperationBinding[]               BINDING: OpId → provider/Unsupported
+        ↓ RuntimeRequirements + validation
+OpRegistry → PlanExecutor → committed StateBundle
 ```
 
-The stable design rule is:
+`ResolvedSimulationSystem` 保存这些不同阶段的结果，而非一份可任意重复修改的平行 state。`Program` 只以引用暴露 executable、numerical、plan 和 runtime 四类编译产物。
 
-> Presets and models never own a hidden solver path. They only contribute fields, equations, constraints, transformations, numerical requirements, and solve-plan fragments to the same compiled system that an advanced user could construct manually.
+## 2. 各层的唯一 authority
 
----
+| 问题 | 当前 authority | 主要位置 |
+|---|---|---|
+| 解什么方程、有哪些约束 | `RawEquationSystem`；变换后为 `ExecutableEquationSystem` | `core/system/SF_equationIR.h` |
+| 模型增加什么 | 中立 `SystemContribution` 值，经 `SystemCompositionBuilder` 验证合并 | `core/system/SF_systemContribution.h`、`solver/system/SF_equationContribution.cpp` |
+| pressure/IBM 约束如何变换 | transformation descriptor 与 pipeline | `solver/system/SF_transformation.cpp` |
+| 每项的离散和时间 recipe | `CompiledNumericalSystem` | `solver/system/SF_numericalCompiler.cpp` |
+| 循环层级和执行顺序 | `CompiledSolvePlan` | `core/system/SF_planFragment.h`、`solver/system/SF_solvePlan.cpp` |
+| 哪个实现执行每个 OpId | `ResolvedOperationBinding` | `solver/system/SF_providerResolver.cpp` |
+| backend 与 MPI 能力是否可用 | `RuntimeRequirements`，由 `BuildCapabilities` 验证 | `solver/system/SF_runtimeRequirements.h`、`SF_systemValidator.cpp` |
+| 物理状态、时钟与 solver workspace | `StateBundle`；workspace 归 execution lifetime | `core/state/`、`solver/algorithm/` |
 
-## 2. The three fundamental questions
+`ExecutableOperation` 只声明 OpId、stage 和 typed `OperationCapability`。它不写 `flow.conservative` 之类的 concrete provider。ProviderResolver 以 Plan 中实际引用的 OpId、operation 需求和 state realization 解析现有实现；未声明或不支持的操作保留在报告中，状态为 `Unsupported`。`RuntimeReport` 是绑定结果的只读摘要，不能再发明 missing-operation 列表。Stepper 的 OpRegistry 仅保留已分配给它的 operation。
 
-### 2.1 Equation Composition — WHAT physics/mathematics exists?
+## 3. Composition 与 transformation
 
-This layer answers:
+中立 IR 位于 `core/system`；模型可以贡献未知量、方程、term、constraint、closure、transformation request 和 execution policy，但不能 include/link `solver/system` 编译实现。`solver/system` 执行组合、校验和 lowering。Builtin、Model 与 User 使用同一 `Equation::Definition`/descriptor 形式；`add`/`extend` 已有 typed path，尚未完整实现的 `replace`/`disable` 必须显式失败，不能按同名覆盖。
+
+Pressure constraint transformer 根据方程与 `C_INCOMPRESSIBILITY` 匹配，生成 predictor、pressure correction 与 velocity/flux correction 的方程、算子和 executable operations。Eulerian shared-pressure transformer 根据 `C_SHARED_PRESSURE` 声明相级 `ee.*` operations。Coupling preset 的 PlanFragment 给出顺序和三层循环：outer corrector → pressure corrector → non-orthogonal pass。`SF_solvePlan.cpp` 只降低结构化 fragment，不包含 PISO/PIMPLE 或 `ee.pressure.*` 的算法分支。Ghost/ILW 保持 boundary closure；约束型 IBM 才进入 constraint operation/耦合路径。
+
+## 4. Numerical recipe、时间与配置
+
+方程层只表达 `ddt/div/diffusion/source/constraint` 等数学 term。TimeRecipe 的当前内置选项为 `forwardEuler`、`SSPRK3`、`classicalRK4`；`SolvePlanner` 编译 stage topology，`Time::Explicit` 实现单 stage 数学。NumericalCompiler 为有真实消费者的 term 或 operation 绑定 recipe；选择了未被任何消费者使用的 diffusion recipe 会 fail-fast，不能因系统含压力约束而放宽检查。
+
+Typed pressure 配置将 `PressureCouplingConfig`、`PhaseTransportConfig`、`PressureReference` 和 `LinearSolverSet` 分开。`PressureCouplingPreset` 是 preset 名称，不是顶层 Algorithm 类。native 输入中的 `algorithm: PISO` 仍可被解析为 typed preset。Eulerian phase convection 和 phase-source CFL 属于 phase transport 数值策略，编译为 `CompiledNumericalSystem::phaseTransport`；运行时读取编译值，当前仅 Upwind 可执行。
+
+## 5. Production execution 与真实支持状态
+
+`app/` 解析 case、建立 state/services 与编译结果，然后进入共同的 compiled-plan 执行 contract。`PlanExecutor` 只解释 Sequence、Loop、StageLoop 和 leaf OpId；现有 numerical helper 仍实现真实 kernel。Single-fluid explicit path 与 Eulerian shared-pressure path 使用各自适用的 provider，但 provider 选择已经在运行前完成。Pressure、IBM、turbulence 和 phase 源项仍按数学职责区别处理，不因为它们都叫 model 而合并数值实现。
+
+| 路径 | phase25B 状态 |
+|---|---|
+| Conservative single-fluid explicit time，现有密度格式 | 已有 production provider |
+| 现有 conservative PISO pressure-correction 能力范围 | 已有 provider；仅在匹配的 state、schedule 和 time recipe 下解析 |
+| Eulerian shared-pressure PIMPLE 现有路径 | 已有相级 provider；plan 由 shared-pressure fragment 降低 |
+| 内置 Ghost/ILW 及现有 IBM constraint 数值路径 | 保留现有实现，通过对应 boundary/operation contract 接入 |
+| Constant-density single-fluid PISO | `Unsupported`：缺 dedicated predictor/pressure/correction provider |
+| SIMPLE/PIMPLE single-fluid fixed-point predictor | `Unsupported`：不得重复执行 full-`dt` conservative momentum update |
+| 其他未提供的时间、离散或 backend 组合 | capability validation 显式 fail-fast，不静默降级 |
+
+`explain` 应显示 contributions、raw/executable equations、operations、recipe、Plan、operation bindings、运行要求及其状态。`Active` 的数学变换不等于对应 numerical provider 一定 Runnable；两者必须分开报告。
+
+## 6. State、workspace 与并行数值不变量
+
+每个 physical state、clock、equation binding 只有一个 owner。`StateBundle` 保存参与计算的 patch 状态及物理时钟；`PatchWorkspace`、FluxField、Residual、RK stage arrays、线性和约束 workspace 归求解执行期，不回塞进 `Field`，也不复制另一份 authoritative Q。
 
 ```text
-What fields exist?
-What equations exist?
-What closures exist?
-What constraints exist?
+state / geometry / labels          owner → COPY → replicas
+shared numerical face              candidate → one canonical F* → COPY → +F*/−F*
+residual / source / load / J row    local contributors → SUM → owner
 ```
 
-Examples:
+MPI 实现留在 infrastructure/backend；equation、discretization 与 plan 只声明同步/归约要求。架构调整不得改变 stage time、boundary/halo 顺序、flux 或 residual 符号。Phase25B 四个 production 回归和限制见 [迁移报告](../docs/provider-resolution-shared-pressure-closure.md)。
+
+## 7. 模块依赖与源码入口
 
 ```text
-Mass
-Momentum
-Energy
-Alpha
-k
-omega
-solid momentum
-induction equation
-IBM constraint
-incompressibility constraint
+             core/system + core interfaces
+                   ↑             ↑
+                   │             │
+                models      solver/system compilers
+                                  ↓
+                       algorithm / run execution
+                                  ↓
+             equation + discretization + boundary
+                                  ↓
+                       linearAlgebra / backend
 ```
 
-Sources may be:
+这是语义方向；部分旧数值目标尚有链接债，不能把目录图误写成已完全无环。主要文件：
 
-```text
-built-in presets
-registered models
-user additions
-user replacements/overrides
-```
+- `solver/system/SF_systemBuilder.cpp`：组合与编译阶段入口。
+- `solver/system/SF_transformation.cpp`、`SF_pressureCoupling.cpp`：压力约束和 shared-pressure contributions。
+- `solver/system/SF_solvePlan.cpp`、`SF_providerResolver.cpp`：通用计划 lowering 与唯一 provider 解析。
+- `solver/run/SF_planExecutor.cpp`：结构化执行器。
+- `solver/algorithm/SF_singleFluidStepper.cpp`、`eulerian/SF_eulerianStepper.cpp`：现有 provider 到 OpRegistry 的绑定。
+- `app/application/`：case composition、state/services 装配和输出。
 
-All sources must lower to the same equation IR.
+## 8. 验证和未完成工作
 
----
+Phase25B 的干净 clang++/Ninja 构建、14/14 CTest 和 `tools/check_architecture.py` 均通过。4-rank Sod 与 serial Ghost 的逐步诊断记录一致；PISO 最终 VTS SHA-256 相同；Eulerian 两步诊断、Plan 树和 OpId 顺序一致。Sod/Ghost 迁移前未保存场文件哈希，因此报告只证明记录精度下诊断逐行相同。
 
-### 2.2 System Formulation / Transformation — how is the mathematical system made solvable?
-
-This layer is between raw equations and execution.
-
-It may:
-
-```text
-introduce a multiplier
-derive an algorithmic equation
-eliminate a variable
-construct a Schur complement
-create a pressure-correction equation
-construct a projection
-form a KKT system
-construct an augmented-Lagrangian system
-split a constrained solve into predictor / multiplier / correction
-```
-
-This is where pressure–velocity coupling belongs conceptually.
-
-For constant-density flow:
-
-```text
-Momentum
-+
-div(U) = 0
-    ↓
-PressureConstraintFormulation
-    ↓
-MomentumPredictor
-PressureCorrection/Poisson
-VelocityCorrection
-FluxCorrection
-```
-
-For IBM:
-
-```text
-Momentum
-+
-J(U) = Ub
-    ↓
-ImmersedConstraintFormulation
-    ↓
-Monolithic KKT
-or
-Predictor + multiplier solve + correction
-```
-
-Pressure coupling and IBM share the architecture of:
-
-```text
-base equation
-+
-constraint
-+
-multiplier
-+
-formulation
-```
-
-but they do not have to share one numerical implementation.
-
----
-
-### 2.3 Equation Execution — in what order/how are the executable operations solved?
-
-This layer answers:
-
-```text
-explicit or implicit?
-segregated or block coupled?
-A → B → C?
-repeat A/B to convergence?
-subcycle?
-RK stages?
-outer correctors?
-pressure correctors?
-non-orthogonal correctors?
-```
-
-The output is the `CompiledSolvePlan`.
-
-Typical control-flow IR:
-
-```text
-Sequence
-Loop
-StageLoop
-Assemble
-Solve
-Correct
-Update
-Commit
-```
-
-`PlanExecutor` interprets this IR.
-
-It does not infer physics and does not derive equations.
-
----
-
-## 3. Correct position of SIMPLE / PISO / PIMPLE
-
-SIMPLE, PISO and PIMPLE are not only solve-order labels.
-
-They have two responsibilities:
-
-```text
-A. formulation / factorization
-   derive the executable pressure-constraint operators/equations
-
-B. execution pattern
-   define predictor/corrector/outer-loop ordering
-```
-
-Therefore a coupling model should contribute both:
-
-```text
-EquationSystemTransformer
-+
-SolvePlanContribution
-```
-
-Conceptually:
-
-```text
-SIMPLE
-    inspect Momentum + IncompressibilityConstraint
-    derive pressure-correction formulation
-    add predictor / pressure / velocity / flux correction operations
-    contribute outer iteration + relaxation schedule
-
-PISO
-    inspect the same constrained base system
-    derive compatible projection/correction operators
-    contribute predictor + N corrector schedule
-
-PIMPLE
-    combine an outer SIMPLE-like loop with inner PISO-like corrections
-    without becoming a top-level solver identity
-```
-
-Do not implement:
-
-```cpp
-if (simple) runSimpleSolver();
-if (piso)   runPisoSolver();
-```
-
-Do not reduce them to a single enum that is interpreted only inside a stepper.
-
----
-
-## 4. Compressible / incompressible are presets, not solver identities
-
-`compressible` and `incompressible` may exist as convenient built-in equation presets.
-
-Example:
-
-```text
-compressible preset
-    contributes:
-        Mass
-        Momentum
-        Energy
-        thermodynamic closure
-
-incompressible preset
-    contributes:
-        Momentum
-        rho = rho0 closure
-        div(U) = 0 constraint
-```
-
-These presets must not directly choose:
-
-```text
-a stepper class
-SIMPLE/PISO/PIMPLE
-RK/Euler
-WENO/TENO
-MPI
-HYPRE
-IBM method
-```
-
-After composition, preset identity remains provenance only.
-
-An advanced user may construct an equivalent system manually.
-
-Equivalent resolved equations/constraints/models must produce equivalent compilation regardless of whether they came from a preset.
-
----
-
-## 5. Density-based / pressure-based are not top-level configuration identities
-
-Do not keep `DensityBasedSolver` / `PressureBasedSolver` as architecture categories.
-
-Do not make a user-facing enum the authority that decides the physical equation pack.
-
-Instead introduce an internal compiled object such as:
-
-```cpp
-struct StateRealization {
-    // primary unknown roles
-    // transported vs derived variables
-    // multiplier roles
-    // conservative groups
-    // storage bindings
-};
-```
-
-It is derived from:
-
-```text
-ExecutableEquationSystem
-+
-active formulations
-+
-unknown/constraint roles
-```
-
-Examples:
-
-```text
-Mass + Momentum + Energy
-rho/rhoU/rhoE transported
-no pressure multiplier constraint
-    -> conservative transported-state realization
-
-Momentum + rhoConst + div(U)=0
-pressure multiplier
-pressure-correction formulation
-    -> U/p pressure-constraint realization
-```
-
-Thus “density-based” and “pressure-based” may remain useful `explain` descriptions, but they are compiled consequences, not top-level solver selectors.
-
-Temporary compatibility input such as `densityBase` / `pressureBase` may be decoded during migration, but it must not survive as runtime dispatch authority.
-
----
-
-## 6. Models are system contributors
-
-A model is not primarily “an object called once per timestep”.
-
-A registered model contributes to the mathematical/execution system.
-
-A model may contribute any subset of:
-
-```text
-fields
-equations
-terms
-closures
-constraints
-transformations/formulations
-numerical requirements
-solve-plan fragments
-runtime requirements
-```
-
-Examples:
-
-```text
-kOmegaSST
-    fields: k, omega, nut
-    equations: E_k, E_omega
-    closure: nut(...)
-    terms: turbulence contribution to flow equations
-
-IBM
-    constraint: J(U)-Ub=0
-    multiplier: lambda
-    term: J^T lambda
-    formulation: KKT / projection / forcing
-    runtime requirement: geometry / marker ownership
-
-SIMPLE
-    requirement: Momentum + incompressibility constraint
-    formulation: pressure correction
-    operations: predictor / pressure / velocity / flux correction
-    plan: outer iteration + relaxation
-
-PISO
-    requirement: Momentum + incompressibility constraint
-    formulation: pressure projection/correction
-    plan: predictor + N correctors
-```
-
-No model has a privileged hidden runtime path.
-
----
-
-## 7. Registered-but-inapplicable models
-
-Never silently ignore a model.
-
-A registered model/formulation has explicit status:
-
-```text
-not registered
-active
-inactive
-invalid
-unsupported
-```
-
-Example:
-
-```text
-User registers SIMPLE.
-
-Raw system:
-    transported rho
-    conservative mass equation
-    momentum
-    energy
-    no incompressibility constraint
-
-Result:
-    SIMPLE inactive/incompatible
-
-Reason:
-    no supported pressure-multiplier constraint system was found.
-```
-
-Do not implement:
-
-```cpp
-if (densityBased) ignoreSimple = true;
-```
-
-The decision comes from equation/constraint requirements, not a solver-family label.
-
-In strict mode, an explicitly registered but incompatible coupling model should be a configuration error.
-
----
-
-## 8. Presets and user freedom
-
-All usage levels share one compilation pipeline.
-
-### Level 0 — fully default
-
-```text
-default fields
-default equation preset
-default numerics
-default execution policies
-```
-
-### Level 1 — model/preset composition
-
-```text
-register SIMPLE/PISO/PIMPLE
-register IBM
-register turbulence
-register phase change
-register MRF
-```
-
-### Level 2 — reuse fields, customize equations
-
-```text
-extend momentum with Lorentz force
-disable energy
-replace one transport equation
-```
-
-### Level 3 — full custom system
-
-```text
-register fields
-define equations
-define constraints
-define formulations
-define solve plan
-```
-
-All four lower to:
-
-```text
-ResolvedSimulationSystem
-```
-
-There is only one runtime authority chain.
-
----
-
-## 9. Override semantics
-
-Do not rely on same-name “last definition wins”.
-
-Use explicit actions:
-
-```text
-add
-extend
-replace
-disable
-```
-
-Suggested precedence:
-
-```text
-built-in defaults
-    ↓
-registered model contributions
-    ↓
-user additions/extensions
-    ↓
-explicit user replacements/disables
-    ↓
-validation
-```
-
-Examples:
-
-```text
-extend Momentum:
-    + LorentzForce
-
-replace Momentum:
-    MyMomentumEquation
-
-disable Energy
-```
-
-This is important for reproducible research cases.
-
----
-
-## 10. Compilation pipeline
-
-Target chain:
-
-```text
-User Input
-    │
-    ├── Built-in Presets
-    ├── Registered Models
-    └── User Definitions
-            ↓
-      System Composition
-            ↓
-      Raw Equation System
-            ↓
-      System Formulations / Transformers
-            │
-            ├── Pressure constraint formulation
-            ├── IBM constraint formulation
-            ├── shared-pressure formulation
-            └── custom
-            ↓
-      Executable Equation System                    WHAT
-            ↓
-      State Realization
-            ↓
-      Numerical Compiler                            HOW
-            ↓
-      Compiled Numerical System
-            ↓
-      Solve Planner                                 ORDER
-            ↓
-      Compiled Solve Plan
-            ↓
-      Provider + Runtime Requirements               RUNTIME
-            ↓
-      validate()
-            ↓
-      Runtime provider binding
-            ↓
-      OpRegistry
-            ↓
-      PlanExecutor
-            ↓
-      committed state
-```
-
-The layers have distinct authority.
-
-No later stage may reconstruct an earlier decision from raw configuration.
-
----
-
-## 11. Runtime naming
-
-The current `SingleFluidStepper` name is wrong because it describes a physics label that no longer owns the runtime path.
-
-Do **not** replace it with another top-level state-family solver if the object can be made generic.
-
-Preferred target:
-
-```text
-SingleFluidStepper -> SingleFluidStepper
-```
-
-or simply:
-
-```text
-FlowStepper
-```
-
-Its responsibility:
-
-```text
-own runtime operation registry/workspaces
-bind compiled operations
-execute CompiledSolvePlan
-commit state
-```
-
-Subordinate providers may remain specialized:
-
-```text
-ConservativeRHS
-PressurePredictor
-PressureCorrection
-IBMConstraintProvider
-TurbulenceProvider
-```
-
-Therefore:
-
-```text
-ConservativeRHS -> ConservativeRHS
-```
-
-is still an appropriate rename.
-
-Likewise:
-
-```text
-EulerianEulerian::EulerianStepper -> EulerianStepper
-```
-
-because Eulerian phase execution is its real domain; PIMPLE is a formulation/plan contribution, not its identity.
-
-Avoid:
-
-```text
-CompressibleSolver
-IncompressibleSolver
-DensitySolver
-PressureSolver
-PimpleSolver
-```
-
-as top-level runtime identities.
-
----
-
-## 12. Pressure coupling architecture
-
-The base mathematical system should contain the constraint, not a user-written pressure Poisson equation:
-
-```text
-Momentum
-+
-IncompressibilityConstraint
-```
-
-The coupling formulation derives algorithmic equations/operators:
-
-```text
-MomentumPredictor
-PressureCorrection/Poisson
-VelocityCorrection
-FluxCorrection
-```
-
-The solve planner then lowers the registered coupling preset to control flow.
-
-Example PIMPLE:
-
-```text
-Sequence step
-    prepare
-    dt.compute
-    step.begin
-
-    Loop outerCorrectors
-        MomentumPredictor
-
-        Loop pressureCorrectors
-            Loop nonOrthogonalCorrectors
-                PressureAssemble
-                PressureSolve
-
-            VelocityCorrection
-            FluxCorrection
-
-        convergence / relaxation policy
-
-    commit
-    time.commit
-```
-
-The exact mathematical operators remain owned by the formulation/provider.
-
-The plan owns only execution ordering and loop structure.
-
----
-
-## 13. Relationship to KKT / constrained systems
-
-Pressure coupling and IBM can share generic metadata/contracts such as:
-
-```text
-ConstraintDescriptor
-MultiplierDescriptor
-ConstraintOperator role
-Adjoint/spreading role
-Formulation requirement
-```
-
-Potential common formulation categories:
-
-```text
-Monolithic
-Projection
-Fractional
-ApproximateSchur
-AugmentedLagrangian
-```
-
-However, do not force SIMPLE/PISO and IBM KKT into one numerical implementation merely because both originate from constrained saddle-point systems.
-
-Architecture sharing is encouraged.
-
-Mathematical over-generalization is not.
-
----
-
-## 14. SystemBuilder responsibilities
-
-The current `SF_systemBuilder.cpp` must converge to a compiler orchestrator, not a God file.
-
-Logical stages:
-
-```text
-compose defaults/presets/models/user definitions
-apply explicit overrides
-validate raw system
-select/apply formulations
-build executable system
-realize state
-compile numerics
-compile solve plan
-derive provider/runtime requirements
-final validation
-```
-
-Split implementation by real stage while keeping one small public build entry.
-
-Do not introduce a second workflow framework.
-
----
-
-## 15. P0 priorities
-
-### P0-A — remove solver-family authority
-
-- remove runtime dispatch from `compressible/incompressible`
-- remove `DensityBased/PressureBased` as physical equation selectors
-- stop using a top-level `PrimaryForm` to choose the equation pack
-- introduce compiled `StateRealization`
-- keep old input names only as migration aliases if required
-
-### P0-B — reposition pressure coupling
-
-- SIMPLE/PISO/PIMPLE become coupling-model presets
-- each contributes a system formulation + solve-plan fragment
-- planner must not derive the pressure equation itself
-- stepper must not own the SIMPLE/PISO/PIMPLE lifecycle
-
-### P0-C — rename runtime classes
-
-- `SingleFluidStepper -> SingleFluidStepper` (preferred)
-- `ConservativeRHS -> ConservativeRHS`
-- `Eulerian EulerianStepper -> EulerianStepper`
-- remove physical-family wording from comments and explain output where it implies runtime identity
-
-### P0-D — compiled authority
-
-- every stepper consumes compiled numerical/time/dt authority
-- no Eulerian/raw-config reread of CFL/maxDeltaT when compiled values exist
-- provider selection comes from compiled operation/provider requirements
-
-### P0-E — truthful rhoConst + PIMPLE path
-
-- constant-density composition creates/retains incompressibility constraint
-- PIMPLE formulation derives required algorithmic pressure operations
-- if numerical provider exists, run it
-- if not, fail specifically as `Unsupported: missing <operation/provider>`
-- never fail merely because “this is not a pressure solver”
-- never fake PIMPLE by repeating a full physical timestep
-
----
-
-## 16. P1 priorities
-
-- split `SF_systemBuilder.cpp` by compilation stage
-- return contribution `.cpp` files to their owning model targets
-- return `PlanExecutor` to the run target
-- reduce application execution files to runtime composition
-- make `OpRegistry`/workspace lifetime consistent across steppers
-- remove ambiguous duplicate public header names or use path-qualified includes
-- add architecture guards for forbidden solver-family dispatch
-
----
-
-## 17. P2 priorities
-
-- split `SF_nativeDecode.cpp` by input domain
-- extract Eulerian diagnostics from commit
-- classify remaining raw config reads into model / closure / numerical authority
-- delete legacy parser/config files already out of production targets
-- remove obsolete include directories
-- implement/document explicit add/extend/replace/disable equation semantics
-- update `explain` to show contribution provenance and active/inactive/unsupported models
-
----
-
-## 18. Explain output target
-
-`explain` should expose the compiled reasoning without hidden dispatch.
-
-Example:
-
-```text
-EQUATION SOURCES
-  builtin preset : incompressible
-  model          : kOmegaSST
-  coupling model : PIMPLE
-  model          : IBM ghost
-
-RAW EQUATIONS
-  E_MOMENTUM
-  C_INCOMPRESSIBILITY
-  E_K
-  E_OMEGA
-
-FORMULATIONS
-  pressure.constraint.pimple       active
-  ibm.ghost                        active
-
-DERIVED OPERATIONS
-  momentum.predict
-  pressure.assemble
-  pressure.solve
-  velocity.correct
-  flux.correct
-
-STATE REALIZATION
-  transported : U, k, omega
-  multiplier  : p
-  derived     : rho=rho0
-
-NUMERICAL HOW
-  convection  : ...
-  diffusion   : ...
-  dt policy   : ...
-
-SOLVE PLAN
-  outer loop ...
-  pressure corrector loop ...
-
-PROVIDERS
-  ...
-
-RUNTIME
-  MPI ...
-  HYPRE ...
-```
-
-A registered but irrelevant coupling model must be visible:
-
-```text
-coupling SIMPLE : inactive
-reason: incompressibility/pressure-multiplier constraint not present
-```
-
-No silent ignore.
-
----
-
-## 19. Acceptance criteria
-
-Architecture is considered converged when:
-
-```text
-[ ] no runtime solver family is selected from compressible/incompressible
-[ ] density-based/pressure-based are descriptions, not top-level dispatch authorities
-[ ] state realization is compiled from the executable system/formulations
-[ ] SIMPLE/PISO/PIMPLE contribute both formulation and solve-plan semantics
-[ ] no `runSimpleSolver()` / `runPisoSolver()` hidden path exists
-[ ] stepper classes are named by runtime domain, not compressibility/coupling strategy
-[ ] a coupling preset is activated by equation/constraint requirements
-[ ] explicit incompatible model registration is never silently ignored
-[ ] presets and equivalent manual definitions lower to the same IR
-[ ] builtin equations and user equations use the same Equation IR
-[ ] compiled HOW/ORDER/RUNTIME remain authoritative
-[ ] CMake ownership matches module ownership
-[ ] no CFD formula is changed by architecture cleanup
-```
-
-Once these conditions hold, freeze the architecture and return focus to numerical/physical capability.
+仍需独立处理：constant-density single-fluid PISO numerical provider（Phase 26）、SIMPLE/PIMPLE dedicated fixed-point provider、Eulerian phase equation 的更通用 recipe lowering、`SF_equation ↔ SF_turbulence` 旧静态库链接关系，以及部分兼容输入。不要用 fallback、clamp、修改 CFL 或改变现有数值公式来让这些路径表面可运行。

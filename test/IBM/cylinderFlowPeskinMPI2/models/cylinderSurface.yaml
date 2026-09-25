@@ -1,0 +1,5 @@
+# cylinderSurface model module.
+SonicFile:
+  object: models
+  type: geometry
+file: mesh/geometry/cylinderSurface.stl

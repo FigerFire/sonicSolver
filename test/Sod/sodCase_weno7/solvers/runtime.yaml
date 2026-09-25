@@ -1,0 +1,17 @@
+# Runtime configuration.
+SonicFile:
+  object: solver
+  type: runtime
+startTime: 0
+endTime: 5.0
+CFL: 0.5
+writeControl: runTime
+writeInterval: 0.05
+output:
+  jobName: SodWENO7Check
+  outputDir: result
+parallel:
+  enabled: false
+  nProcs: 5
+  split: auto
+  haloTolerance: 1e-05

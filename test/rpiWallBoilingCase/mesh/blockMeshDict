@@ -1,0 +1,37 @@
+FoamFile
+{
+    version 2.0;
+    format ascii;
+    class dictionary;
+    object blockMeshDict;
+}
+
+// RPI 平面长方形通道：横向宽 0.5 m、流向长 5 m，网格 30x300。
+// x/y 分别为横向/流向坐标，z 为二维单层结构网格厚度。
+// y=0..1 m 与 y=4.5..5 m 为绝热段，右壁 y=1..4.5 m 为加热段。
+convertToMeters 1;
+
+vertices
+(
+    (0 0 0)       (0.5 0 0)
+    (0.5 5 0)     (0 5 0)
+    (0 0 0.001)   (0.5 0 0.001)
+    (0.5 5 0.001) (0 5 0.001)
+);
+
+blocks
+(
+    hex (0 1 2 3 4 5 6 7) (30 300 1) simpleGrading (1 1 1)
+);
+
+edges ();
+
+boundary
+(
+    inlet { type patch; faces ((0 1 5 4)); }
+    outlet { type patch; faces ((3 7 6 2)); }
+    leftWall { type wall; faces ((0 4 7 3)); }
+    heatedWall { type wall; faces ((1 2 6 5)); }
+);
+
+mergePatchPairs ();

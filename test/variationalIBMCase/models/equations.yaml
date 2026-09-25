@@ -1,0 +1,5 @@
+# Flow equation system.
+SonicFile:
+  object: solver
+  type: equationSystem
+preset: compressible

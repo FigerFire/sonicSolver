@@ -1,0 +1,16 @@
+# Boundary conditions. SonicFile accepts patch: condition: value.
+SonicFile:
+  object: fields
+  type: boundary
+U:
+  walls: fixedValue: [0, 0, 0]
+  front: zeroGradient
+  back: zeroGradient
+p:
+  walls: zeroGradient
+  front: fixedValue: 10000.0
+  back: fixedValue: 10000.0
+rho:
+  walls: zeroGradient
+  front: zeroGradient
+  back: zeroGradient

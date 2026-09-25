@@ -1,0 +1,29 @@
+# Built-in IBM module.
+SonicFile:
+  object: solver
+  type: IBM
+IBM:
+  enabled: true
+  type: variationalForcing
+  geometryFiles: [mesh/geometry/cylinder.STL]
+  forcing:
+    formulation: variationalDLM
+    algorithm: dfmFractionalStepSelfPropelled
+    constraintSupport: body
+    representation: eulerianMask
+    enforcement: fractionalDLM
+    solidModel: selfPropelledRigid
+    constraintDomain: volume
+    coupling: incrementalProjection
+    motion: coupledRigid
+    motionMode: rotate
+    centerOfMass: [20, 10, 0.05]
+    linearVelocity: [0, 0, 0]
+    angularVelocity: [0, 0, 0]
+    energyCoupling: mechanicalWork
+    constraintTolerance: 1e-10
+    rigidBody:
+      mass: 1000.0
+      momentOfInertia: [1000.0, 1000.0, 1000.0]
+      externalForce: [0, 0, 0]
+      externalTorque: [0, 0, 0]

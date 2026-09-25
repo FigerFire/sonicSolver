@@ -1,0 +1,25 @@
+# Boundary conditions. SonicFile accepts patch: condition: value.
+SonicFile:
+  object: fields
+  type: boundary
+U:
+  xMin: fixedValue: [0, 0, 0]
+  xMax: fixedValue: [0, 0, 0]
+  yMin: fixedValue: [0, 0, 0]
+  yMax: fixedValue: [0, 0, 0]
+  zMin: fixedValue: [0, 0, 0]
+  zMax: fixedValue: [0, 0, 0]
+p:
+  xMin: zeroGradient
+  xMax: zeroGradient
+  yMin: zeroGradient
+  yMax: zeroGradient
+  zMin: zeroGradient
+  zMax: zeroGradient
+rho:
+  xMin: zeroGradient
+  xMax: zeroGradient
+  yMin: zeroGradient
+  yMax: zeroGradient
+  zMin: zeroGradient
+  zMax: zeroGradient

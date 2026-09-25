@@ -1,0 +1,4 @@
+# Initial field values.
+SonicFile:
+  object: fields
+  type: internalField

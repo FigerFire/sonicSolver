@@ -1,0 +1,16 @@
+# phaseChange model module.
+SonicFile:
+  object: models
+  type: phaseChange
+phaseChange:
+  enabled: true
+  phases: [liquid, vapor]
+  model: Lee
+  saturation:
+    saturationTemperature: 373.15
+    saturationPressure: 101325.0
+    latentHeat: 2257000.0
+  Lee:
+    evaporationCoefficient: 1.0
+    condensationCoefficient: 1.0
+  energyCoupling: true

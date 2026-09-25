@@ -1,0 +1,20 @@
+# Solver registry.
+SonicFile:
+  object: solver
+  type: registry
+runtime:
+  type: runtime
+  file: solvers/runtime.yaml
+numerics:
+  type: numerics
+  file: solvers/numerics.yaml
+algorithm:
+  type: algorithm
+  file: solvers/algorithm.yaml
+flow:
+  type: equationSystem
+  file: models/equations.yaml
+IBM:
+  type: IBM
+ILW:
+  type: ILW

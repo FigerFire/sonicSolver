@@ -1,0 +1,4 @@
+# Field registry.
+SonicFile:
+  object: fields
+  type: registry
