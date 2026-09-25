@@ -40,6 +40,20 @@ inline void validateNumericsConfig(const NumericsConfig& numerics) {
         throw std::invalid_argument(
             "maxDeltaT must be a finite positive value.");
     }
+    const bool primitiveUpwind = numerics.recipes.convection
+        && numerics.recipes.convection->id()
+            == TermRecipeId::PrimitiveUpwind1;
+    if (primitiveUpwind) {
+        if (numerics.formulation != EquationFormulation::PrimitiveDifferential
+            || numerics.reconstruction != ReconstructionVariable::Primitive
+            || numerics.convection != ConvectionScheme::Upwind1
+            || numerics.flux != FluxSplitter::UpwindAdvection) {
+            throw std::invalid_argument(
+                "primitiveUpwind1 requires primitiveDifferential, primitive "
+                "reconstruction and UpwindAdvection flux.");
+        }
+        return;
+    }
     if (!std::isfinite(numerics.idealGasGamma)
         || numerics.idealGasGamma <= 1.0
         || !std::isfinite(numerics.idealGasConstant)

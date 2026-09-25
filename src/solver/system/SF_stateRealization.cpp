@@ -15,6 +15,7 @@ RealizedRoleGroup roleGroup(const UnknownDescriptor& unknown) {
     group.components = unknown.components;
     group.storageKey = unknown.storageKey;
     group.componentOffset = unknown.componentOffset;
+    group.constantValue = unknown.constantValue;
     group.nameSpace = unknown.nameSpace;
     return group;
 }
@@ -72,8 +73,7 @@ CompiledStateRealization compileStateRealization(
             });
     };
     realization.conservativeTransportedMass = hasTransported("rho");
-    realization.conservativeMomentum =
-        hasTransported("rhoU") || hasTransported("U");
+    realization.conservativeMomentum = hasTransported("rhoU");
     realization.pressureMultiplier = hasRole("p",UnknownRole::Multiplier);
     realization.thermodynamicPressure = hasRole("p",UnknownRole::Derived);
     for (const RealizedRoleGroup& group : realization.transported) {

@@ -7,6 +7,7 @@
 #include "SF_solvePlan.h"
 
 #include <algorithm>
+#include <cmath>
 #include <sstream>
 #include <stdexcept>
 
@@ -52,6 +53,86 @@ bool conservativePressureScheduleSupported(
         && signature.outerCorrectors == 1
         && signature.pressureCorrectors > 0
         && signature.nonOrthogonalCorrectors == 0;
+}
+
+bool constantPressureScheduleSupported(
+        const ExecutableEquationSystem& equations,
+        const ExecutionCapabilitySignature& signature,
+        const std::vector<ExecutionPolicy>& policies,
+        const CompiledNumericalSystem& numerics,
+        bool distributed,
+        bool additionalContributions) {
+    const auto pressure=std::find_if(
+        policies.begin(),policies.end(),[](const ExecutionPolicy& policy) {
+            return policy.id==kPressureScheduleId;
+        });
+    if (distributed || additionalContributions || policies.size()!=1
+        || pressure==policies.end()
+        || pressure->kind!=ExecutionPolicyKind::SegregatedPressureCorrection
+        || pressure->strategyKind!=FDM::SolveStrategyKind::PressureCorrection
+        || numerics.time.recipe.topology()!=FDM::TimeTopology::ExplicitStages
+        || numerics.time.recipe.stageCount()!=1
+        || !signature.pressureConstraint || !signature.constantDensity
+        || signature.conservativeState
+        || !signature.momentumPredictor || !signature.pressureCorrection
+        || signature.auxiliarySchedule || signature.outerCorrectors!=1
+        || signature.pressureCorrectors<=0
+        || signature.nonOrthogonalCorrectors!=0
+        || numerics.pressureFaceCoupling!=PressureFaceCoupling::RhieChow)
+        return false;
+    const auto density=std::find_if(equations.unknowns.begin(),
+        equations.unknowns.end(),[](const UnknownDescriptor& unknown) {
+            return unknown.id=="rho" && unknown.constantValue.has_value();
+        });
+    if (density==equations.unknowns.end()
+        || !std::isfinite(*density->constantValue)
+        || *density->constantValue<=0.0) return false;
+    if (std::count_if(equations.equations.begin(),equations.equations.end(),
+            [](const EquationDescriptor& equation) {
+                return equation.category==EquationCategory::PhysicalEquation;
+            })!=1
+        || std::count_if(equations.constraints.begin(),equations.constraints.end(),
+            [](const ConstraintDescriptor& constraint) {
+                return constraint.id=="C_INCOMPRESSIBILITY";
+            })!=1 || equations.constraints.size()!=1) return false;
+    const auto& definitions=equations.equationDefinitions.equations();
+    const auto definition=std::find_if(definitions.begin(),definitions.end(),
+        [](const Equation::Definition& item) {
+            return item.name=="E_MOMENTUM";
+        });
+    if (definition==definitions.end()) return false;
+    int transient=0,divergence=0,diffusion=0;
+    for (const Equation::Term& term:definition->left.terms) {
+        if (term.kind==Equation::TermKind::Transient
+            && term.primary.name=="U") ++transient;
+        else if (term.kind==Equation::TermKind::Divergence
+                 && term.primary.name=="momentumFlux") ++divergence;
+        else if (term.kind==Equation::TermKind::Diffusion
+                 && term.primary.name=="U"
+                 && term.secondary.name=="nu") ++diffusion;
+        else return false;
+    }
+    const auto& right=definition->right.terms;
+    if (transient!=1 || divergence!=1 || diffusion>1 || right.size()!=1
+        || right.front().kind!=Equation::TermKind::Source
+        || right.front().primary.name!="zero") return false;
+    bool convection=false;
+    for (const BoundTerm& term:numerics.terms) {
+        if (term.equationId!="E_MOMENTUM") continue;
+        if (term.kind==Equation::TermKind::Divergence) {
+            if (term.primary!="momentumFlux"
+                || term.recipe.id()!=FDM::TermRecipeId::PrimitiveUpwind1)
+                return false;
+            convection=true;
+        } else if (term.kind==Equation::TermKind::Diffusion) {
+            if (term.primary!="U" || term.secondary!="nu"
+                || term.recipe.id()!=FDM::TermRecipeId::Central2Explicit)
+                return false;
+        } else if (term.kind==Equation::TermKind::Source) {
+            return false;
+        }
+    }
+    return convection;
 }
 
 std::string realizationName(const CompiledStateRealization& realization) {
@@ -113,11 +194,16 @@ std::vector<ResolvedOperationBinding> resolveOperationBindings(
         const CompiledStateRealization& realization,
         const CompiledNumericalSystem& numerics,
         const CompiledSolvePlan& plan,
-        const std::vector<ExecutionPolicy>& policies) {
+        const std::vector<ExecutionPolicy>& policies,
+        bool distributed,
+        bool additionalContributions) {
     const auto required = SolvePlanner::requiredOperations(plan);
     const auto signature = compileExecutionCapabilities(equations,policies);
     const bool pressureSchedule = conservativePressureScheduleSupported(
         signature,policies,numerics.time.recipe);
+    const bool constantPressureSchedule = constantPressureScheduleSupported(
+        equations,signature,policies,numerics,distributed,
+        additionalContributions);
     const std::vector<OperationCapability> conservativeCapabilities{
         OperationCapability::ConservativeExplicit,
         OperationCapability::PressureSchedule,
@@ -132,6 +218,14 @@ std::vector<ResolvedOperationBinding> resolveOperationBindings(
         OperationCapability::PressureLinearSolve};
     const std::vector<OperationCapability> immersedCapabilities{
         OperationCapability::ImmersedConstraint};
+    const std::vector<OperationCapability> constantPressureCapabilities{
+        OperationCapability::PressureSchedule,
+        OperationCapability::MomentumPredictor,
+        OperationCapability::PressureCorrection,
+        OperationCapability::PressureLinearSolve,
+        OperationCapability::PressureBoundary,
+        OperationCapability::VelocityCorrection,
+        OperationCapability::FluxCorrection};
     std::vector<ResolvedOperationBinding> bindings;
     bindings.reserve(required.size());
     for (const OpId& id : required) {
@@ -158,6 +252,10 @@ std::vector<ResolvedOperationBinding> resolveOperationBindings(
                 && supports(conservativeCapabilities,*found)
                 && (!needsPressureSchedule || pressureSchedule)) {
                 binding.provider = "flow.conservative";
+            } else if (constantPressureSchedule
+                       && supports(constantPressureCapabilities,*found)) {
+                binding.provider = id=="flux.correct"
+                    ? "flow.rhie-chow" : "flow.pressure-operators";
             } else if (realization.phaseTransportedState
                        && supports(eulerianCapabilities,*found)) {
                 binding.provider = "flow.eulerian-pressure";

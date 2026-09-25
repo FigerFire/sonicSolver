@@ -90,6 +90,9 @@ inline void wenoDiv(Field& field, FluxField& fluxField, Residual& residual,
                             Flux::faceSpacing(field, i, j, k, d, normal),
                             out, gamma);
                         return;
+                    case FDM::FluxSplitter::UpwindAdvection:
+                        throw std::runtime_error(
+                            "Primitive advective upwind cannot enter characteristic WENO.");
                     }
                     throw std::runtime_error(
                         "Unknown reconstructed-face numerical flux.");
@@ -232,6 +235,9 @@ inline void divDispatch(
             WENO7::div(field, fluxField, residual, flux, timeStep, ibmBoundary,
                        ilwOrder, idealGasGamma, thermodynamics);
             return;
+        case FDM::ConvectionScheme::Upwind1:
+            throw std::runtime_error(
+                "Primitive upwind convection requires the pressure-momentum provider.");
     }
     throw std::runtime_error("Unknown convection discretization.");
 }

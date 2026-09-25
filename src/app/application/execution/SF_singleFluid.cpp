@@ -39,6 +39,7 @@
 #include "solver/algorithm/time/SF_time.h"
 #include "SF_turbulence.h"
 #include "core/state/SF_state.h"
+#include "SF_scalarField.h"
 
 #include <algorithm>
 #include <memory>
@@ -92,6 +93,8 @@ int executeConservativeEquations(
         System::requiresProvider(system,"equation.level-set");
     const bool usesHomogeneousThermodynamics =
         System::requiresProvider(system,"thermodynamics.homogeneous");
+    const bool constantDensityState =
+        system.runtime.capabilities.constantDensity;
     const bool multiPhaseActive = legacyMultiPhaseActive || interfaceActive;
     if (interfaceActive && !solverConfig.numerics.timeRecipeDeclared) {
         throw std::runtime_error(
@@ -112,7 +115,8 @@ int executeConservativeEquations(
                       + std::to_string(homogeneousEquations->variableCount())
                       + ")");
     }
-    if ((!legacyMultiPhaseActive && !usesHomogeneousThermodynamics)
+    if ((!legacyMultiPhaseActive && !usesHomogeneousThermodynamics
+         && !constantDensityState)
         || interfaceActive) {
         singleFluidEquations=
             SF::Physics::FluidStateModel::makeSingleFluidPerfectGas(
@@ -174,6 +178,46 @@ int executeConservativeEquations(
                       multiPhaseSummary(
                           caseConfig.multiPhase,
                           caseConfig.compatFlowLabel));
+    }
+    ScalarField pressureMultiplier;
+    double constantDensityValue=0.0;
+    if (constantDensityState) {
+        const auto velocity=std::find_if(
+            system.executableSystem.unknowns.begin(),
+            system.executableSystem.unknowns.end(),
+            [](const System::UnknownDescriptor& item) { return item.id=="U"; });
+        const auto density=std::find_if(
+            system.executableSystem.unknowns.begin(),
+            system.executableSystem.unknowns.end(),
+            [](const System::UnknownDescriptor& item) { return item.id=="rho"; });
+        if (velocity==system.executableSystem.unknowns.end()
+            || velocity->components!=3 || velocity->componentOffset!=0
+            || velocity->storageKey!="velocity"
+            || density==system.executableSystem.unknowns.end()
+            || !density->constantValue) {
+            throw std::runtime_error(
+                "Constant-density state realization lacks U[3]/rhoConst binding.");
+        }
+        constantDensityValue=*density->constantValue;
+        field.resizeConservedVariables(velocity->components);
+        for (const auto& initial:solverConfig.initial.velocity) {
+            for (int cell:field.getSet(initial.name)) {
+                int i=0,j=0,k=0;
+                field.getIJK(cell,i,j,k);
+                field(i,j,k,velocity->componentOffset+0)=initial.value.x;
+                field(i,j,k,velocity->componentOffset+1)=initial.value.y;
+                field(i,j,k,velocity->componentOffset+2)=initial.value.z;
+            }
+        }
+        pressureMultiplier.setupLike(
+            field,"pressure",solverConfig.pressure.reference.referencePressure);
+        for (const auto& initial:solverConfig.initial.pressure) {
+            for (int cell:field.getSet(initial.name)) {
+                pressureMultiplier.values().at((size_t)cell)=initial.value;
+            }
+        }
+        SF::broadcast("State realization      : ",
+            "U primary, p multiplier, rho=rhoConst");
     }
     SF::State::StateBundle stateBundle;
     stateBundle.patches = {&field};
@@ -324,6 +368,21 @@ int executeConservativeEquations(
                 return ibm.multiplier(field, i, j, k).z;
             }});
         }
+        if (constantDensityState) {
+            scalars.push_back({"Pressure",[&](int i,int j,int k) {
+                return pressureMultiplier(i,j,k);
+            }});
+            scalars.push_back({"Density",[&](int,int,int) {
+                return constantDensityValue;
+            }});
+            SF::ResultWriter::ScalarField velocity;
+            velocity.name="Velocity";
+            velocity.components=3;
+            velocity.componentAt=[&](int i,int j,int k,int component) {
+                return field(i,j,k,component);
+            };
+            scalars.push_back(std::move(velocity));
+        }
         if (singleFluidEquations) {
             scalars.push_back({"MomentumX", [&](int i, int j, int k) {
                 return field(i,j,k,RU);
@@ -391,8 +450,15 @@ int executeConservativeEquations(
         else               writer.save(field, outTime, scalars);
     };
 
-    stateBundle.distributed.add(State::conservativeView(
-        "conservative", localBlockId, field));
+    if (constantDensityState) {
+        stateBundle.distributed.add(State::conservativeView(
+            "velocity",localBlockId,field));
+        stateBundle.distributed.add(State::scalarView(
+            "pressure",localBlockId,field,pressureMultiplier));
+    } else {
+        stateBundle.distributed.add(State::conservativeView(
+            "conservative", localBlockId, field));
+    }
     if (!stateBundle.transported.empty()) {
         stateBundle.transported.registerDistributed(
             stateBundle.distributed, localBlockId, field);
@@ -424,9 +490,16 @@ int executeConservativeEquations(
     // 需求。不能在 application 装配网格后立刻交换，否则 canonical owner
     // 仍持有 Field 的零初始化保守量，MPI-4 等更细分区会显式暴露该顺序错误。
     executionRuntime.attachState(stateBundle);
-    executionRuntime.prepare({
-        "initialized conservative-state halo",
-        {::SF::Execution::readHalo("conservative", conservativeHaloDepth)}});
+    if (constantDensityState) {
+        executionRuntime.prepare({
+            "initialized pressure-state halo",
+            {::SF::Execution::readHalo("velocity",1),
+             ::SF::Execution::readHalo("pressure",1)}});
+    } else {
+        executionRuntime.prepare({
+            "initialized conservative-state halo",
+            {::SF::Execution::readHalo("conservative", conservativeHaloDepth)}});
+    }
 
     if (initialOutputOnly) {
         if (caseConfig.time.writeByStep) saveStepVTK(0);

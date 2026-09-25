@@ -28,6 +28,9 @@ Method fallbackFor(FDM::FluxSplitter method) {
         case FDM::FluxSplitter::Roe:
         case FDM::FluxSplitter::LaxWendroff:
             return Method::FirstOrderRoe;
+        case FDM::FluxSplitter::UpwindAdvection:
+            throw std::invalid_argument(
+                "Primitive advective upwind is not a compressible Riemann fallback.");
     }
     throw std::invalid_argument("Unknown low-order numerical flux method.");
 }

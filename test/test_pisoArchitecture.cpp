@@ -493,8 +493,10 @@ int main() {
         pisoConfig().pressure.coupling,true);
     const auto constantDensity = System::build(pisoConfig(),constantDensityRequest);
     System::validate(constantDensity);
-    require(System::hasEquation(constantDensity.rawSystem,"E_CONTINUITY"),
-            "rhoConst composition did not keep Continuity as a raw equation");
+    require(!System::hasEquation(constantDensity.rawSystem,"E_CONTINUITY")
+                && System::hasConstraint(constantDensity.rawSystem,
+                                         "C_INCOMPRESSIBILITY"),
+            "rhoConst composition must lower Continuity to div(U)=0, not transport rho");
     require(!System::hasUnknown(constantDensity.rawSystem,"rhoE"),
             "rhoConst composition fabricated a total-energy unknown");
     require(constantDensity.classification.densityBehavior == "constant"
@@ -531,6 +533,35 @@ int main() {
     }
     require(unresolved == constantDensity.runtime.report.missingOperations,
             "RuntimeReport missing operations differ from unresolved bindings");
+
+    // A complete primitive numerical recipe resolves the same mathematical
+    // PISO plan. WENO remains unsupported for U/p; it must not silently select
+    // primitive upwind or the legacy conservative corrector.
+    auto primitiveConfig=pisoConfig();
+    primitiveConfig.numerics.formulation=
+        FDM::EquationFormulation::PrimitiveDifferential;
+    primitiveConfig.numerics.convection=FDM::ConvectionScheme::Upwind1;
+    primitiveConfig.numerics.reconstruction=FDM::ReconstructionVariable::Primitive;
+    primitiveConfig.numerics.flux=FDM::FluxSplitter::UpwindAdvection;
+    primitiveConfig.numerics.recipes.convection=
+        FDM::TermRecipe::primitiveUpwindRecipe();
+    const auto primitive=System::build(primitiveConfig,constantDensityRequest);
+    System::validate(primitive);
+    require(primitive.runtime.report.status==System::RuntimeStatus::Runnable,
+            "primitiveUpwind1 constant-density PISO did not resolve all operations");
+    require(bindingFor(primitive,"pressure.solve")->provider
+                == "flow.pressure-operators"
+                && bindingFor(primitive,"flux.correct")->provider
+                    == "flow.rhie-chow",
+            "constant-density PISO did not bind neutral pressure/face-flux operations");
+    for (const auto preset:{FDM::PressureCouplingPreset::SIMPLE,
+                            FDM::PressureCouplingPreset::PIMPLE}) {
+        auto unsupported=constantDensityRequest;
+        unsupported.coupling->presetKind=preset;
+        const auto selected=System::build(primitiveConfig,unsupported);
+        require(selected.runtime.report.status==System::RuntimeStatus::Unsupported,
+                "SIMPLE/PIMPLE became runnable without fixed-point operations");
+    }
 
     System::BuildRequest sodRequest;
     sodRequest.templateOrigin = System::PhysicsTemplateKind::SingleFluid;

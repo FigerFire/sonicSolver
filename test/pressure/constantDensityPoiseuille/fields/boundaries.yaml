@@ -1,0 +1,24 @@
+SonicFile:
+  object: fields
+  type: boundary
+U:
+  left: zeroGradient
+  right: zeroGradient
+  bottom: fixedValue: [0, 0, 0]
+  top: fixedValue: [0, 0, 0]
+  front: empty
+  back: empty
+p:
+  left: fixedValue: 101325.05
+  right: fixedValue: 101324.95
+  bottom: zeroGradient
+  top: zeroGradient
+  front: empty
+  back: empty
+rho:
+  left: fixedValue: 1.0
+  right: fixedValue: 1.0
+  bottom: zeroGradient
+  top: zeroGradient
+  front: empty
+  back: empty

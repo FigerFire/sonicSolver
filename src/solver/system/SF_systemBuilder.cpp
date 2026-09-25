@@ -155,7 +155,8 @@ void deriveExecutionComposition(
     if (hasExecutableEquation(system,"E_PHASE_MASS")) {
         requireProvider(system,"thermodynamics.homogeneous",
                         "bind homogeneous primary state and equation set");
-    } else if (!eulerianOperations) {
+    } else if (!eulerianOperations
+               && !system.runtime.capabilities.constantDensity) {
         requireProvider(system,"thermodynamics.single-fluid",
                         "bind the conservative single-fluid equation set");
     }
@@ -570,7 +571,10 @@ ResolvedSimulationSystem build(
         result.executableSystem,result.executionPolicies);
     result.runtime.operationBindings = resolveOperationBindings(
         result.executableSystem,result.realization,result.numericalSystem,
-        result.solvePlan,result.executionPolicies);
+        result.solvePlan,result.executionPolicies,request.parallel,
+        request.immersed || request.turbulence || request.levelSet
+            || request.legacyMixture || request.homogeneousThermodynamics
+            || request.phaseChange || request.transportedLegacyAlpha);
     result.runtime.report = reportOperationBindings(
         result.solvePlan,result.runtime.operationBindings);
 

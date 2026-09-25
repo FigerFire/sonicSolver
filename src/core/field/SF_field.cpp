@@ -41,8 +41,12 @@ namespace SF {
 
     void Field::setup(int nx, int ny, int nz, int ghost, int nVar) {
         if (nVar == 0) nVar = stateModel_ ? stateModel_->variableCount() : 5;
-        if (nVar < 5) {
-            throw std::runtime_error("Field::setup requires at least five conserved variables.");
+        if (nVar < 1) {
+            throw std::runtime_error("Field::setup requires at least one state component.");
+        }
+        if (stateModel_ && nVar != stateModel_->variableCount()) {
+            throw std::runtime_error(
+                "Field::setup component count differs from bound FluidStateModel.");
         }
         nVar_ = nVar;
         this->ng = ghost;
@@ -105,7 +109,7 @@ namespace SF {
     }
 
     void Field::resizeConservedVariables(int nVar) {
-        if (nVar < 5) throw std::runtime_error("Field requires at least five conserved variables.");
+        if (nVar < 1) throw std::runtime_error("Field requires at least one state component.");
         if (stateModel_ && nVar != stateModel_->variableCount()) {
             throw std::runtime_error("Field resize conflicts with bound FluidStateModel.");
         }

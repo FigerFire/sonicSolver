@@ -17,7 +17,9 @@ std::vector<ResolvedOperationBinding> resolveOperationBindings(
     const CompiledStateRealization& realization,
     const CompiledNumericalSystem& numerics,
     const CompiledSolvePlan& plan,
-    const std::vector<ExecutionPolicy>& policies);
+    const std::vector<ExecutionPolicy>& policies,
+    bool distributed,
+    bool additionalContributions);
 
 RuntimeReport reportOperationBindings(
     const CompiledSolvePlan& plan,

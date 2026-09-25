@@ -355,6 +355,23 @@ def main() -> int:
     generic_executor = (
         root / "src/solver/run/SF_planExecutor.cpp"
     ).read_text(errors="replace")
+    pressure_leaf_sources = [
+        root / "src/solver/algorithm/SF_singleFluidStepper.cpp",
+        root / "src/solver/algorithm/pressureBased/SF_pressureOperators.cpp",
+        root / "src/solver/discretization/pressure/SF_rhieChow.h",
+        root / "src/solver/run/SF_planExecutor.cpp",
+    ]
+    forbidden_family = re.compile(
+        r"\b(?:PisoSolver|SimpleSolver|PimpleSolver|"
+        r"PressureBasedSolver|ConstantDensityPisoProvider)\b")
+    forbidden_branch = re.compile(
+        r"\bif\s*\([^)]*\b(?:PISO|SIMPLE|PIMPLE)\b")
+    for source in pressure_leaf_sources:
+        content = source.read_text(errors="replace")
+        if forbidden_family.search(content) or forbidden_branch.search(content):
+            authority_errors.append(
+                relative(root, source)
+                + ": pressure numerical leaf reintroduces coupling-family dispatch")
     for token, detail in [
         ("LegacyPressureExecutionAdapter",
          "Generic PISO executor calls the legacy pressure adapter"),

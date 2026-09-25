@@ -1,0 +1,9 @@
+SonicFile:
+  object: models
+  type: registry
+turbulence:
+  type: turbulence
+  file: models/turbulence.yaml
+thermoDynamics:
+  type: thermoDynamics
+  file: models/thermoDynamics.yaml

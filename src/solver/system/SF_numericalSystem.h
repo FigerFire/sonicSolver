@@ -33,6 +33,8 @@ struct CompiledPhaseTransport {
     double sourceCfl = 0.5;
 };
 
+enum class PressureFaceCoupling { None, RhieChow };
+
 /// @brief 一个 mathematical term 到 built-in numerical recipe 的冻结绑定。
 struct BoundTerm {
     std::string equationId;
@@ -63,6 +65,7 @@ struct CompiledNumericalSystem {
     CompiledTimeIntegration time;
     TimeStepPolicy dt;
     CompiledPhaseTransport phaseTransport;
+    PressureFaceCoupling pressureFaceCoupling = PressureFaceCoupling::None;
     std::vector<BoundTerm> terms;
     std::vector<CompiledRecipeBinding> recipeBindings;
     int requiredHaloWidth = 0;

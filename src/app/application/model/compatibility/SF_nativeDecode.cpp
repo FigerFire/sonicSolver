@@ -1013,6 +1013,11 @@ void CaseAdapter::decodeNumericsSection() {
             numerics.reconstruction =
                 numerics.recipes.convection->reconstruction();
             numerics.flux = numerics.recipes.convection->flux();
+            if (numerics.recipes.convection->id()
+                == FDM::TermRecipeId::PrimitiveUpwind1) {
+                numerics.formulation =
+                    FDM::EquationFormulation::PrimitiveDifferential;
+            }
         }
         if (!FDM::normalizeToken(diffusionRecipeName).empty()) {
             numerics.recipes.diffusion =

@@ -38,6 +38,22 @@ public:
             ExecutableEquationSystemBuilder& executable,
             std::vector<ExecutionPolicy>&,
             TransformationRecord& record) const override {
+        const auto velocity = std::find_if(
+            raw.unknowns.begin(),raw.unknowns.end(),
+            [](const UnknownDescriptor& unknown) { return unknown.id == "U"; });
+        if (velocity == raw.unknowns.end() || velocity->storageKey.empty()) {
+            throw std::runtime_error(
+                "Pressure constraint requires a storage-bound U unknown.");
+        }
+        const bool constantDensity = std::any_of(
+            raw.unknowns.begin(),raw.unknowns.end(),
+            [](const UnknownDescriptor& unknown) {
+                return unknown.id == "rho" && unknown.constantValue.has_value();
+            });
+        const CompiledResourceBinding momentumState{
+            "U",velocity->storageKey,velocity->componentOffset,
+            velocity->components,ResourceAccessMode::ReadWrite,true,
+            SynchronizationRequirement::ReadHalo};
         UnknownDescriptor correction;
         correction.id = "pPrime";
         correction.name = "pressure correction";
@@ -57,8 +73,8 @@ public:
         predictor.origin = {OriginKind::Generated,"pressureConstraint"};
         executable.addEquation(std::move(predictor),
             Equation::named("E_MOMENTUM_PREDICTOR",
-                Equation::ddt({"U"}) + Equation::div({"momentumFlux"})
-                    == Equation::Symbol{"zero"}));
+                raw.equationDefinitions.at("E_MOMENTUM").left
+                    == raw.equationDefinitions.at("E_MOMENTUM").right));
 
         EquationDescriptor descriptor{
             "E_PRESSURE","pressure correction","constraint",{"pPrime","U"}};
@@ -114,21 +130,30 @@ public:
                 "commit pressure-corrected state",{OperationCapability::PressureCorrection});
         declare(OperationStage::StepCommit,"pressure.step.commit",
                 "commit corrected state",{OperationCapability::PressureSchedule});
+        const CompiledResourceBinding momentumWorkspace=constantDensity
+            ? CompiledResourceBinding{
+                "HbyA","pressureMomentumWorkspace",0,3,
+                ResourceAccessMode::ReadWrite,false,
+                SynchronizationRequirement::WriteOwned}
+            : CompiledResourceBinding{
+                "R_momentum","residual",1,3,
+                ResourceAccessMode::ReadWrite,false,
+                SynchronizationRequirement::WriteOwned};
         executable.addCompiledEquation({
             "E_MOMENTUM_PREDICTOR",
             "momentum.predictor",
             {
-                {"Q","conservative",0,5,ResourceAccessMode::ReadWrite,true,
-                 SynchronizationRequirement::ReadHalo},
-                {"R_momentum","residual",1,3,ResourceAccessMode::ReadWrite,false,
-                 SynchronizationRequirement::WriteOwned}
+                momentumState,
+                momentumWorkspace
             },
             false,true,{OriginKind::Generated,"pressureConstraint"}});
         executable.addCompiledEquation({
             "E_PRESSURE",
             "pressure.correction",
             {
-                {"Q","conservative",0,5,ResourceAccessMode::ReadWrite,true,
+                momentumState,
+                {"p",constantDensity ? "pressure" : "conservative",
+                 0,1,ResourceAccessMode::ReadWrite,true,
                  SynchronizationRequirement::ReadHalo},
                 {"pPrime","pressureCorrection",0,1,
                  ResourceAccessMode::ReadWrite,true,

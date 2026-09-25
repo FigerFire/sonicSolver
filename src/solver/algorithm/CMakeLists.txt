@@ -8,6 +8,8 @@ add_library(SF_solverAlgorithm STATIC
     time/SF_explicit.cpp
     time/SF_explicit.h
     pressureBased/SF_corrector.cpp
+    pressureBased/SF_pressureOperators.cpp
+    pressureBased/SF_pressureOperators.h
     pressureBased/SF_kkt.cpp
     pressureBased/SF_kktDofs.cpp
     pressureBased/SF_kktDofs.h

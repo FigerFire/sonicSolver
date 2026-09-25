@@ -52,6 +52,18 @@ CompiledNumericalSystem compile(
     // 编译后的时间策略与 term recipe 来自同一份输入，因此 runtime 不需要
     // 再读 raw numerics 选择。
     result.time.recipe = recipes.time;
+    const bool constantDensityPressure = std::any_of(
+        equations.unknowns.begin(),equations.unknowns.end(),
+        [](const UnknownDescriptor& unknown) {
+            return unknown.id=="rho" && unknown.constantValue.has_value();
+        });
+    const bool pressureMultiplier = std::any_of(
+        equations.unknowns.begin(),equations.unknowns.end(),
+        [](const UnknownDescriptor& unknown) {
+            return unknown.id=="p" && unknown.role==UnknownRole::Multiplier;
+        });
+    if (constantDensityPressure && pressureMultiplier)
+        result.pressureFaceCoupling=PressureFaceCoupling::RhieChow;
     const auto bindRecipe = [&](const FDM::TermRecipe& recipe,
                                 RecipeConsumerKind kind,
                                 std::string consumer) {
@@ -79,10 +91,21 @@ CompiledNumericalSystem compile(
                     result.requiredHaloWidth = std::max(
                         result.requiredHaloWidth,
                         recipes.convection->haloWidth());
-                    appendUnique(result.workspaceRequirements,"faceFlux");
-                    appendUnique(result.workspaceRequirements,"residual");
-                    appendUnique(
-                        result.workspaceRequirements,"characteristicReconstruction");
+                    if (recipes.convection->id()
+                        == FDM::TermRecipeId::PrimitiveUpwind1) {
+                        appendUnique(result.workspaceRequirements,
+                                     "pressureFaceFlux");
+                        appendUnique(result.workspaceRequirements,
+                                     "pressureMomentumWorkspace");
+                    } else {
+                        appendUnique(result.workspaceRequirements,"faceFlux");
+                        appendUnique(result.workspaceRequirements,"residual");
+                    }
+                    if (recipes.convection->reconstruction()
+                        == FDM::ReconstructionVariable::Characteristic) {
+                        appendUnique(result.workspaceRequirements,
+                                     "characteristicReconstruction");
+                    }
                     appendUnique(
                         result.providerRequirements,
                         std::string("term.convection.")
@@ -98,7 +121,11 @@ CompiledNumericalSystem compile(
                         equation.id,term,currentOrdinal,*recipes.diffusion);
                     bindRecipe(*recipes.diffusion,RecipeConsumerKind::EquationTerm,
                                equation.id+"["+std::to_string(currentOrdinal)+"]");
-                    appendUnique(result.workspaceRequirements,"residual");
+                    appendUnique(result.workspaceRequirements,
+                        recipes.convection
+                            && recipes.convection->id()
+                                == FDM::TermRecipeId::PrimitiveUpwind1
+                            ? "pressureMomentumWorkspace" : "residual");
                     appendUnique(
                         result.providerRequirements,
                         std::string("term.diffusion.")

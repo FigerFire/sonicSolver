@@ -18,6 +18,7 @@
 #include "core/state/SF_state.h"
 #include "solver/algorithm/SF_patchWorkspace.h"
 #include "solver/algorithm/pressureBased/SF_corrector.h"
+#include "solver/algorithm/pressureBased/SF_pressureOperators.h"
 #include "solver/algorithm/pressureBased/SF_kkt.h"
 #include "solver/system/SF_runtimeRequirements.h"
 #include "solver/system/SF_stateRealizer.h"
@@ -89,8 +90,9 @@ private:
     const System::CompiledSolvePlan& solve_;
     const System::RuntimeRequirements& runtime_;
     Boundary::Applicator boundaryApplicator_;
-    Equation::Compressible::System equations_;
+    std::unique_ptr<Equation::Compressible::System> equations_;
     std::unique_ptr<PressureBased::Corrector> genericPisoCorrector_;
+    std::unique_ptr<PressureBased::PressureOperators> pressureOperators_;
     std::unique_ptr<PressureBased::MonolithicKKT> monolithicKkt_;
 
     FDM::SolverServices services_;
@@ -121,6 +123,8 @@ private:
                          Field& field,
                          double maximumTimeStep,
                          PressureBased::CorrectionSummary& summary);
+    void bindConstantPressureOps(Run::OpRegistry& operations,
+                                 double maximumTimeStep);
 
     /// @brief 通过注入管线或 legacy 适配顺序准备完整边界状态。
     void prepareBoundaryState(const std::vector<Field*>& fields,

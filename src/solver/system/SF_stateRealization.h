@@ -29,6 +29,7 @@ struct RealizedRoleGroup {
     int components = 1;
     std::string storageKey;
     int componentOffset = 0;
+    std::optional<double> constantValue;
     std::string nameSpace;
 };
 

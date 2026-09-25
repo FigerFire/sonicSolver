@@ -43,8 +43,11 @@ SingleFluidStepper::SingleFluidStepper(
     , numerics_(numerics)
     , solve_(solvePlan)
     , runtime_(requirements)
-    , boundaryApplicator_(config_.boundaries)
-    , equations_(equations.equationDefinitions) {
+    , boundaryApplicator_(config_.boundaries) {
+    if (!runtime_.capabilities.constantDensity) {
+        equations_=std::make_unique<Equation::Compressible::System>(
+            equations.equationDefinitions);
+    }
     FDM::validateNumericsConfig(config_.numerics);
     // compiled authority 与 raw config 必须一致：runtime 只执行 compiled HOW，
     // 因此这里拒绝"input 说 A、compiled 说 B"的装配。
@@ -69,9 +72,20 @@ void SingleFluidStepper::bindSolvePlan(
     }
     requiredOperations_ = System::SolvePlanner::requiredOperations(plan);
     if (requiresOperation("pressure.prepare")) {
-        genericPisoCorrector_ = std::make_unique<PressureBased::Corrector>(
-            config_.boundaries,config_.pressure,
-            config_.numerics.idealGasGamma);
+        const auto binding=std::find_if(
+            runtime_.operationBindings.begin(),runtime_.operationBindings.end(),
+            [](const System::ResolvedOperationBinding& item) {
+                return item.operation=="pressure.prepare";
+            });
+        if (binding!=runtime_.operationBindings.end()
+            && binding->provider=="flow.pressure-operators") {
+            pressureOperators_=std::make_unique<PressureBased::PressureOperators>(
+                config_,numerics_);
+        } else {
+            genericPisoCorrector_ = std::make_unique<PressureBased::Corrector>(
+                config_.boundaries,config_.pressure,
+                config_.numerics.idealGasGamma);
+        }
     }
     if (requiresOperation("ibm.kkt.solve")) {
         monolithicKkt_ = std::make_unique<PressureBased::MonolithicKKT>(
@@ -100,6 +114,7 @@ void SingleFluidStepper::prepare(FDM::SolverState& state) {
     }
     bindState(*state.bundle);
     realizedState_ = System::realizeState(executable_,runtime_,*state.bundle);
+    if (pressureOperators_) pressureOperators_->bind(realizedState_);
 }
 
 void SingleFluidStepper::bindState(State::StateBundle& state) {
@@ -114,7 +129,7 @@ void SingleFluidStepper::bindState(State::StateBundle& state) {
             "SingleFluidStepper cannot switch StateBundle after stepping begins.");
     }
     state_ = &state;
-    ensureWorkspaces(state.patches);
+    if (!pressureOperators_) ensureWorkspaces(state.patches);
     if (services_.executionRuntime) services_.executionRuntime->attachState(state);
     if (firstBinding && requiresOperation("explicit.stage.execute")) {
         emitConvectionContract();
@@ -293,7 +308,7 @@ void SingleFluidStepper::bindPressureOps(
     operations.bind("momentum.assemble",[this,&field] {
         ConservativeRHS::assembleAllPatches(
             {&field},workspaces_,config_,numerics_,
-            equations_,*state_,services_,
+            *equations_,*state_,services_,
             boundaryApplicator_,state_->time);
     });
     operations.bind("momentum.solve",[this,&field] {
@@ -352,6 +367,66 @@ void SingleFluidStepper::bindPressureOps(
         prepareBoundaryState(
             {&field},state_->time+state_->dt,state_->dt);
         state_->time += state_->dt;
+        ++state_->step;
+        emitTimeStep();
+    });
+}
+
+void SingleFluidStepper::bindConstantPressureOps(
+        Run::OpRegistry& operations,double maximumTimeStep) {
+    if (!pressureOperators_ || state_->patches.size()!=1
+        || (services_.executionRuntime && services_.executionRuntime->distributed())) {
+        throw std::runtime_error(
+            "Constant-density pressure operations require one serial patch.");
+    }
+    operations.bind("pressure.prepare",[this,maximumTimeStep] {
+        state_->dt=pressureOperators_->prepare(maximumTimeStep,state_->time);
+    });
+    operations.bind("momentum.assemble",[this] {
+        pressureOperators_->assembleMomentum();
+    });
+    operations.bind("momentum.solve",[this] {
+        pressureOperators_->solveMomentum();
+        state_->distributed.markModified("velocity");
+    });
+    operations.bind("pressure.boundary.prepare",[this] {
+        pressureOperators_->preparePressureBoundary();
+    });
+    operations.bind("pressure.assemble",[this] {
+        pressureOperators_->assemblePressure();
+    });
+    operations.bind("pressure.solve",[this] {
+        pressureOperators_->solvePressure();
+    });
+    operations.bind("pressure.update.prepare",[this] {
+        pressureOperators_->preparePressureUpdate();
+        state_->distributed.markModified("pressure");
+    });
+    operations.bind("velocity.correct",[this] {
+        pressureOperators_->correctVelocity();
+        state_->distributed.markModified("velocity");
+    });
+    operations.bind("flux.correct",[this] {
+        pressureOperators_->correctFlux();
+    });
+    operations.bind("pressure.correction.commit",[this] {
+        const auto summary=pressureOperators_->commitCorrection();
+        if (services_.observer) {
+            std::ostringstream detail;
+            detail << "iterations=" << summary.iterations
+                   << ", relativeResidual=" << summary.relativeResidual
+                   << ", maxDiv(before/after)="
+                   << summary.maxDivergenceBefore << "/"
+                   << summary.maxDivergenceAfter;
+            services_.observer->onSolverMessage({
+                FDM::SolverMessageKind::StateClosure,
+                "Pressure continuity",detail.str(),
+                state_->step,state_->time,state_->dt});
+        }
+    });
+    operations.bind("pressure.step.commit",[this] {
+        pressureOperators_->commitStep();
+        state_->time+=state_->dt;
         ++state_->step;
         emitTimeStep();
     });
@@ -425,7 +500,7 @@ void SingleFluidStepper::bindExplicitOps(
                        double stageTime) {
                     ConservativeRHS::assembleAllPatches(
                         patches,workspaces,config_,numerics_,
-                        equations_,*state_,services_,
+                        *equations_,*state_,services_,
                         boundaryApplicator_,stageTime);
                 },
                 [this](const std::vector<Field*>& patches) {
@@ -469,9 +544,13 @@ FDM::StepResult SingleFluidStepper::advance(FDM::SolverState& state) {
             operations_,fields,state.maximumTimeStep,explicitWorkspace_);
     }
     if (requiresOperation("pressure.prepare")) {
-        bindPressureOps(
-            operations_,state.bundle->singlePatch(),state.maximumTimeStep,
-            pressureSummary_);
+        if (pressureOperators_) {
+            bindConstantPressureOps(operations_,state.maximumTimeStep);
+        } else {
+            bindPressureOps(
+                operations_,state.bundle->singlePatch(),state.maximumTimeStep,
+                pressureSummary_);
+        }
     }
     if (requiresOperation("ibm.constraint.project")
         && services_.immersed.constraint && services_.immersed.system) {
@@ -550,7 +629,9 @@ FDM::StepResult SingleFluidStepper::advance(FDM::SolverState& state) {
     }
 
     operations_.retain(System::assignedOperations(
-        runtime_,{"flow.conservative","ibm.constraint"}));
+        runtime_,{"flow.conservative","flow.pressure-operators",
+                  "flow.rhie-chow",
+                  "ibm.constraint"}));
     Run::PlanExecutor::validateBindings(solve_,operations_);
     const Run::PlanTraceContext trace{
         state_->step,state_->time,&state_->dt};

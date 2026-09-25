@@ -30,7 +30,8 @@ int executeSingle(
             caseConfig,
             initialOutputOnly, localBlockId);
     }
-    if (System::requiresProvider(system,"flow.conservative")) {
+    if (System::requiresProvider(system,"flow.conservative")
+        || System::requiresProvider(system,"flow.pressure-operators")) {
         return Detail::executeConservativeEquations(
             field, writer, parallel, ibm, solverConfig, system, plan,
             caseConfig,

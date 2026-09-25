@@ -15,9 +15,10 @@ inline ConvectionScheme parseConvectionScheme(const std::string& value) {
     if (t == "weno5") return ConvectionScheme::WENO5;
     if (t == "teno5") return ConvectionScheme::TENO5;
     if (t == "weno7") return ConvectionScheme::WENO7;
+    if (t == "upwind1") return ConvectionScheme::Upwind1;
     throw std::invalid_argument(
         "Unsupported convection scheme '" + value
-        + "'. Supported schemes: WENO3, WENO5, TENO5, WENO7. "
+        + "'. Supported schemes: WENO3, WENO5, TENO5, WENO7, Upwind1. "
           "Recommended pairings: WENO5/TENO5 with StegerWarming or "
           "LaxFriedrichs for smooth shock-capturing cases; WENO3 with "
           "LaxFriedrichs for IBM/ILW debug runs; WENO7 only when ghost depth "
@@ -40,7 +41,8 @@ inline EquationFormulation parseEquationFormulation(const std::string& value) {
     }
     throw std::invalid_argument(
         "Unsupported numerics formulation '" + value
-        + "'. Use conservativeFluxDifference for density-based compressible flow.");
+        + "'. Use conservativeFluxDifference for conservative transport or "
+          "primitiveDifferential for constant-density U/p.");
 }
 /// @brief Parse the variable family reconstructed at faces.
 /// @param value User-facing string such as `"characteristic"`.
@@ -80,10 +82,13 @@ inline FluxSplitter parseFluxSplitter(const std::string& value) {
     if (t == "roe") return FluxSplitter::Roe;
     if (t == "laxwendroff" || t == "lw") return FluxSplitter::LaxWendroff;
     if (t == "stegerwarming" || t == "sw") return FluxSplitter::StegerWarming;
+    if (t == "upwindadvection") return FluxSplitter::UpwindAdvection;
     throw std::invalid_argument(
         "Unsupported inviscid flux method '" + value
         + "'. Supported methods: StegerWarming, Rusanov, LaxFriedrichs, Roe, "
-          "LaxWendroff. Recommended pairings: WENO5/TENO5+StegerWarming for "
+          "LaxWendroff, UpwindAdvection. Recommended pairings: "
+          "Upwind1+UpwindAdvection for primitive U/p; "
+          "WENO5/TENO5+StegerWarming for "
           "regular cases, WENO3+LaxFriedrichs for IBM/ILW debug, Roe for "
           "direct face-flux checks.");
 }
@@ -134,6 +139,9 @@ inline ViscousScheme parseViscousScheme(const std::string& value) {
 /// @brief Resolve only source-registered built-in convection recipe names.
 inline TermRecipe resolveConvectionTermRecipe(const std::string& value) {
     const std::string token = normalizeToken(value);
+    if (token == "primitiveupwind1") {
+        return TermRecipe::primitiveUpwindRecipe();
+    }
     for (ConvectionScheme scheme : {ConvectionScheme::WENO3,
                                     ConvectionScheme::WENO5,
                                     ConvectionScheme::TENO5,

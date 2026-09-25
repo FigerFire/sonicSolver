@@ -1,0 +1,24 @@
+SonicFile:
+  object: fields
+  type: registry
+U:
+  type: vector
+  domain: fluid
+  location: point
+  dimensions: [0, 1, -1, 0, 0, 0, 0]
+  storage: primary
+  output: true
+p:
+  type: scalar
+  domain: fluid
+  location: point
+  dimensions: [1, -1, -2, 0, 0, 0, 0]
+  storage: primary
+  output: true
+rho:
+  type: scalar
+  domain: fluid
+  location: point
+  dimensions: [1, -3, 0, 0, 0, 0, 0]
+  storage: primary
+  output: true

@@ -11,7 +11,7 @@
 
 namespace SF::FDM {
 /// @brief 无黏对流通量散度格式。
-enum class ConvectionScheme { WENO3, WENO5, TENO5, WENO7 };
+enum class ConvectionScheme { WENO3, WENO5, TENO5, WENO7, Upwind1 };
 
 /// @brief 控制方程离散形式。
 enum class EquationFormulation {
@@ -35,7 +35,8 @@ enum class FluxSplitter {
     Rusanov,
     LaxFriedrichs,
     Roe,
-    LaxWendroff
+    LaxWendroff,
+    UpwindAdvection
 };
 
 /// @brief 黏性通量中心差分阶数。
@@ -58,7 +59,8 @@ enum class TermRecipeId {
     Weno7Steger, Weno7Rusanov, Weno7LaxFriedrichs, Weno7Roe,
     Weno7LaxWendroff,
     Central2Explicit, Central4Explicit,
-    GravityExplicit, MRFExplicit, WallHeatExplicit
+    GravityExplicit, MRFExplicit, WallHeatExplicit,
+    PrimitiveUpwind1
 };
 
 /// @brief 不可逐项修改的空间 term 数值 contract。
@@ -82,6 +84,12 @@ public:
         return {id,TermRole::Convection,TemporalRole::ExplicitResidual,
                 convection,ReconstructionVariable::Characteristic,flux,
                 ViscousScheme::Central2,SourceKind::Gravity,haloWidth};
+    }
+    static constexpr TermRecipe primitiveUpwindRecipe() {
+        return {TermRecipeId::PrimitiveUpwind1,TermRole::Convection,
+                TemporalRole::ExplicitResidual,ConvectionScheme::Upwind1,
+                ReconstructionVariable::Primitive,FluxSplitter::UpwindAdvection,
+                ViscousScheme::Central2,SourceKind::Gravity,1};
     }
     static constexpr TermRecipe diffusionRecipe(
             TermRecipeId id, ViscousScheme diffusion) {
@@ -136,6 +144,7 @@ inline const char* toString(ConvectionScheme scheme) {
         case ConvectionScheme::WENO5: return "WENO5";
         case ConvectionScheme::TENO5: return "TENO5";
         case ConvectionScheme::WENO7: return "WENO7";
+        case ConvectionScheme::Upwind1: return "upwind1";
     }
     return "WENO5";
 }
@@ -176,6 +185,7 @@ inline const char* toString(FluxSplitter splitter) {
         case FluxSplitter::LaxFriedrichs: return "LaxFriedrichs";
         case FluxSplitter::Roe: return "Roe";
         case FluxSplitter::LaxWendroff: return "LaxWendroff";
+        case FluxSplitter::UpwindAdvection: return "UpwindAdvection";
     }
     return "unknown";
 }
@@ -193,6 +203,17 @@ inline TermRecipeId convectionRecipeId(
 /// @brief Resolve an already parsed legacy convection pair to one built-in recipe.
 inline TermRecipe builtInConvectionRecipe(
         ConvectionScheme scheme, FluxSplitter flux) {
+    if (scheme == ConvectionScheme::Upwind1) {
+        if (flux != FluxSplitter::UpwindAdvection) {
+            throw std::invalid_argument(
+                "Primitive upwind convection requires UpwindAdvection flux.");
+        }
+        return TermRecipe::primitiveUpwindRecipe();
+    }
+    if (flux == FluxSplitter::UpwindAdvection) {
+        throw std::invalid_argument(
+            "UpwindAdvection flux requires the primitive Upwind1 recipe.");
+    }
     const int halo = scheme == ConvectionScheme::WENO3 ? 2
         : (scheme == ConvectionScheme::WENO7 ? 4 : 3);
     return TermRecipe::convectionRecipe(
@@ -229,7 +250,8 @@ inline const char* toString(TermRecipeId id) {
         "weno7Steger", "weno7Rusanov", "weno7LaxFriedrichs", "weno7Roe",
         "weno7LaxWendroff",
         "central2Explicit", "central4Explicit",
-        "gravityExplicit", "mrfExplicit", "wallHeatExplicit"
+        "gravityExplicit", "mrfExplicit", "wallHeatExplicit",
+        "primitiveUpwind1"
     };
     const auto index = static_cast<std::size_t>(id);
     if (index >= sizeof(names)/sizeof(names[0])) return "unknown";
@@ -275,4 +297,3 @@ inline std::string toString(const std::vector<SourceKind>& kinds) {
     return out.str();
 }
 } // namespace SF::FDM
-

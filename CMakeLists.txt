@@ -87,6 +87,9 @@ if(BUILD_TESTS)
     add_executable(test_pisoArchitecture test/test_pisoArchitecture.cpp)
     target_link_libraries(test_pisoArchitecture PRIVATE SF_solverSystem)
     add_test(NAME pisoArchitecture COMMAND test_pisoArchitecture)
+    add_executable(test_rhieChow test/test_rhieChow.cpp)
+    target_link_libraries(test_rhieChow PRIVATE SF_headers)
+    add_test(NAME rhieChowFaceCoupling COMMAND test_rhieChow)
 
     add_executable(test_explicitStages test/test_explicitStages.cpp)
     target_link_libraries(test_explicitStages PRIVATE SF_solverAlgorithm)
@@ -138,6 +141,16 @@ if(BUILD_TESTS)
                 ${CMAKE_SOURCE_DIR}/tools/check_piso_regression.py
                 --solver $<TARGET_FILE:sonicSolver>
                 --case ${CMAKE_SOURCE_DIR}/test/pressureConstraintPiso)
+        add_test(NAME constantDensityPressureRegression
+            COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/tools/check_constant_density_pressure.py
+                --solver $<TARGET_FILE:sonicSolver>
+                --case ${CMAKE_SOURCE_DIR}/test/pressure/constantDensityPiso)
+        add_test(NAME constantDensityPoiseuilleRegression
+            COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/tools/check_poiseuille_pressure.py
+                --solver $<TARGET_FILE:sonicSolver>
+                --case ${CMAKE_SOURCE_DIR}/test/pressure/constantDensityPoiseuille)
     endif()
 
     if(Python3_Interpreter_FOUND)

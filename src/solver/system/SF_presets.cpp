@@ -101,18 +101,24 @@ void addConstantDensityFluid(
         SystemCompositionBuilder& system,
         const EquationCompositionConfig& composition,
         bool includeDiffusion) {
-    system.recordContribution("builtin.continuity","builtin Continuity equation");
+    system.recordContribution("builtin.continuity","builtin incompressibility constraint");
     system.recordContribution("builtin.momentum","builtin Momentum equation");
     system.recordContribution("model.rhoConst","constant-density EOS closure");
-    addUnknown(system,"rho","constant density closure",1,UnknownRole::Derived,
-               StorageBinding::SpecializedExecutor,"rhoConst",0,"fluid");
+    UnknownDescriptor density;
+    density.id = "rho";
+    density.name = "constant density closure";
+    density.role = UnknownRole::Derived;
+    density.storageBinding = StorageBinding::SpecializedExecutor;
+    density.storageKey = "rhoConst";
+    density.constantValue = composition.thermoDynamics.constantDensity;
+    density.runtimeStorageRequired = false;
+    density.boundaryRequired = false;
+    density.restartEligible = false;
+    system.addUnknown(std::move(density));
     addUnknown(system,"U","velocity",3,UnknownRole::Primary,
-               StorageBinding::PackedDistributed,"conservative",1,"fluid");
+               StorageBinding::PackedDistributed,"velocity",0,"fluid");
     addUnknown(system,"p","pressure multiplier",1,UnknownRole::Multiplier,
                StorageBinding::NamedDistributed,"pressure",0,"pressure");
-    addEquation(system,{"E_CONTINUITY","continuity","constraint",{"U"}},
-        Equation::named("E_CONTINUITY",
-            Equation::div({"U"}) == Equation::Symbol{"zero"}));
     auto momentum = Equation::ddt({"U"})
         + Equation::div({"momentumFlux"});
     if (includeDiffusion) {

@@ -6,6 +6,7 @@
 
 #include "core/system/SF_expression.h"
 
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -86,6 +87,8 @@ struct UnknownDescriptor {
     StorageBinding storageBinding = StorageBinding::SpecializedExecutor;
     std::string storageKey;
     int componentOffset = 0;
+    /// A derived constant has no writable runtime field; its value is frozen at composition.
+    std::optional<double> constantValue;
     bool initializationRequired = true;
     bool boundaryRequired = true;
     bool restartEligible = true;

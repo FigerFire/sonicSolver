@@ -1,0 +1,9 @@
+SonicFile:
+  object: models
+  type: thermoDynamics
+thermoDynamics:
+  equationOfState: rhoConst
+  transport: const
+properties:
+  equationOfState:
+    rho: 1.0

@@ -72,6 +72,7 @@ std::string unknownDescription(const UnknownDescriptor& unknown) {
             output << "@" << unknown.componentOffset;
         }
     }
+    if (unknown.constantValue) output << ", value=" << *unknown.constantValue;
     output << "]\n";
     return output.str();
 }
@@ -154,6 +155,8 @@ void printNumericalSystem(
         const CompiledNumericalSystem& numerical) {
     output << "\nCOMPILED NUMERICAL SYSTEM\n"
            << "  required halo width : " << numerical.requiredHaloWidth << "\n";
+    if (numerical.pressureFaceCoupling != PressureFaceCoupling::None)
+        output << "  pressure face coupling : RhieChow\n";
     if (numerical.terms.empty()) {
         output << "  bound terms         : (none)\n";
     } else {
@@ -549,8 +552,9 @@ std::string describe(const ResolvedSimulationSystem& system) {
         output << "  " << label << " :";
         for (const auto& group : groups) {
             output << " " << group.id << "[" << group.components
-                   << "@" << group.componentOffset << "," << group.storageKey
-                   << "]";
+                   << "@" << group.componentOffset << "," << group.storageKey;
+            if (group.constantValue) output << "=" << *group.constantValue;
+            output << "]";
         }
         output << "\n";
     };
