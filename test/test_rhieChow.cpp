@@ -12,8 +12,8 @@ void requireClose(double actual,double expected) {
 }
 
 int main() {
-    using SF::PressureBased::RhieChow::predict;
-    using SF::PressureBased::RhieChow::correct;
+    using SF::Pressure::RhieChow::predict;
+    using SF::Pressure::RhieChow::correct;
     const std::array<double,3> area{2.0,0.0,0.0};
     const std::array<double,3> zero{0.0,0.0,0.0};
     const std::array<double,3> uniformU{3.0,0.0,0.0};

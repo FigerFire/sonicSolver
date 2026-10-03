@@ -1,7 +1,12 @@
 add_library(SF_physics STATIC
+    equationRuntime/SF_equationCoupling.cpp
+    equationRuntime/SF_interfaceCoupling.cpp
     SF_physics.cpp
     SF_sourceContribution.cpp
     SF_sourceContribution.h
+    gravity/SF_accelerationProvider.cpp
+    mrf/SF_frameProvider.cpp
+    heat/SF_wallFluxProvider.cpp
     interfaceModel/levelSet/SF_levelSetSystemContribution.cpp
     interfaceModel/levelSet/SF_levelSetSystemContribution.h
     fluidStateModel/SF_singleFluidStateModel.cpp
@@ -74,6 +79,14 @@ target_include_directories(SF_physics PUBLIC
     ${CMAKE_SOURCE_DIR}/src/core/config
     ${CMAKE_SOURCE_DIR}/src/solver/discretization/structured
     ${CMAKE_SOURCE_DIR}/src/methods/numerics/scalar
+    ${CMAKE_SOURCE_DIR}/src/infrastructure/mesh/MultiBlockMesh
+    ${CMAKE_SOURCE_DIR}/src/infrastructure/mesh/communication
+    ${CMAKE_SOURCE_DIR}/src/infrastructure/mesh
+    ${CMAKE_SOURCE_DIR}/src/infrastructure/mesh/interface
+    ${CMAKE_SOURCE_DIR}/src/infrastructure/mesh/decompose
+    ${CMAKE_SOURCE_DIR}/src/infrastructure/mesh/createMesh
+    ${CMAKE_SOURCE_DIR}/src/infrastructure/mesh/slidingMesh
+    ${CMAKE_SOURCE_DIR}/src/models/turbulence
 )
 
 target_link_libraries(SF_physics PUBLIC

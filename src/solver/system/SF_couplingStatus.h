@@ -22,7 +22,6 @@ const char* toString(CouplingStatus status);
 ///
 /// planner、model contribution、printer 必须引用同一常量，避免字符串 typo
 /// 变成 runtime bug。
-/// @brief 稳定 schedule id：Eulerian 相共享压力耦合策略。
 
 /// @brief 一次 coupling preset 注册（来自 case 输入，不是运行时选择）。
 struct CouplingPresetRequest {

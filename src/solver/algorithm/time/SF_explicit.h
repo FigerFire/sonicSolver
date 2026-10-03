@@ -12,6 +12,7 @@
 #include "core/interfaces/SF_equationCoupling.h"
 #include "core/state/SF_state.h"
 #include "solver/algorithm/SF_patchWorkspace.h"
+#include "solver/system/SF_compiledTimeRecipe.h"
 
 #include <functional>
 #include <vector>
@@ -35,8 +36,7 @@ struct RKStorage {
 
 /// @brief Solver-owned storage spanning the stages of one explicit step.
 struct Workspace {
-    FDM::TimeRecipe recipe = FDM::builtInTimeRecipe(
-        FDM::TimeRecipeId::ForwardEuler);
+    System::CompiledTimeRecipe recipe;
     bool active = false;
     int nextStage = 0;
     std::vector<RKStorage> patches;
@@ -49,7 +49,7 @@ void forwardEuler(Field& field, const Residual& residual, double dt);
 void begin(Workspace& workspace,
            const std::vector<Field*>& fields,
            State::StateBundle& state,
-           const FDM::TimeRecipe& recipe,
+           const System::CompiledTimeRecipe& recipe,
            FDM::IEquationSystemCoupling* equationSystem);
 
 /// @brief Execute exactly one plan-selected explicit stage.

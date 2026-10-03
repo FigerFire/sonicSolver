@@ -21,8 +21,8 @@
 #include "app/application/output/SF_report.h"
 #include "core/interfaces/SF_log.h"
 #include "SF_compositeIBM.h"
-#include "solver/equation/coupling/SF_equationCoupling.h"
-#include "solver/equation/coupling/SF_interfaceCoupling.h"
+#include "models/physics/equationRuntime/SF_mixtureEquationProvider.h"
+#include "models/physics/equationRuntime/SF_interfaceCoupling.h"
 #include "SF_interfaceModel.h"
 #include "models/physics/interfaceModel/levelSet/SF_state.h"
 #include "models/physics/fluidStateModel/SF_factory.h"
@@ -55,11 +55,11 @@ int executeMulti(
         const CaseConfig& caseConfig,
         bool ibmEnabled,
         bool initialOutputOnly) {
-    using Equation::Coupling::CompositeTransportProvider;
-    using Equation::Coupling::MultiPatchMixtureEquationProvider;
-    using Equation::Coupling::MultiPatchInterfaceEquationProvider;
-    using Equation::Coupling::registerInterfaceState;
-    using Equation::Coupling::registerMixtureState;
+    using SF::Equation::Coupling::CompositeTransportProvider;
+    using SF::Equation::Coupling::MultiPatchMixtureEquationProvider;
+    using SF::Equation::Coupling::MultiPatchInterfaceEquationProvider;
+    using SF::Equation::Coupling::registerInterfaceState;
+    using SF::Equation::Coupling::registerMixtureState;
     using Output::multiPhaseVTKScalars;
     using Output::interfaceVTKScalars;
     using Report::broadcastSolverConfig;
@@ -77,7 +77,8 @@ int executeMulti(
             "the selected executable system has no multi-patch provider.");
         return -1;
     }
-    if (System::requiresProvider(system,"equation.turbulence-transport")) {
+    if (System::requiresProvider(system,"equation.turbulence-transport")
+        || System::requiresProvider(system,"flow.turbulence")) {
         broadcast("Fatal execution capability: ",
             "multi-patch transported turbulence state is not implemented.");
         return -1;
@@ -94,7 +95,7 @@ int executeMulti(
             block.field,
             solverConfig.boundaries.density,
             solverConfig.boundaries.velocity,
-            solverConfig.boundaries.energyFromPressure,
+            solverConfig.boundaries.pressure,
             solverConfig.boundaries.thermal,
             solverConfig.turbulence.scalars.kBoundary,
             solverConfig.turbulence.scalars.epsilonBoundary,

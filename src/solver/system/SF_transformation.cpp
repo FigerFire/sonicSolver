@@ -1,7 +1,10 @@
+#include "core/system/SF_operationIds.h"
 /// @file SF_transformation.cpp
 /// @brief Equation system transformer registry、match、validation 与 application。
 
 #include "SF_transformation.h"
+#include "SF_eulerianRelations.h"
+#include "SF_pressureCoupling.h"
 
 #include <algorithm>
 #include <stdexcept>
@@ -12,8 +15,8 @@ namespace {
 
 class PressureConstraintTransformer final : public IEquationSystemTransformer {
 public:
-    PressureConstraintTransformer()
-        : descriptor_{"pressureConstraint","pressure constraint",100,false,
+    explicit PressureConstraintTransformer(std::string momentumTarget)
+        : momentumTarget_(std::move(momentumTarget)), descriptor_{"pressureConstraint","pressure constraint",100,false,
                       {OriginKind::BuiltinPreset,"pressure coupling"}} {}
 
     const TransformationDescriptor& descriptor() const override {
@@ -25,7 +28,7 @@ public:
             return {TransformationState::RegisteredButNotApplicable,
                     "required incompressibility constraint not present"};
         }
-        if (!hasEquation(raw,"E_MOMENTUM") || !hasUnknown(raw,"p")) {
+        if (!hasEquation(raw,"momentum") || !hasUnknown(raw,"p")) {
             return {TransformationState::RegisteredButInvalid,
                     "requires Momentum equation and pressure multiplier p"};
         }
@@ -36,146 +39,78 @@ public:
     void transform(
             const RawEquationSystem& raw,
             ExecutableEquationSystemBuilder& executable,
-            std::vector<ExecutionPolicy>&,
+            std::vector<LegacyExecutionPolicy>&,
             TransformationRecord& record) const override {
         const auto velocity = std::find_if(
-            raw.unknowns.begin(),raw.unknowns.end(),
-            [](const UnknownDescriptor& unknown) { return unknown.id == "U"; });
-        if (velocity == raw.unknowns.end() || velocity->storageKey.empty()) {
+            raw.state.symbols().begin(),raw.state.symbols().end(),
+            [](const StateSymbol& unknown) { return unknown.id == "U"; });
+        if (velocity == raw.state.symbols().end()) {
             throw std::runtime_error(
-                "Pressure constraint requires a storage-bound U unknown.");
+                "Pressure constraint requires a declared mathematical U unknown.");
         }
-        const bool constantDensity = std::any_of(
-            raw.unknowns.begin(),raw.unknowns.end(),
-            [](const UnknownDescriptor& unknown) {
-                return unknown.id == "rho" && unknown.constantValue.has_value();
-            });
-        const CompiledResourceBinding momentumState{
-            "U",velocity->storageKey,velocity->componentOffset,
-            velocity->components,ResourceAccessMode::ReadWrite,true,
-            SynchronizationRequirement::ReadHalo};
-        UnknownDescriptor correction;
-        correction.id = "pPrime";
-        correction.name = "pressure correction";
-        correction.role = UnknownRole::Algebraic;
-        correction.storageBinding = StorageBinding::TransientWorkspace;
-        correction.storageKey = "pressureCorrection";
-        correction.runtimeStorageRequired = false;
-        correction.boundaryRequired = false;
-        correction.restartEligible = false;
-        correction.outputEligible = false;
-        correction.origin = {OriginKind::Generated,"pressureConstraint"};
-        executable.addUnknown(std::move(correction));
-
-        EquationDescriptor predictor{
-            "E_MOMENTUM_PREDICTOR","momentum predictor","algorithmic",{"U"}};
-        predictor.category = EquationCategory::AlgorithmicDerivedEquation;
-        predictor.origin = {OriginKind::Generated,"pressureConstraint"};
-        executable.addEquation(std::move(predictor),
-            Equation::named("E_MOMENTUM_PREDICTOR",
-                raw.equationDefinitions.at("E_MOMENTUM").left
-                    == raw.equationDefinitions.at("E_MOMENTUM").right));
-
-        EquationDescriptor descriptor{
-            "E_PRESSURE","pressure correction","constraint",{"pPrime","U"}};
-        descriptor.category = EquationCategory::AlgorithmicDerivedEquation;
-        descriptor.origin = {OriginKind::Generated,"pressureConstraint"};
-        executable.addEquation(std::move(descriptor),
-            Equation::named("E_PRESSURE",
-                Equation::constraint({"pressureVelocityConsistency"})
-                    == Equation::Symbol{"zero"}));
+        const bool primitiveTarget=momentumTarget_=="U";
+        if (!primitiveTarget && momentumTarget_!="rhoU")
+            throw std::runtime_error("Pressure transformation requires an explicit momentum solution target.");
+        if (!primitiveTarget) {
+            for (auto equation:conservativePressureRelations()) {
+                record.generatedEquations.push_back(equation.id);
+                executable.addEquation(std::move(equation));
+            }
+        }
+        if (primitiveTarget) {
+            using Expr=FormulaExpr;
+            const Provenance origin{OriginKind::Generated,"pressureConstraint"};
+            // These formulas describe the operations implemented by the
+            // current pressure provider. rAU, HbyA, and faceResponse are
+            // derived numerical workspace, not physical state authorities.
+            executable.addEquation({"pSimple",
+                Expr::negate(Expr::op("div",{
+                    Expr::multiply(Expr::symbol("faceResponse"),
+                        Expr::op("grad",{Expr::symbol("pPrime")}))},
+                    "pressureLaplacian")),
+                Expr::negate(Expr::op("div",{Expr::symbol("correctedFlux")},
+                                     "continuityDefect")),origin});
+            executable.addEquation({"correctP",Expr::symbol("p"),
+                Expr::add(Expr::symbol("p"),Expr::symbol("pPrime")),origin});
+            executable.addEquation({"correctU",Expr::symbol("U"),
+                Expr::subtract(Expr::symbol("U"),
+                    Expr::multiply(Expr::symbol("rAU"),
+                        Expr::op("grad",{Expr::symbol("pPrime")},
+                                 "correction.pressureGradient"))),origin});
+            executable.addEquation({"correctFluxp",Expr::symbol("phi"),
+                Expr::subtract(Expr::symbol("phi"),
+                    Expr::op("pressureFlux",{
+                        Expr::symbol("faceResponse"),Expr::symbol("pPrime")},
+                        "correction.faceFlux")),origin});
+        }
+        if (primitiveTarget) {
+            using Expr=FormulaExpr;
+            const Provenance origin{OriginKind::Generated,"pressure coupling relations"};
+            executable.addEquation({"relaxIterate",Expr::symbol("iterate"),
+                Expr::op("relax",{Expr::symbol("iterate"),Expr::symbol("laggedIterate")}),origin});
+            executable.addEquation({"restoreFlux",Expr::symbol("phi"),
+                Expr::op("consistentFlux",{Expr::symbol("U"),Expr::symbol("p")}),origin});
+            executable.addEquation({"checkConvergence",Expr::symbol("converged"),
+                Expr::op("residualConvergence",{Expr::symbol("iterate"),Expr::symbol("laggedIterate")}),origin});
+        }
         executable.addOperator({
             "OP_PRESSURE_UPDATE","pressure update",{"pPrime"},{"p"},
             {OriginKind::Generated,"pressureConstraint"}});
         executable.addOperator({
-            "OP_VELOCITY_CORRECTION","velocity correction",{"pPrime","U"},{"U"},
+            "OP_VELOCITY_CORRECTION","velocity correction",
+            {"pPrime",primitiveTarget ? "U" : "rhoU"},{primitiveTarget ? "U" : "rhoU"},
             {OriginKind::Generated,"pressureConstraint"}});
         executable.addOperator({
-            "OP_FLUX_CORRECTION","flux correction",{"pPrime"},{"faceFlux"},
+            "OP_FLUX_CORRECTION","flux correction",{"pPrime"},
+            {primitiveTarget ? "faceFlux" : "fluxValidity"},
             {OriginKind::Generated,"pressureConstraint"}});
-        // Pressure formulation 是"存在哪些 derived operation"的唯一 authority：
-        // executable operation 的 id/stage/capability 只在这里声明一次。
-        // Ordering 不在这里——plan fragment 只引用 stage。
-        const Provenance source{OriginKind::Generated,"pressureConstraint"};
-        const auto declare = [&](OperationStage stage, const char* id,
-                                 const char* name,
-                                 std::vector<OperationCapability> needs) {
-            executable.addExecutableOperation(
-                {id,name,stage,std::move(needs),source});
-        };
-        declare(OperationStage::Prepare,"pressure.prepare",
-                "prepare pressure schedule",{OperationCapability::PressureSchedule});
-        declare(OperationStage::MomentumAssemble,"momentum.assemble",
-                "assemble momentum predictor",{OperationCapability::MomentumPredictor});
-        declare(OperationStage::MomentumSolve,"momentum.solve",
-                "advance momentum predictor",{OperationCapability::MomentumPredictor});
-        declare(OperationStage::PressureBoundaryPrepare,
-                "pressure.boundary.prepare","prepare pressure boundary state",
-                {OperationCapability::PressureBoundary});
-        declare(OperationStage::PressureAssemble,"pressure.assemble",
-                "assemble pressure correction",{OperationCapability::PressureCorrection,
-                                                  OperationCapability::PressureLinearSolve});
-        declare(OperationStage::PressureSolve,"pressure.solve",
-                "solve pressure correction",{OperationCapability::PressureCorrection,
-                                               OperationCapability::PressureLinearSolve});
-        declare(OperationStage::PressureUpdatePrepare,
-                "pressure.update.prepare","prepare pressure update",
-                {OperationCapability::PressureCorrection});
-        declare(OperationStage::VelocityCorrect,"velocity.correct",
-                "velocity correction",{OperationCapability::VelocityCorrection});
-        declare(OperationStage::FluxCorrect,"flux.correct",
-                "refresh derived face-flux state",{OperationCapability::FluxCorrection});
-        declare(OperationStage::CorrectionCommit,
-                "pressure.correction.commit",
-                "commit pressure-corrected state",{OperationCapability::PressureCorrection});
-        declare(OperationStage::StepCommit,"pressure.step.commit",
-                "commit corrected state",{OperationCapability::PressureSchedule});
-        const CompiledResourceBinding momentumWorkspace=constantDensity
-            ? CompiledResourceBinding{
-                "HbyA","pressureMomentumWorkspace",0,3,
-                ResourceAccessMode::ReadWrite,false,
-                SynchronizationRequirement::WriteOwned}
-            : CompiledResourceBinding{
-                "R_momentum","residual",1,3,
-                ResourceAccessMode::ReadWrite,false,
-                SynchronizationRequirement::WriteOwned};
-        executable.addCompiledEquation({
-            "E_MOMENTUM_PREDICTOR",
-            "momentum.predictor",
-            {
-                momentumState,
-                momentumWorkspace
-            },
-            false,true,{OriginKind::Generated,"pressureConstraint"}});
-        executable.addCompiledEquation({
-            "E_PRESSURE",
-            "pressure.correction",
-            {
-                momentumState,
-                {"p",constantDensity ? "pressure" : "conservative",
-                 0,1,ResourceAccessMode::ReadWrite,true,
-                 SynchronizationRequirement::ReadHalo},
-                {"pPrime","pressureCorrection",0,1,
-                 ResourceAccessMode::ReadWrite,true,
-                 SynchronizationRequirement::ReadHalo},
-                {"A_p","pressureMatrix",0,1,ResourceAccessMode::Write,false,
-                 SynchronizationRequirement::None},
-                {"b_p","pressureRhs",0,1,ResourceAccessMode::Write,false,
-                 SynchronizationRequirement::None}
-            },
-            true,true,{OriginKind::Generated,"pressureConstraint"}});
-        record.generatedEquations.push_back("E_MOMENTUM_PREDICTOR");
-        record.generatedEquations.push_back("E_PRESSURE");
+        if (primitiveTarget) record.generatedEquations.push_back("pSimple");
         record.generatedOperators.insert(record.generatedOperators.end(),{
             "OP_PRESSURE_UPDATE","OP_VELOCITY_CORRECTION","OP_FLUX_CORRECTION"});
-        for (const ExecutableOperation& operation : executable.operations()) {
-            if (operation.origin.source == "pressureConstraint") {
-                record.generatedOperations.push_back(operation.operation);
-            }
-        }
     }
 
 private:
+    std::string momentumTarget_;
     TransformationDescriptor descriptor_;
 };
 
@@ -195,7 +130,7 @@ public:
                     "shared-pressure constraint not present"};
         }
         const bool hasPhaseContinuity = std::any_of(
-            raw.equations.begin(),raw.equations.end(),
+            raw.legacyEquations.begin(),raw.legacyEquations.end(),
             [](const EquationDescriptor& item) {
                 return item.id.rfind("E_CONTINUITY.",0) == 0;
             });
@@ -210,60 +145,20 @@ public:
     void transform(
             const RawEquationSystem& raw,
             ExecutableEquationSystemBuilder& executable,
-            std::vector<ExecutionPolicy>&,
+            std::vector<LegacyExecutionPolicy>&,
             TransformationRecord& record) const override {
-        EquationDescriptor descriptor{
-            "E_SHARED_PRESSURE","shared pressure correction","constraint",{"p"}};
-        descriptor.category = EquationCategory::AlgorithmicDerivedEquation;
-        descriptor.origin = {OriginKind::Generated,"sharedPressureConstraint"};
-        executable.addEquation(std::move(descriptor),
-            Equation::named("E_SHARED_PRESSURE",
-                Equation::constraint({"sharedPressure"})
-                    == Equation::Symbol{"zero"}));
-        executable.addOperator({
-            "OP_PHASE_FLUX_CORRECTION","phase flux correction",{"p"},
-            {"phaseFaceFlux"},{OriginKind::Generated,"sharedPressureConstraint"}});
-        record.generatedEquations.push_back("E_SHARED_PRESSURE");
-        record.generatedOperators.push_back("OP_PHASE_FLUX_CORRECTION");
-        const Provenance source{OriginKind::Generated,"sharedPressureConstraint"};
-        const auto declare = [&](const char* id, bool linear = false) {
-            std::vector<OperationCapability> needs{
-                OperationCapability::EulerianPhaseExecution};
-            if (linear) needs.push_back(OperationCapability::PressureLinearSolve);
-            executable.addExecutableOperation(
-                {id,id,OperationStage::Prepare,std::move(needs),source});
-            record.generatedOperations.push_back(id);
-        };
-        for (const char* id : {
-                "ee.dt.compute", "ee.step.begin", "ee.interphase.compute",
-                "ee.sources.assemble", "ee.sources.validate",
-                "ee.momentum.diagonal", "ee.momentum.flux",
-                "ee.faceFlux.canonical", "ee.continuity.assemble",
-                "ee.boundary.prepare", "ee.momentum.solve",
-                "ee.interphase.correct", "ee.boundary.afterMomentum",
-                "ee.diagonal.sync", "ee.momentum.flux.after",
-                "ee.faceFlux.canonical.after", "ee.pressure.publish",
-                "ee.pressure.sync", "ee.phase.correct",
-                "ee.faceFlux.correct", "ee.boundary.afterPressure",
-                "ee.faceFlux.canonical.pressure", "ee.energy.solve",
-                "ee.boundary.final", "ee.outer.validate",
-                "ee.step.commit", "ee.time.commit"}) {
-            declare(id);
+        for (auto equation:eulerianPressureRelations()) {
+            equation.origin={OriginKind::Generated,"sharedPressureConstraint"};
+            equation.authored=true;
+            if (equation.id=="E_SHARED_PRESSURE") {
+                EquationDescriptor descriptor{equation.id,"shared volume-pressure relation","constraint",{"p"}};
+                descriptor.category=EquationCategory::AlgorithmicDerivedEquation;
+                executable.addEquation(std::move(descriptor),eulerianBackendDefinition(equation));
+                executable.replaceEquation(equation);
+            } else executable.addEquation(equation);
+            record.generatedEquations.push_back(equation.id);
         }
-        declare("ee.pressure.solve",true);
-        const bool solveTurbulence = std::any_of(
-            raw.equations.begin(),raw.equations.end(),
-            [](const EquationDescriptor& item) {
-                return item.id.rfind("E_TURB_",0) == 0;
-            });
-        const bool prepareTurbulence = solveTurbulence || std::any_of(
-            raw.closures.begin(),raw.closures.end(),
-            [](const std::string& closure) {
-                return closure.find("turbulence") != std::string::npos
-                    || closure.find("mu_t") != std::string::npos;
-            });
-        if (prepareTurbulence) declare("ee.turbulence.prepare");
-        if (solveTurbulence) declare("ee.turbulence.solve");
+
     }
 
 private:
@@ -297,7 +192,7 @@ public:
     void transform(
             const RawEquationSystem&,
             ExecutableEquationSystemBuilder&,
-            std::vector<ExecutionPolicy>&,
+            std::vector<LegacyExecutionPolicy>&,
             TransformationRecord&) const override {
         // Current descriptor already supplies constraint equations. The registry
         // owns the transformation identity; numerical lowering remains in the
@@ -316,42 +211,55 @@ bool hasEquationId(
 }
 
 bool hasUnknownId(
-        const std::vector<UnknownDescriptor>& unknowns,
+        const std::vector<StateSymbol>& unknowns,
         std::string_view id) {
     return std::any_of(unknowns.begin(),unknowns.end(),
-        [&](const UnknownDescriptor& item) { return item.id == id; });
+        [&](const StateSymbol& item) { return item.id == id; });
 }
 
 } // namespace
 
 ExecutableEquationSystemBuilder::ExecutableEquationSystemBuilder(
         const RawEquationSystem& raw) {
-    system_.unknowns = raw.unknowns;
-    system_.equations = raw.equations;
-    system_.equationDefinitions = raw.equationDefinitions;
+    system_.state = raw.state;
+    system_.legacyEquations = raw.legacyEquations;
+    system_.legacyDefinitions = raw.legacyDefinitions;
+    system_.registry = raw.registry;
     system_.constraints = raw.constraints;
     system_.closures = raw.closures;
     system_.boundaries = raw.boundaries;
     system_.dependencies = raw.dependencies;
 }
 
-void ExecutableEquationSystemBuilder::addUnknown(UnknownDescriptor unknown) {
-    if (hasUnknownId(system_.unknowns,unknown.id)) {
+ExecutableEquationSystemBuilder::ExecutableEquationSystemBuilder(const ExecutableEquationSystem& composed)
+    : system_(composed) {}
+
+void ExecutableEquationSystemBuilder::addState(StateSymbol unknown) {
+    if (hasUnknownId(system_.state.symbols(),unknown.id)) {
         throw std::runtime_error("Transformation generated duplicate unknown '"
                                  +unknown.id+"'.");
     }
-    system_.unknowns.push_back(std::move(unknown));
+    system_.state.add(std::move(unknown));
 }
 
 void ExecutableEquationSystemBuilder::addEquation(
-        EquationDescriptor descriptor, Equation::Definition definition) {
-    if (descriptor.id != definition.name || hasEquationId(system_.equations,descriptor.id)) {
+        EquationDescriptor descriptor, SF::Equation::Definition definition) {
+    if (descriptor.id != definition.name || hasEquationId(system_.legacyEquations,descriptor.id)) {
         throw std::runtime_error(
             "Transformation generated invalid/duplicate equation '"
             +descriptor.id+"'.");
     }
-    system_.equations.push_back(std::move(descriptor));
-    system_.equationDefinitions.add(std::move(definition));
+    system_.registry.add(formulaFromEquation(definition,descriptor.origin));
+    system_.legacyEquations.push_back(std::move(descriptor));
+    system_.legacyDefinitions.add(std::move(definition));
+}
+
+void ExecutableEquationSystemBuilder::replaceEquation(Equation formula) {
+    system_.registry.replace(std::move(formula));
+}
+
+void ExecutableEquationSystemBuilder::addEquation(Equation formula) {
+    system_.registry.add(std::move(formula));
 }
 
 void ExecutableEquationSystemBuilder::addOperator(
@@ -374,7 +282,7 @@ void ExecutableEquationSystemBuilder::addOperator(
 void ExecutableEquationSystemBuilder::addCompiledEquation(
         CompiledEquation equation) {
     if (equation.equationId.empty()
-        || !hasEquationId(system_.equations,equation.equationId)) {
+        || !system_.registry.contains(equation.equationId)) {
         throw std::runtime_error(
             "Compiled equation requires an executable equation definition.");
     }
@@ -432,7 +340,7 @@ ExecutableEquationSystem TransformationPipeline::apply(
         const RawEquationSystem& raw,
         const std::vector<TransformationDescriptor>& requests,
         const TransformerRegistry& registry,
-        std::vector<ExecutionPolicy>& policies,
+        std::vector<LegacyExecutionPolicy>& policies,
         std::vector<TransformationRecord>& records) {
     ExecutableEquationSystemBuilder executable(raw);
     auto ordered = requests;
@@ -470,8 +378,8 @@ ExecutableEquationSystem TransformationPipeline::apply(
     return executable.finish();
 }
 
-std::unique_ptr<IEquationSystemTransformer> makePressureConstraintTransformer() {
-    return std::make_unique<PressureConstraintTransformer>();
+std::unique_ptr<IEquationSystemTransformer> makePressureConstraintTransformer(std::string momentumTarget) {
+    return std::make_unique<PressureConstraintTransformer>(std::move(momentumTarget));
 }
 
 std::unique_ptr<IEquationSystemTransformer> makeSharedPressureTransformer() {

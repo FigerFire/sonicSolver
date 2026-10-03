@@ -3,13 +3,15 @@ add_subdirectory(time)
 add_library(SF_solverAlgorithm STATIC
     SF_singleFluidStepper.cpp
     SF_singleFluidStepper.h
+    SF_pressureProviderBinding.cpp
+    SF_pressureProviderBinding.h
     SF_conservativeRHS.cpp
     SF_conservativeRHS.h
     time/SF_explicit.cpp
     time/SF_explicit.h
     pressureBased/SF_corrector.cpp
-    pressureBased/SF_pressureOperators.cpp
-    pressureBased/SF_pressureOperators.h
+    pressure/SF_pressureOperators.cpp
+    pressure/SF_pressureOperators.h
     pressureBased/SF_kkt.cpp
     pressureBased/SF_kktDofs.cpp
     pressureBased/SF_kktDofs.h
@@ -38,6 +40,7 @@ target_link_libraries(SF_solverAlgorithm PUBLIC
     SF_boundary
     SF_discretization
     SF_equation
+    SF_eulerianEquationAdapter
     SF_linearAlgebra
     SF_physics
     SF_turbulence

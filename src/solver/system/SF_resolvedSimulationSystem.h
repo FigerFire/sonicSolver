@@ -3,10 +3,11 @@
 /// @file SF_resolvedSimulationSystem.h
 /// @brief 启动阶段完整解析结果：每一阶段只有一个明确 authority。
 ///
-/// WHAT / ORDER / HOW / RUNTIME 的分层 value objects 分别位于：
-///   - SF_resolvedEquationSystem.h       (WHAT:  unknowns / equations / constraints)
-///   - SF_solveProgram.h         (ORDER: policies / blocks / control-flow IR)
-///   - SF_numericalSystem.h      (HOW:   term -> recipe bindings)
+/// WHAT / HOW / STATE / WHICH / RUNTIME 的分层 value objects 分别位于：
+///   - SF_equationIR.h            (WHAT: equations / constraints)
+///   - SF_stateRegistry.h         (STATE: base variables)
+///   - SF_solveProgram.h         (HOW + distinct compiled plan IR)
+///   - SF_numericalSelection.h   (source WHICH), SF_numericalSystem.h (compiled numerics)
 ///   - SF_runtimeRequirements.h  (RUNTIME: capabilities / requirements)
 ///   - SF_transformation.h       (raw -> executable transformation IR)
 
@@ -15,6 +16,7 @@
 #include "SF_couplingStatus.h"
 #include "core/system/SF_equationIR.h"
 #include "SF_numericalSystem.h"
+#include "SF_numericalSelection.h"
 #include "SF_physicsTemplate.h"
 #include "SF_runtimeRequirements.h"
 #include "core/system/SF_solveProgram.h"
@@ -29,7 +31,7 @@ namespace SF::System {
 
 struct ResolvedSimulationSystem {
     FDM::TimeRecipe timeRecipe;
-    /// @brief STATE REALIZATION：由 executable equations 的 role 导出。
+    /// @brief STATE role/storage summary; requested views are in compiledProgram.stateViews.
     ///        它不是 solver family，也不选择运行时路径。
     CompiledStateRealization realization;
     /// @brief 压力耦合 preset 注册状态（active/inactive/invalid/unsupported）。
@@ -38,9 +40,10 @@ struct ResolvedSimulationSystem {
     CaseClassification classification;
     RawEquationSystem rawSystem;
     ExecutableEquationSystem executableSystem;
+    NumericalSelection numericalSelection;
     CompiledNumericalSystem numericalSystem;
     std::vector<TransformationRecord> transformations;
-    std::vector<ExecutionPolicy> executionPolicies;
+    std::vector<LegacyExecutionPolicy> executionPolicies;
     CompiledSolvePlan solvePlan;
     RuntimeRequirements runtime;
 };
@@ -67,7 +70,7 @@ inline CompilationResult compilationOf(const ResolvedSimulationSystem& system) {
 
 bool hasUnknown(const ResolvedSimulationSystem& system, std::string_view id);
 bool hasEquation(const ResolvedSimulationSystem& system, std::string_view id);
-const Equation::Definition& equationDefinition(
+const SF::Equation::Definition& equationDefinition(
     const ResolvedSimulationSystem& system, std::string_view id);
 bool hasEquationPrefix(
     const ResolvedSimulationSystem& system, std::string_view prefix);

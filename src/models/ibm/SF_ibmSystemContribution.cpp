@@ -47,8 +47,14 @@ void contribute(
         const FDM::ImmersedAlgorithmDescriptor& immersed) {
     system.recordContribution(
         "model.ibm."+immersed.id,"immersed-boundary contribution");
+    if (immersed.enforcement == FDM::IBMEnforcement::GhostCell)
+        system.requireProvider("ibm.boundary",
+                               "bind ghost/ILW boundary closure");
+    else
+        system.requireProvider("ibm.constraint",
+                               "bind immersed constraint state and operations");
     for (const auto& source : immersed.unknowns) {
-        UnknownDescriptor unknown;
+        StateSymbol unknown;
         unknown.id = source.id;
         unknown.name = source.name;
         unknown.location = location(source.location);
@@ -58,10 +64,10 @@ void contribute(
             ? ValueShape::Scalar : ValueShape::Vector;
         unknown.role = unknown.location == VariableLocation::BodyConstraint
                 || unknown.location == VariableLocation::SurfaceConstraint
-            ? UnknownRole::Multiplier : UnknownRole::Algebraic;
+            ? StateRole::Multiplier : StateRole::Algebraic;
         unknown.storageBinding = StorageBinding::SpecializedExecutor;
         unknown.nameSpace = "immersed";
-        system.addUnknown(std::move(unknown));
+        system.addState(std::move(unknown));
     }
     for (const auto& source : immersed.constraints) {
         system.addConstraint({
@@ -74,23 +80,31 @@ void contribute(
             source.id,source.name,source.form,source.solvedUnknowns};
         descriptor.category = EquationCategory::ConstraintEquation;
         system.addEquation(std::move(descriptor),
-            Equation::named(source.id,
-                Equation::constraint({source.form.empty()
+            SF::Equation::named(source.id,
+                SF::Equation::constraint({source.form.empty()
                     ? source.id : source.form})
-                    == Equation::Symbol{unknown}));
+                    == SF::Equation::Symbol{unknown}));
+    }
+    for (const auto& equation:immersed.equations) {
+        if (equation.solvedUnknowns.empty()) continue;
+        ExecutionScope call;
+        call.kind=ExecutionKind::EquationCall;
+        call.order=70;
+        call.step={equation.id,{equation.solvedUnknowns.front(),TargetKind::Workspace}};
+        system.addLegacyExecution(std::move(call));
     }
     bool hasConstraintTransformation = false;
     for (const auto& source : immersed.solveBlocks) {
-        ExecutionPolicy policy;
+        LegacyExecutionPolicy policy;
         policy.id = source.id;
         policy.name = source.name;
         policy.strategyName = source.strategy;
         if (source.strategy == "boundaryStencilClosure") {
-            policy.kind = ExecutionPolicyKind::BoundaryClosure;
+            policy.kind = LegacyExecutionPolicyKind::BoundaryClosure;
             policy.strategyKind = FDM::SolveStrategyKind::BoundaryClosure;
         } else if (source.strategy == "monolithicKKT"
                    || source.strategy == "augmentedLagrangianKKT") {
-            policy.kind = ExecutionPolicyKind::MonolithicKKT;
+            policy.kind = LegacyExecutionPolicyKind::MonolithicKKT;
             policy.strategyKind = FDM::SolveStrategyKind::MonolithicKKT;
             policy.leafKind = PlanNodeKind::BlockSolve;
             policy.leafOperation = "ibm.kkt.solve";
@@ -99,7 +113,7 @@ void contribute(
                    || source.strategy == "fractionalVariationalProjection"
                    || source.strategy == "surfaceMassProjection"
                    || source.strategy == "dissipativePenalty") {
-            policy.kind = ExecutionPolicyKind::ConstraintProjection;
+            policy.kind = LegacyExecutionPolicyKind::ConstraintProjection;
             policy.strategyKind = FDM::SolveStrategyKind::ConstraintSolve;
             policy.leafKind = PlanNodeKind::Correct;
             policy.leafOperation = "ibm.constraint.project";
@@ -118,7 +132,7 @@ void contribute(
         if (immersed.monolithic) {
             policy.unknowns.insert(policy.unknowns.begin(),{"pPrime","U"});
             policy.equations.insert(
-                policy.equations.begin(),{"E_MOMENTUM","E_PRESSURE"});
+                policy.equations.begin(),{"momentum","pSimple"});
         }
         system.addExecutionPolicy(std::move(policy));
     }

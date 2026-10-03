@@ -121,6 +121,9 @@ public:
     virtual double globalMinimum(double localValue) = 0;
     virtual double globalMaximum(double localValue) = 0;
     virtual double globalSum(double localValue) = 0;
+    virtual std::int64_t globalMinimum(std::int64_t localValue) = 0;
+    virtual std::int64_t globalMaximum(std::int64_t localValue) = 0;
+    virtual std::int64_t globalSum(std::int64_t localValue) = 0;
     /// @brief 显式完成短生命周期数值向量的逐项 SUM，不注册为 Field。
     virtual void globalSum(std::vector<double>& values) = 0;
     /// @brief 查询一个全局实体是否由当前执行单元负责其唯一标量输出。
@@ -143,6 +146,10 @@ public:
     /// @brief 同步短生命周期算法 workspace，不把它注册为长期 Field。
     virtual void synchronizeTransient(
         const std::vector<State::DistributedFieldView>& fields) = 0;
+    /// @brief COPY integer workspace IDs from canonical mesh owners without a floating-point payload.
+    virtual void synchronizeIdentifiers(
+        const Field& geometry, int blockId,
+        std::vector<std::int64_t>& values) = 0;
     /// @brief 从重复 patch 候选中选择 canonical Eulerian owner cell。
     virtual std::vector<int> canonicalOwnerCells(
         Field& geometry,

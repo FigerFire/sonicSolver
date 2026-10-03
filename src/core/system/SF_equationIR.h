@@ -1,10 +1,12 @@
 #pragma once
 
-/// @file SF_resolvedEquationSystem.h
-/// @brief WHAT — 主未知量、方程、约束，以及它们到 runtime storage/operator 的
-///        编译绑定。Composition → Transformation 的冻结数学 contract。
+/// @file SF_equationIR.h
+/// @brief Composition snapshot of independent WHAT and STATE channels.
+/// EquationRegistry owns mathematics; StateRegistry owns base variables.
+/// Legacy operator/storage metadata remains an explicit migration boundary.
 
-#include "core/system/SF_expression.h"
+#include "core/system/SF_formula.h"
+#include "core/system/SF_stateRegistry.h"
 
 #include <optional>
 #include <string>
@@ -12,39 +14,6 @@
 #include <vector>
 
 namespace SF::System {
-
-enum class VariableLocation {
-    EulerianCell,
-    EulerianFace,
-    BodyConstraint,
-    SurfaceConstraint,
-    SolidGlobal
-};
-
-enum class OwnershipKind {
-    EulerianGlobalDof,
-    CanonicalFace,
-    ConstraintGlobalDof,
-    SolidGlobalDof
-};
-
-enum class ValueShape { Scalar, Vector, Tensor };
-enum class UnknownRole { Primary, Transported, Algebraic, Multiplier, Derived };
-enum class StorageBinding {
-    PackedDistributed,
-    NamedDistributed,
-    TransientWorkspace,
-    SpecializedExecutor
-};
-
-/// @brief Contribution 的来源只服务于 override、validation 与 explain。
-enum class OriginKind {
-    BuiltinDefault,
-    BuiltinPreset,
-    Model,
-    User,
-    Generated
-};
 
 /// @brief 用户和 preset 对已有 composition item 的显式修改语义。
 enum class ModificationKind { Add, Extend, Replace, Disable };
@@ -57,9 +26,16 @@ enum class EquationCategory {
     AlgebraicRelation
 };
 
-struct Provenance {
-    OriginKind kind = OriginKind::BuiltinDefault;
-    std::string source;
+/// @brief Mathematical meaning of an equation, independent of its open ID.
+enum class LegacyEquationRole {
+    Generic,
+    Mass,
+    Momentum,
+    Energy,
+    Enthalpy,
+    PressureConstraint,
+    PhaseTransport,
+    TurbulenceTransport
 };
 
 struct ContributionRecord {
@@ -76,28 +52,6 @@ struct SystemModification {
     Provenance origin;
 };
 
-struct UnknownDescriptor {
-    std::string id;
-    std::string name;
-    VariableLocation location = VariableLocation::EulerianCell;
-    int components = 1;
-    OwnershipKind ownership = OwnershipKind::EulerianGlobalDof;
-    ValueShape shape = ValueShape::Scalar;
-    UnknownRole role = UnknownRole::Primary;
-    StorageBinding storageBinding = StorageBinding::SpecializedExecutor;
-    std::string storageKey;
-    int componentOffset = 0;
-    /// A derived constant has no writable runtime field; its value is frozen at composition.
-    std::optional<double> constantValue;
-    bool initializationRequired = true;
-    bool boundaryRequired = true;
-    bool restartEligible = true;
-    bool outputEligible = true;
-    bool runtimeStorageRequired = true;
-    std::string nameSpace;
-    Provenance origin;
-};
-
 struct EquationDescriptor {
     std::string id;
     std::string name;
@@ -105,6 +59,7 @@ struct EquationDescriptor {
     std::vector<std::string> solvedUnknowns;
     EquationCategory category = EquationCategory::PhysicalEquation;
     Provenance origin;
+    LegacyEquationRole role = LegacyEquationRole::Generic;
 };
 
 struct ConstraintDescriptor {
@@ -119,9 +74,12 @@ struct ConstraintDescriptor {
 ///
 /// 该对象不保存 timestep、RK stage、MPI schedule 或 runner identity。
 struct RawEquationSystem {
-    std::vector<UnknownDescriptor> unknowns;
-    std::vector<EquationDescriptor> equations;
-    Equation::System equationDefinitions;
+    StateRegistry state;
+    std::vector<EquationDescriptor> legacyEquations;
+    SF::Equation::System legacyDefinitions;
+    /// @brief Equation AST is the mathematical source for migrated FormulaCalls.
+    /// Existing flat definitions remain a compatibility view during lowering.
+    EquationRegistry registry;
     std::vector<ConstraintDescriptor> constraints;
     std::vector<std::string> closures;
     std::vector<std::string> boundaries;
@@ -145,6 +103,8 @@ struct GeneratedOperatorDescriptor {
 /// operation id；provider resolver 负责确认每个 id 都有实现。
 enum class OperationStage {
     Prepare,
+    FixedTimeStepBegin,
+    IterationBegin,
     MomentumAssemble,
     MomentumSolve,
     PressureBoundaryPrepare,
@@ -154,13 +114,20 @@ enum class OperationStage {
     VelocityCorrect,
     FluxCorrect,
     CorrectionCommit,
+    RelaxationApply,
+    FluxConsistencyRestore,
+    ConvergenceEvaluate,
+    IterationEnd,
     StepCommit
 };
 
 /// @brief Operation 需要的数值能力；不指名具体 implementation provider。
 enum class OperationCapability {
     ConservativeExplicit,
+    SingleFluidTurbulenceTransport,
+    SingleFluidTurbulenceClosure,
     PressureSchedule,
+    FixedTimeIteration,
     MomentumPredictor,
     PressureCorrection,
     PressureLinearSolve,
@@ -211,9 +178,10 @@ struct CompiledEquation {
 
 /// @brief Transformation 后、solve planning 前唯一可执行方程 authority。
 struct ExecutableEquationSystem {
-    std::vector<UnknownDescriptor> unknowns;
-    std::vector<EquationDescriptor> equations;
-    Equation::System equationDefinitions;
+    StateRegistry state;
+    std::vector<EquationDescriptor> legacyEquations;
+    SF::Equation::System legacyDefinitions;
+    EquationRegistry registry;
     std::vector<ConstraintDescriptor> constraints;
     /// @brief Formulation 产生的 executable operations（唯一 authority）。
     std::vector<ExecutableOperation> operations;

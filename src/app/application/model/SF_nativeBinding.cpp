@@ -30,6 +30,7 @@ P expandBoundaryDefault(P value,const std::string& caseDir,const std::vector<std
 CaseConfig CaseAdapter::build(const Model::Description& m) {
     native_=true;sections_={};
     EquationCompositionConfig composition;
+    P nativeAlgorithmParameters=P::object();
     // 语义角色 → parameters。同一个角色只能被一个对象占用。
     std::map<std::string,P> roles;
     auto assignRole=[&](const std::string& role,const P& parameters) {
@@ -73,15 +74,29 @@ CaseConfig CaseAdapter::build(const Model::Description& m) {
     }
     using Context=std::function<void(const std::string&,const P&)>;
     Model::FactoryRegistry<Context> factories;
+    factories.add("stateRegistry",{{{"use","array",true}},false},
+        [&](const Model::ObjectDescriptor& object,Context&) {
+            if (composition.stateDeclared) throw std::runtime_error("Multiple solution STATE selections.");
+            composition.declared=true;
+            composition.stateDeclared=true;
+            composition.solutionVariables=object.parameters.at("use").get<std::vector<std::string>>();
+            std::set<std::string> selected;
+            for (const auto& id:composition.solutionVariables) {
+                if (id.empty()) throw std::runtime_error("Empty solution STATE symbol.");
+                if (!selected.insert(id).second) throw std::runtime_error("Duplicate solution STATE: "+id);
+            }
+            composition.stateSelectionOrigin="native stateRegistry";
+        });
     factories.add("equationRegistry",{{{"use","array",true},{"add","object"},
         {"extend","object"},{"replace","object"},{"disable","array"}},false},
         [&](const Model::ObjectDescriptor& object,Context&) {
             composition.declared = true;
+            if (!composition.equations.empty()) throw std::runtime_error("Multiple WHAT equation selections.");
             composition.equations = object.parameters.at("use")
                 .get<std::vector<std::string>>();
             for (const auto& equation : composition.equations) {
                 if (equation == "Momentum" || equation == "Continuity"
-                    || equation == "Energy") continue;
+                    || equation == "Energy" || equation=="PressureConstraint") continue;
                 if (equation.find('/') != std::string::npos) {
                     throw std::runtime_error(
                         "Custom equation '"+equation
@@ -100,6 +115,7 @@ CaseConfig CaseAdapter::build(const Model::Description& m) {
         {"PISO","object"},{"PIMPLE","object"}},false},
         [&](const Model::ObjectDescriptor& object,Context&) {
             composition.declared = true;
+            if (!composition.algorithm.empty()) throw std::runtime_error("Multiple HOW algorithm selections.");
             int selected = 0;
             const auto select = [&](const char* name) {
                 if (!object.parameters.contains(name)) return;
@@ -107,6 +123,7 @@ CaseConfig CaseAdapter::build(const Model::Description& m) {
                     "algorithms.yaml must select exactly one algorithm preset.");
                 composition.algorithm = name;
                 const auto& parameters = object.parameters.at(name);
+                nativeAlgorithmParameters=parameters;
                 if (!parameters.is_object()) throw std::runtime_error(
                     std::string("Algorithm '")+name+"' must be a mapping.");
                 composition.outerCorrectors = parameters.value("outerCorrectors",1);
@@ -210,10 +227,52 @@ CaseConfig CaseAdapter::build(const Model::Description& m) {
         field.boundaries=expandBoundaryDefault(f.boundaries,caseDir_,meshFiles_);
         sections_.fields.push_back(std::move(field));
     }
+    if (composition.declared) {
+        if (!composition.stateDeclared || composition.solutionVariables.empty())
+            throw std::runtime_error("Native composition requires explicit solution STATE (stateRegistry.use).");
+        if (composition.algorithm.empty())
+            throw std::runtime_error("Native composition requires explicit HOW (algorithmRegistry).");
+        sections_.nativeAlgorithm=composition.algorithm;
+        sections_.hasAlgorithm=true;
+        // Existing linear/relaxation controls retain their decoder; family labels do not.
+        P controls=sections_.algorithm.is_object()?sections_.algorithm:P::object();
+        const auto oldName=controls.value("algorithm",std::string());
+        if (!oldName.empty() && controls.contains(oldName) && controls.at(oldName).is_object())
+            { const P oldControls=controls.at(oldName); controls.update(oldControls); }
+        controls.erase("type");
+        for (const auto* name:{"Explicit","SIMPLE","PISO","PIMPLE"}) controls.erase(name);
+        controls.update(nativeAlgorithmParameters);
+        if (controls.contains("correctors")) {
+            controls["pressureCorrectors"]=controls.at("correctors");
+            controls.erase("correctors");
+        }
+        P bound=P::object();
+        bound["algorithm"]=composition.algorithm;
+        if (controls.contains("linearSolvers")) {
+            bound["linearSolvers"]=controls.at("linearSolvers");
+            controls.erase("linearSolvers");
+        }
+        controls.erase("algorithm");
+        bound[composition.algorithm]=std::move(controls);
+        sections_.algorithm=std::move(bound);
+    }
     auto result=decodeNativeCase();if(!result)throw std::runtime_error("Cannot bind model "+m.name);
     result->caseName=m.name;
     if(result->createMesh)result->meshParameterFile=meshGenerator_;
     result->modelDescription=std::make_shared<const Model::Description>(m);
+    if (!composition.declared) {
+        // The old adapter emits an explicit tuple once. Runtime never reads its label.
+        composition.stateDeclared=true;
+        composition.solutionVariables={"rho","rhoU","rhoE"};
+        composition.stateSelectionOrigin="compatibility "+legacyFlowLabel_;
+        composition.equations={"Continuity","Momentum","Energy"};
+        composition.algorithm=result->pressureCouplingDeclared
+            ? FDM::toString(result->solver.pressure.coupling.preset) : "Explicit";
+        composition.compatibilityPressureConstraint=legacyFlowLabel_=="pressureBase";
+    }
+    composition.outerCorrectors=result->solver.pressure.coupling.outerCorrectors;
+    composition.pressureCorrectors=result->solver.pressure.coupling.pressureCorrectors;
+    composition.nonOrthogonalCorrectors=result->solver.pressure.coupling.nonOrthogonalCorrectors;
     result->composition=std::move(composition);
     return *result;
 }

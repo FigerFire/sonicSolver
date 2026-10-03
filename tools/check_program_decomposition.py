@@ -30,7 +30,11 @@ AGGREGATE = SYSTEM_DIR / AGGREGATE_HEADER
 # §20 baseline: 10 = 原 10 个 compile product。本轮把 solver-family 的
 # `formulation` 字段换成两个 typed compile product（CompiledStateRealization
 # 与 CouplingReport）：语义 authority 净减少一个 family 开关，但字段数 +1。
-FIELD_BASELINE = 11
+# Explicit architectural decision: source WHICH (NumericalSelection) and its
+# compiled numerical product are distinct authorities. Both already exist in
+# the frozen 2026-10-02 phase input (12 fields); explicit solution membership
+# belongs to StateRegistry and adds no field to this aggregate.
+FIELD_BASELINE = 12
 
 # Consumers that were narrowed to the specific compile products they need.
 # Each entry: file -> documented scope, used in the failure message.

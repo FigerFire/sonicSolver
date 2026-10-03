@@ -1,11 +1,11 @@
 #pragma once
 
 /// @file SF_eulerianStepper.h
-/// @brief Eulerian–Eulerian 的 SIMPLE/PISO/PIMPLE 压力耦合调度。
+/// @brief Eulerian–Eulerian 的状态、数值 workspace 与 provider 回调。
 
 #include "SF_config.h"
 #include "SF_phaseBoundary.h"
-#include "solver/equation/eulerian/SF_equations.h"
+#include "solver/algorithm/eulerian/equation/SF_equations.h"
 #include "SF_phaseSource.h"
 #include "core/interfaces/SF_solverStepper.h"
 #include "solver/system/SF_runtimeRequirements.h"
@@ -17,12 +17,11 @@
 
 namespace SF::EulerianEulerian {
 
-/// @brief 只调度耦合顺序；方程、边界、通信和临时量由独立模块负责。
+/// @brief 绑定现有数值内核；不选择 equation 顺序或 coupling loop 次数。
 class EulerianStepper final : public FDM::INavierStokesStepper {
 public:
-    /// 只依赖 WHAT / ORDER / RUNTIME；PISO 数学不变。
-    /// @brief 只依赖 WHAT / HOW / ORDER / RUNTIME；PIMPLE 数学不变。
-    /// @param numerics compiled HOW（time recipe + dt policy）。
+    /// @brief 只绑定已冻结的数学、数值选择与运行计划；PIMPLE 算术不变。
+    /// @param numerics compiled WHICH（dt policy 与 phase numerical recipe）。
     EulerianStepper(Physics::PhaseSystems::PhaseSystem& phaseSystem,
                     FDM::SolverConfig config,
                     const System::ExecutableEquationSystem& equations,
@@ -56,14 +55,13 @@ private:
     PhaseSolverWorkspace workspace_;
     Physics::PhaseSystems::PhaseBoundaryApplicator boundary_;
     Physics::PhaseSystems::PhaseSourceRegistry sourceRegistry_;
-    Equation::AssemblyPlanRegistry assemblyPlans_;
+    SF::Equation::AssemblyPlanRegistry assemblyPlans_;
     PhaseEquationAssembler equations_;
     StepSummary lastSummary_;
     FDM::SolverServices services_;
     State::StateBundle* state_ = nullptr;
     bool servicesBound_ = false;
     bool solveStagesBound_ = false;
-    bool pimpleStageActive_ = false;
     /// @brief solver-owned operation registry；每步复用，不重新分配。
     Run::OpRegistry operations_;
     std::optional<LinearAlgebra::SolveResult> pendingPressureCorrection_;

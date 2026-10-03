@@ -6,6 +6,7 @@
 #include "core/interfaces/SF_log.h"
 
 #include <cmath>
+#include <exception>
 #include <limits>
 #include <stdexcept>
 #include <string>
@@ -47,6 +48,13 @@ MPIBackend::MPIBackend(int& argc, char**& argv, bool requested)
 
 MPIBackend::~MPIBackend() {
 #if SF_USE_MPI
+    // A peer may already be inside a halo/HYPRE collective. Unwinding into
+    // MPI_Finalize would wait forever; unrecoverable exceptions fail-stop here.
+    if (enabled_ && size_>1 && std::uncaught_exceptions()>0) {
+        int finalized=0;
+        MPI_Finalized(&finalized);
+        if (!finalized) MPI_Abort(MPI_COMM_WORLD,1);
+    }
     if (ownsMPI_) {
         int finalized = 0;
         MPI_Finalized(&finalized);
@@ -94,6 +102,28 @@ double MPIBackend::allReduceSum(double localValue) const {
     if (!enabled_) return localValue;
     double output = 0.0;
     MPI_Allreduce(&localValue, &output, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+    return output;
+#else
+    return localValue;
+#endif
+}
+
+std::int64_t MPIBackend::allReduceMin(std::int64_t localValue) const {
+#if SF_USE_MPI
+    if (!enabled_) return localValue;
+    std::int64_t output = localValue;
+    MPI_Allreduce(&localValue, &output, 1, MPI_INT64_T, MPI_MIN, MPI_COMM_WORLD);
+    return output;
+#else
+    return localValue;
+#endif
+}
+
+std::int64_t MPIBackend::allReduceMax(std::int64_t localValue) const {
+#if SF_USE_MPI
+    if (!enabled_) return localValue;
+    std::int64_t output = localValue;
+    MPI_Allreduce(&localValue, &output, 1, MPI_INT64_T, MPI_MAX, MPI_COMM_WORLD);
     return output;
 #else
     return localValue;
@@ -292,6 +322,49 @@ void MPIBackend::exchangeNeighbours(
         MPI_Waitall(
             static_cast<int>(requests.size()), requests.data(),
             MPI_STATUSES_IGNORE);
+    }
+#else
+    (void)send;
+    (void)counts;
+    (void)displacements;
+    (void)neighbours;
+    (void)tag;
+    (void)received;
+#endif
+}
+
+void MPIBackend::exchangeNeighbours(
+        const std::vector<std::int64_t>& send,
+        const std::vector<int>& counts,
+        const std::vector<int>& displacements,
+        const std::vector<int>& neighbours,
+        int tag,
+        std::vector<std::int64_t>& received) const {
+#if SF_USE_MPI
+    if (!enabled_) return;
+    if (rank_ < 0 || rank_ >= static_cast<int>(counts.size())
+        || counts.size() != displacements.size()
+        || counts[static_cast<size_t>(rank_)] != static_cast<int>(send.size())) {
+        throw std::runtime_error(
+            "Integer neighbour payload layout differs from the static plan.");
+    }
+    std::vector<MPI_Request> requests;
+    requests.reserve(neighbours.size() * 2);
+    for (int neighbour : neighbours) {
+        requests.push_back(MPI_REQUEST_NULL);
+        MPI_Irecv(
+            received.data() + displacements[static_cast<size_t>(neighbour)],
+            counts[static_cast<size_t>(neighbour)], MPI_INT64_T, neighbour, tag,
+            MPI_COMM_WORLD, &requests.back());
+    }
+    for (int neighbour : neighbours) {
+        requests.push_back(MPI_REQUEST_NULL);
+        MPI_Isend(send.data(), static_cast<int>(send.size()), MPI_INT64_T,
+                  neighbour, tag, MPI_COMM_WORLD, &requests.back());
+    }
+    if (!requests.empty()) {
+        MPI_Waitall(static_cast<int>(requests.size()), requests.data(),
+                    MPI_STATUSES_IGNORE);
     }
 #else
     (void)send;

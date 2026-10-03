@@ -8,7 +8,7 @@
 #include <cstddef>
 #include <stdexcept>
 
-namespace SF::PressureBased::RhieChow {
+namespace SF::Pressure::RhieChow {
 
 struct FaceResult {
     double flux = 0.0;
@@ -45,4 +45,4 @@ inline double correct(double predictedFlux,double response,
     return predictedFlux-response*(upperCorrection-lowerCorrection);
 }
 
-} // namespace SF::PressureBased::RhieChow
+} // namespace SF::Pressure::RhieChow

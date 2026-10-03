@@ -1,5 +1,7 @@
-/// @file SF_pressureStepper.cpp
-/// @brief 双欧拉各相预测、共享压力校正和能量更新的数学顺序。
+#include "core/system/SF_operationIds.h"
+#include "solver/system/SF_eulerianRelations.h"
+/// @file SF_eulerianStepper.cpp
+/// @brief 双欧拉运行时状态与数值回调绑定；顺序只来自 CompiledSolvePlan。
 
 #include "solver/algorithm/eulerian/SF_eulerianStepper.h"
 #include "solver/system/SF_solvePlan.h"
@@ -21,8 +23,8 @@ namespace {
 std::vector<std::string> equationIds(
         const System::ExecutableEquationSystem& equations) {
     std::vector<std::string> ids;
-    ids.reserve(equations.equations.size());
-    for (const auto& equation : equations.equations) {
+    ids.reserve(equations.legacyEquations.size());
+    for (const auto& equation : equations.legacyEquations) {
         ids.push_back(equation.id);
     }
     return ids;
@@ -83,7 +85,7 @@ EulerianStepper::EulerianStepper(
       solve_(solvePlan),
       runtime_(requirements), config_(std::move(config)),
       turbulence_(config_.turbulence),
-      assemblyPlans_(equations.equationDefinitions, equationIds(equations)),
+      assemblyPlans_(equations.legacyDefinitions, equationIds(equations)),
       equations_(system_, config_.pressure, workspace_) {
     FDM::validatePressureCorrectionConfig(config_.pressure);
     // compiled HOW 与 raw config 必须一致（runtime 只执行 compiled policy）。
@@ -127,6 +129,12 @@ EulerianStepper::EulerianStepper(
         throw std::runtime_error(
             "Eulerian RPI requires a wallHeatFlux boundary so the unified "
             "wall-boiling ledger can assemble mass, momentum and enthalpy.");
+    }
+    for (const auto& phase:system_.phases()) {
+        const auto& actual=equations.registry.at("E_CONTINUITY."+phase.name);
+        const bool reference=phase.name==system_.phases()[system_.referencePhaseIndex()].name;
+        if (System::canonicalFormula(actual)!=System::canonicalFormula(System::eulerianPhaseRelations(phase.name,reference).front()))
+            throw std::runtime_error("Eulerian reference-phase closure differs from frozen WHAT.");
     }
     workspace_.setupLike(system_);
     turbulence_.initialize(system_);
@@ -240,7 +248,7 @@ void EulerianStepper::registerState(State::StateBundle& state) {
 void EulerianStepper::applyBoundaryAndSynchronize() {
     boundary_.applySharedPressure(
         system_.geometry(), system_.sharedPressure(),
-        config_.boundaries.energyFromPressure);
+        config_.boundaries.pressure);
     for (size_t phase = 0; phase < system_.phases().size(); ++phase) {
         boundary_.apply(system_.geometry(), system_.phaseProperties(phase),
                         system_.phases()[phase]);
@@ -390,17 +398,9 @@ void EulerianStepper::bindSolvePlan(
         throw std::runtime_error(
             "EulerianStepper received a plan other than its resolved plan.");
     }
-    for (const auto& block : plan.blocks) {
-        pimpleStageActive_ = pimpleStageActive_
-            || block.strategyKind == FDM::SolveStrategyKind::PressureVelocityCoupling;
-    }
-    if (!pimpleStageActive_) {
-        throw std::runtime_error(
-            "Eulerian execution requires a pressure-velocity coupling strategy.");
-    }
     const auto required = System::SolvePlanner::requiredOperations(plan);
     const bool planSolvesTurbulence = std::find(
-        required.begin(),required.end(),"ee.turbulence.solve")
+        required.begin(),required.end(),System::OpIds::EeTurbulenceSolve)
         != required.end();
     if (planSolvesTurbulence != turbulence_.hasTransportEquations()) {
         throw std::runtime_error(
@@ -440,7 +440,13 @@ void EulerianStepper::prepare(FDM::SolverState& state) {
             "EulerianStepper::prepare requires a StateBundle.");
     }
     bindState(*state.bundle);
-    realizedState_ = System::realizeState(executable_,runtime_,*state.bundle);
+    realizedState_ = System::realizeState(executable_.state,runtime_,*state.bundle,solve_.compiledProgram.stateViews);
+    for (const auto& view:solve_.compiledProgram.stateViews) {
+        if (view.owner!=System::StateViewOwner::NumericalProvider || view.kind==System::StateViewKind::Physical) continue;
+        auto fields=state.bundle->distributed.select(view.storage,State::HaloSyncStage::None);
+        if (fields.size()!=1) throw std::runtime_error("Eulerian provider view lacks existing backing: "+view.storage);
+        realizedState_.bindView(view.symbol,view.kind,*fields.front());
+    }
 }
 
 FDM::StepResult EulerianStepper::advance(FDM::SolverState& state) {
@@ -471,7 +477,7 @@ void EulerianStepper::registerOperations(
         FDM::SolverState& solverState,
         double& dt) {
     lastSummary_ = {};
-    operations.bind("ee.dt.compute",[&] {
+    operations.bind(System::OpIds::EeDtCompute,"flow.eulerian-pressure",[&] {
         dt=std::min({
             solverState.maximumTimeStep,
             numerics_.dt.maxDeltaT,
@@ -485,7 +491,7 @@ void EulerianStepper::registerOperations(
                 "Eulerian EulerianStepper produced an invalid time step.");
         }
     });
-    operations.bind("ee.step.begin",[&] {
+    operations.bind(System::OpIds::EeStepBegin,"flow.eulerian-pressure",[&] {
         if (!std::isfinite(dt) || dt <= 0.0) {
             throw std::runtime_error(
                 "Eulerian Plan began a step before computing a valid dt.");
@@ -497,36 +503,36 @@ void EulerianStepper::registerOperations(
         equations_.resetTurbulenceDiagnostics(); equations_.refreshRowMap();
         applyBoundaryAndSynchronize(); system_.validateState("pre-interphase");
     });
-    operations.bind("ee.interphase.compute",[&] { system_.computeInterphase(dt,workspace_.previousVelocity); });
-    operations.bind("ee.sources.assemble",[&] { sourceRegistry_.assemble(system_,dt); });
+    operations.bind(System::OpIds::EeInterphaseCompute,"flow.eulerian-pressure",[&] { system_.computeInterphase(dt,workspace_.previousVelocity); });
+    operations.bind(System::OpIds::EeSourcesAssemble,"flow.eulerian-pressure",[&] { sourceRegistry_.assemble(system_,dt); });
     if (turbulence_.active()) {
-        operations.bind("ee.turbulence.prepare",[&] {
+        operations.bind(System::OpIds::EeTurbulencePrepare,"flow.eulerian-pressure",[&] {
             turbulence_.prepare(system_);
             synchronizeTurbulenceState();
         });
     }
-    operations.bind("ee.sources.validate",[&] {
+    operations.bind(System::OpIds::EeSourcesValidate,"flow.eulerian-pressure",[&] {
         equations_.validateSourceStep(dt);
     });
-    operations.bind("ee.momentum.diagonal",[&] { equations_.initializeMomentumDiagonal(dt); });
-    operations.bind("ee.momentum.flux",[&] { equations_.buildMomentumInterpolatedFlux(); });
-    operations.bind("ee.faceFlux.canonical",[&] { assembleCanonicalPhaseFlux(); });
-    operations.bind("ee.continuity.assemble",[&] { equations_.assembleContinuity(dt,lastSummary_); });
-    operations.bind("ee.boundary.prepare",[&] { applyBoundaryAndSynchronize(); });
-    operations.bind("ee.momentum.solve",[&] { equations_.solveMomentumPredictors(dt); });
-    operations.bind("ee.interphase.correct",[&] { equations_.applySemiImplicitInterphase(dt); });
-    operations.bind("ee.boundary.afterMomentum",[&] { applyBoundaryAndSynchronize(); });
-    operations.bind("ee.diagonal.sync",[&] { synchronizeMomentumDiagonal(); });
-    operations.bind("ee.momentum.flux.after",[&] { equations_.buildMomentumInterpolatedFlux(); });
-    operations.bind("ee.faceFlux.canonical.after",[&] { assembleCanonicalPhaseFlux(); });
-    operations.bind("ee.pressure.solve",[&] {
+    operations.bind(System::OpIds::EeMomentumDiagonal,"flow.eulerian-pressure",[&] { equations_.initializeMomentumDiagonal(dt); });
+    operations.bind(System::OpIds::EeMomentumFlux,"flow.eulerian-pressure",[&] { equations_.buildMomentumInterpolatedFlux(); });
+    operations.bind(System::OpIds::EeFaceFluxCanonical,"flow.eulerian-pressure",[&] { assembleCanonicalPhaseFlux(); });
+    operations.bind(System::OpIds::EeContinuityAssemble,"flow.eulerian-pressure",[&] { equations_.assembleContinuity(dt,lastSummary_); });
+    operations.bind(System::OpIds::EeBoundaryPrepare,"flow.eulerian-pressure",[&] { applyBoundaryAndSynchronize(); });
+    operations.bind(System::OpIds::EeMomentumSolve,"flow.eulerian-pressure",[&] { equations_.solveMomentumPredictors(dt); });
+    operations.bind(System::OpIds::EeInterphaseCorrect,"flow.eulerian-pressure",[&] { equations_.applySemiImplicitInterphase(dt); });
+    operations.bind(System::OpIds::EeBoundaryAfterMomentum,"flow.eulerian-pressure",[&] { applyBoundaryAndSynchronize(); });
+    operations.bind(System::OpIds::EeDiagonalSync,"flow.eulerian-pressure",[&] { synchronizeMomentumDiagonal(); });
+    operations.bind(System::OpIds::EeMomentumFluxAfter,"flow.eulerian-pressure",[&] { equations_.buildMomentumInterpolatedFlux(); });
+    operations.bind(System::OpIds::EeFaceFluxCanonicalAfter,"flow.eulerian-pressure",[&] { assembleCanonicalPhaseFlux(); });
+    operations.bind(System::OpIds::EePressureSolve,"flow.eulerian-pressure",[&] {
         if (pendingPressureCorrection_) {
             throw std::runtime_error(
                 "Pressure solve started before the previous result was published.");
         }
         pendingPressureCorrection_=equations_.solvePressureCorrection();
     });
-    operations.bind("ee.pressure.publish",[&] {
+    operations.bind(System::OpIds::EePressurePublish,"flow.eulerian-pressure",[&] {
         if (!pendingPressureCorrection_) {
             throw std::runtime_error(
                 "Pressure publish has no pending linear-solve result.");
@@ -540,20 +546,20 @@ void EulerianStepper::registerOperations(
         ++lastSummary_.pressureCorrections;
         pendingPressureCorrection_.reset();
     });
-    operations.bind("ee.pressure.sync",[&] { synchronizePressureCorrection(); });
-    operations.bind("ee.phase.correct",[&] { equations_.correctAllPhases(); });
-    operations.bind("ee.faceFlux.correct",[&] { equations_.correctCanonicalFaceFlux(); });
-    operations.bind("ee.boundary.afterPressure",[&] { applyBoundaryAndSynchronize(); });
-    operations.bind("ee.faceFlux.canonical.pressure",[&] { assembleCanonicalPhaseFlux(); });
-    operations.bind("ee.energy.solve",[&] { equations_.solvePhaseEnergy(dt); });
+    operations.bind(System::OpIds::EePressureSync,"flow.eulerian-pressure",[&] { synchronizePressureCorrection(); });
+    operations.bind(System::OpIds::EePhaseCorrect,"flow.eulerian-pressure",[&] { equations_.correctAllPhases(); });
+    operations.bind(System::OpIds::EeFaceFluxCorrect,"flow.eulerian-pressure",[&] { equations_.correctCanonicalFaceFlux(); });
+    operations.bind(System::OpIds::EeBoundaryAfterPressure,"flow.eulerian-pressure",[&] { applyBoundaryAndSynchronize(); });
+    operations.bind(System::OpIds::EeFaceFluxCanonicalPressure,"flow.eulerian-pressure",[&] { assembleCanonicalPhaseFlux(); });
+    operations.bind(System::OpIds::EeEnergySolve,"flow.eulerian-pressure",[&] { equations_.solvePhaseEnergy(dt); });
     if (turbulence_.hasTransportEquations()) {
-        operations.bind("ee.turbulence.solve",[&] {
+        operations.bind(System::OpIds::EeTurbulenceSolve,"flow.eulerian-pressure",[&] {
             equations_.solveTurbulence(dt);
         });
     }
-    operations.bind("ee.boundary.final",[&] { applyBoundaryAndSynchronize(); });
-    operations.bind("ee.outer.validate",[&] { system_.validateState("PIMPLE outer corrector"); ++lastSummary_.outerCorrectors; });
-    operations.bind("ee.step.commit",[&] {
+    operations.bind(System::OpIds::EeBoundaryFinal,"flow.eulerian-pressure",[&] { applyBoundaryAndSynchronize(); });
+    operations.bind(System::OpIds::EeOuterValidate,"flow.eulerian-pressure",[&] { system_.validateState("PIMPLE outer corrector"); ++lastSummary_.outerCorrectors; });
+    operations.bind(System::OpIds::EeStepCommit,"flow.eulerian-pressure",[&] {
     workspace_.commitTimeLevel(system_);
     turbulence_.commit(system_);
     lastSummary_.pressureStructureRebuilds =
@@ -626,7 +632,7 @@ void EulerianStepper::registerOperations(
             lastSummary_.maxAlphaSumError, std::abs(sum - 1.0));
     }
     });
-    operations.bind("ee.time.commit",[&] {
+    operations.bind(System::OpIds::EeTimeCommit,"flow.eulerian-pressure",[&] {
         if (pendingPressureCorrection_) {
             throw std::runtime_error(
                 "Eulerian timestep cannot commit with an unpublished "

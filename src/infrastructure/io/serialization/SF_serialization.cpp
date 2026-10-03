@@ -100,6 +100,7 @@ void emitMapping(std::ostream& out,const Model::Parameters& value,int indent,boo
         const auto& child=it.value();
         out<<pad<<it.key();
         if(child.is_object()) {
+            if(child.empty()) { out<<": {}\n"; continue; }
             if(compactConditions&&child.size()==1) {
                 const auto condition=child.begin();
                 if(!condition.value().is_object()) {

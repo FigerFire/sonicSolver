@@ -18,6 +18,8 @@ public:
     double allReduceMin(double localValue) const override { return localValue; }
     double allReduceMax(double localValue) const override { return localValue; }
     double allReduceSum(double localValue) const override { return localValue; }
+    std::int64_t allReduceMin(std::int64_t localValue) const override { return localValue; }
+    std::int64_t allReduceMax(std::int64_t localValue) const override { return localValue; }
     void allReduceSum(std::vector<double>&) const override {}
     void copyCanonical(
         const std::vector<std::int64_t>&,
@@ -36,6 +38,13 @@ public:
         const std::vector<int>&,
         int,
         std::vector<double>&) const override {}
+    void exchangeNeighbours(
+        const std::vector<std::int64_t>&,
+        const std::vector<int>&,
+        const std::vector<int>&,
+        const std::vector<int>&,
+        int,
+        std::vector<std::int64_t>&) const override {}
 };
 
 } // namespace SF::Parallel::Backend

@@ -1169,7 +1169,9 @@ void CaseAdapter::decodeAlgorithmSection() {
     const std::string type = FDM::normalizeToken(foamUnquote(value));
     // Legacy 兼容标签：只在这里翻译，向 composition root 传递"请求哪一组方程"。
     // 它不再是 runtime 求解器身份，也不进入 ResolvedSimulationSystem。
-    if (type == "pressurebase") {
+    if (!sections_.nativeAlgorithm.empty()) {
+        legacyFlowLabel_.clear();
+    } else if (type == "pressurebase") {
         legacyFlowLabel_ = "pressureBase";
     } else if (type == "densitybase") {
         legacyFlowLabel_ = "densityBase";
@@ -1183,12 +1185,13 @@ void CaseAdapter::decodeAlgorithmSection() {
     if (algorithm == "simple") config.coupling.preset = FDM::PressureCouplingPreset::SIMPLE;
     else if (algorithm == "piso") config.coupling.preset = FDM::PressureCouplingPreset::PISO;
     else if (algorithm == "pimple") config.coupling.preset = FDM::PressureCouplingPreset::PIMPLE;
-    else if (legacyFlowLabel_ == "pressureBase") {
+    else if ((!algorithm.empty() && algorithm!="explicit") || legacyFlowLabel_ == "pressureBase") {
         fatalCaseConfig(
-            context + " with type pressureBase requires algorithm "
+            context + " requires a known coupling algorithm "
             "SIMPLE, PISO, or PIMPLE.");
     }
 
+    caseConfig_.pressureCouplingDeclared=!algorithm.empty() && algorithm!="explicit";
     const P* algorithmBlock = jsonBlockAfterKey(text, algorithm.empty() ? "PIMPLE" : foamUnquote(value));
     const P* controls = algorithmBlock ? algorithmBlock : text;
     auto readInt = [&](const char* key, int& target) {
@@ -1204,6 +1207,8 @@ void CaseAdapter::decodeAlgorithmSection() {
     readInt("nonOrthogonalCorrectors", config.coupling.nonOrthogonalCorrectors);
     readDouble("momentumRelaxation", config.coupling.momentumRelaxation);
     readDouble("pressureRelaxation", config.coupling.pressureRelaxation);
+    readDouble("relativeTolerance", config.relativeTolerance);
+    readDouble("absoluteTolerance", config.absoluteTolerance);
     readDouble("phaseSourceCFL", config.phaseTransport.sourceCfl);
     const std::string phaseConvection = FDM::normalizeToken(
         foamUnquote(jsonValueAfterKey(controls, "phaseConvection")));
@@ -1298,7 +1303,8 @@ void CaseAdapter::decodeAlgorithmSection() {
         blockDouble("amgStrongThreshold",target.amgStrongThreshold);
         blockInt("schurDenseLimit",target.schurDenseLimit);
     };
-    if (legacyFlowLabel_ == "pressureBase") {
+    if (legacyFlowLabel_=="pressureBase"
+        || (!sections_.nativeAlgorithm.empty() && caseConfig_.pressureCouplingDeclared)) {
         parseLinear("pressure", config.linear.pressure);
         parseLinear("momentum", config.linear.momentum);
         parseLinear("energy", config.linear.energy);
@@ -1326,7 +1332,7 @@ void CaseAdapter::decodeFields() {
     }
     if (const Model::FieldDescriptor* field = sections_.field("p")) {
         decodeScalarField(*field, caseConfig_.solver.initial.pressure,
-                          caseConfig_.solver.boundaries.energyFromPressure,
+                          caseConfig_.solver.boundaries.pressure,
                           nullptr);
     }
     if (const Model::FieldDescriptor* field = sections_.field("rho")) {
@@ -3179,7 +3185,6 @@ void CaseAdapter::decodeNativeSections() {
     if (!caseConfig_.createMesh) {
         // coupling preset 是 formulation/plan 输入；它不再携带 solver family。
         caseConfig_.solver.pressure = solverProperties_;
-        caseConfig_.pressureCouplingDeclared = true;
         caseConfig_.compatFlowLabel = legacyFlowLabel_;
     }
 
@@ -3323,7 +3328,7 @@ std::optional<CaseConfig> CaseAdapter::decodeNativeCase() {
     // VTK writer 保存独立快照，输出期间不再查询 parser 全局状态。
     densityOutputBC_ = caseConfig_.solver.boundaries.density;
     velocityOutputBC_ = caseConfig_.solver.boundaries.velocity;
-    pressureOutputBC_ = caseConfig_.solver.boundaries.energyFromPressure;
+    pressureOutputBC_ = caseConfig_.solver.boundaries.pressure;
     ibmOutputEnabled_ = caseConfig_.solver.ibm.enabled;
 
     // ── 3. 创建输出目录 ──

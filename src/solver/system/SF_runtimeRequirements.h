@@ -15,8 +15,8 @@
 
 namespace SF::System {
 
-enum class RuntimeStatus { Runnable, Unsupported };
-enum class BindingStatus { Resolved, Unsupported };
+enum class RuntimeStatus { Runnable, Unsupported, Invalid };
+enum class BindingStatus { Resolved, Unsupported, Invalid };
 
 /// @brief 编译期确定的 OpId -> provider 绑定；runtime 不重新选择实现。
 struct ResolvedOperationBinding {
@@ -33,8 +33,7 @@ struct RuntimeReport {
     std::string reason;
 };
 
-/// @brief Runtime routing derives capabilities from executable content.
-/// It deliberately does not encode a density/pressure solver family.
+/// Diagnostic/validation summary; it never selects native runtime providers.
 struct ExecutionCapabilitySignature {
     bool pressureConstraint = false;
     bool constantDensity = false;
@@ -102,6 +101,7 @@ struct Program {
     const CompiledNumericalSystem& numerics;
     const CompiledSolvePlan& solve;
     const RuntimeRequirements& runtime;
+    const StateRegistry& state=equations.state;
 };
 
 /// @brief RUNTIME residency queries；只读取 RuntimeRequirements。

@@ -3,11 +3,9 @@
 /// @file SF_compressible.h
 /// @brief 可压缩守恒方程定义及其离散绑定入口。
 
-#include "core/system/SF_expression.h"
-#include "solver/equation/SF_assemblyPlan.h"
+#include "core/interfaces/SF_termKernel.h"
 #include "SF_configTypes.h"
 
-#include <memory>
 
 namespace SF {
 class Field;
@@ -24,8 +22,7 @@ namespace Equation::Compressible {
 struct AssemblyContext {
     const FDM::TermRecipe* convection = nullptr;
     const FDM::TermRecipe* diffusion = nullptr;
-    const std::vector<FDM::SourceKind>* sources = nullptr;
-    const FDM::SourceConfig* sourceParameters = nullptr;
+    const std::vector<SF::System::ConservativeSourceKernel>* sources = nullptr;
     double timeStep = 0.0;
     FDM::IBMBoundaryScheme ibmBoundary = FDM::IBMBoundaryScheme::LowOrder;
     int ilwOrder = 0;
@@ -40,11 +37,6 @@ struct AssemblyContext {
 /// @brief 可压缩质量、动量和能量方程组。
 class System {
 public:
-    explicit System(const Equation::System& definition);
-
-    /// @brief 返回不含格式名称的方程声明。
-    const Equation::System& definition() const { return *definition_; }
-
     /// @brief 清空旧残差，开始当前 stage 的方程装配。
     void begin(FluxField& fluxField, Residual& residual) const;
     /// @brief 离散所有对流通量项。
@@ -57,12 +49,7 @@ public:
     void assemble(Field& field, FluxField& fluxField, Residual& residual,
                   const AssemblyContext& context) const;
 
-private:
-    const Equation::System* definition_ = nullptr;
-    std::vector<Equation::AssemblyPlan> assemblyPlan_;
-
-    bool contains(TermKind kind) const;
 };
 
-} // namespace Equation::Compressible
+} // namespace SF::Equation::Compressible
 } // namespace SF

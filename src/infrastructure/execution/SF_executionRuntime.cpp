@@ -119,6 +119,24 @@ double Runtime::globalSum(double value) {
         : value;
 }
 
+std::int64_t Runtime::globalMinimum(std::int64_t value) {
+    return parallel_
+        ? parallel_->reduce(value, FDM::IParallelCoordinator::Reduction::Minimum)
+        : value;
+}
+
+std::int64_t Runtime::globalMaximum(std::int64_t value) {
+    return parallel_
+        ? parallel_->reduce(value, FDM::IParallelCoordinator::Reduction::Maximum)
+        : value;
+}
+
+std::int64_t Runtime::globalSum(std::int64_t value) {
+    return parallel_
+        ? parallel_->reduce(value, FDM::IParallelCoordinator::Reduction::Sum)
+        : value;
+}
+
 void Runtime::globalSum(std::vector<double>& values) {
     if (parallel_) parallel_->reduceSum(values);
 }
@@ -179,6 +197,19 @@ FDM::DistributedIndexRange Runtime::allocateDistributedIndices(
 void Runtime::synchronizeTransient(
         const std::vector<State::DistributedFieldView>& fields) {
     if (parallel_) parallel_->synchronizeTransient(fields);
+}
+
+void Runtime::synchronizeIdentifiers(
+        const Field& geometry, int blockId,
+        std::vector<std::int64_t>& values) {
+    if (!state_) {
+        throw std::runtime_error(
+            "Identifier synchronization requires an attached StateBundle.");
+    }
+    if (values.size()!=static_cast<std::size_t>(geometry.TotalSize())) {
+        throw std::runtime_error("Identifier workspace size differs from geometry.");
+    }
+    if (parallel_) parallel_->synchronizeIdentifiers(geometry, blockId, values);
 }
 
 std::vector<int> Runtime::canonicalOwnerCells(

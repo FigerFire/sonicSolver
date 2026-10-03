@@ -1,11 +1,16 @@
 #include "solver/system/SF_systemBuilder.h"
 #include "solver/system/SF_systemValidator.h"
 #include "solver/system/SF_solvePlan.h"
+#include "solver/system/SF_termProviderCatalog.h"
 #include "solver/run/SF_planExecutor.h"
 #include "core/interfaces/SF_immersedSystem.h"
+#include "models/physics/interfaceModel/levelSet/SF_levelSetSystemContribution.h"
+#include "models/physics/SF_sourceContribution.h"
 #include "SF_pressureCoupling.h"
+#include "solver/system/SF_methodObjects.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdlib>
 #include <iostream>
 #include <sstream>
@@ -35,20 +40,33 @@ FDM::SolverConfig pisoConfig() {
     return config;
 }
 
-const System::CompiledEquation& compiled(
-        const System::ResolvedSimulationSystem& system,
-        const std::string& id) {
-    const auto found = std::find_if(
-        system.executableSystem.compiledEquations.begin(),
-        system.executableSystem.compiledEquations.end(),
-        [&](const System::CompiledEquation& item) {
-            return item.equationId == id;
-        });
-    if (found == system.executableSystem.compiledEquations.end()) {
-        fail("missing compiled equation " + id);
+struct TestBodyForceModel {
+    double strength;
+
+    System::SystemContribution contribution() const {
+        System::SystemContribution value;
+        value.recordContribution("model.testBodyForce","test body force");
+        value.extendMathematics({"momentum"},System::FormulaExpr::op("source",
+            {System::FormulaExpr::symbol("customForce")},"customForce"));
+        return value;
     }
-    return *found;
-}
+
+    System::SourceTermProviderDescriptor provider() const {
+        return {"source.customForce.primitive",
+            [](const System::TermMatchContext& context) {
+                return context.expression.kind==System::FormulaExpr::Kind::Operator
+                    && context.expression.name=="source"
+                    && context.expression.arguments.size()==1
+                    && context.expression.arguments.front().name=="customForce"
+                    && context.output=="U";
+            },{},[value=strength] {
+                return System::PrimitiveMomentumSource{
+                    [value](const Field&,int,int,int,const Vector3&) {
+                        return Vector3(value,0.0,0.0);
+                    }};
+            },"test.bodyForce"};
+    }
+};
 
 void collectOperations(
         const System::SolvePlanNode& node,
@@ -86,15 +104,15 @@ void requireOperationLeaves(const System::SolvePlanNode& node) {
 
 std::string rawSignature(const System::RawEquationSystem& raw) {
     std::ostringstream out;
-    for (const auto& unknown : raw.unknowns) {
+    for (const auto& unknown : raw.state.symbols()) {
         out << "U:" << unknown.id << ':' << unknown.components << ':'
             << static_cast<int>(unknown.role) << ':' << unknown.storageKey << '\n';
     }
-    for (const auto& equation : raw.equations) {
+    for (const auto& equation : raw.legacyEquations) {
         out << "E:" << equation.id << ':' << static_cast<int>(equation.category);
         for (const auto& unknown : equation.solvedUnknowns) out << ':' << unknown;
         out << '\n';
-        const auto& definition = raw.equationDefinitions.at(equation.id);
+        const auto& definition = raw.legacyDefinitions.at(equation.id);
         for (const auto* expression : {&definition.left,&definition.right}) {
             for (const auto& term : expression->terms) {
                 out << "T:" << static_cast<int>(term.kind) << ':'
@@ -125,6 +143,8 @@ int main() {
     // 路径中二者都来自 config.solver.pressure）。
     const auto requestFor = [](const FDM::SolverConfig& config) {
         System::BuildRequest item;
+    item.composition.stateDeclared = true;
+    item.composition.solutionVariables = {"rho","rhoU","rhoE"};
         item.templateOrigin = System::PhysicsTemplateKind::SingleFluid;
         item.pressureConstraint = System::PressureConstraintSpec{false};
         item.coupling = System::couplingRequestFrom(
@@ -134,57 +154,77 @@ int main() {
     System::BuildRequest request = requestFor(pisoConfig());
     const auto system = System::build(pisoConfig(),request);
     System::validate(system);
+    auto invalidPiso=*request.coupling;
+    invalidPiso.outerCorrectors=2;
+    const auto invalidPisoMatch=System::matchPressureCoupling(
+        invalidPiso,system.rawSystem);
+    require(invalidPisoMatch.status==System::CouplingStatus::Invalid
+                && invalidPisoMatch.reason.find("use PIMPLE")!=std::string::npos,
+            "PISO silently accepted an outer fixed-point iteration");
+    auto invalidSimple=*request.coupling;
+    invalidSimple.presetKind=FDM::PressureCouplingPreset::SIMPLE;
+    invalidSimple.preset="SIMPLE";
+    invalidSimple.pressureCorrectors=2;
+    const auto invalidSimpleMatch=System::matchPressureCoupling(
+        invalidSimple,system.rawSystem);
+    require(invalidSimpleMatch.status==System::CouplingStatus::Invalid
+                && invalidSimpleMatch.reason.find("use PIMPLE")!=std::string::npos,
+            "SIMPLE silently accepted multiple pressure corrections");
 
     require(!System::hasUnknown(system.rawSystem,"pPrime"),
             "pPrime leaked into RawEquationSystem");
-    require(!System::hasEquation(system.rawSystem,"E_PRESSURE"),
+    require(!System::hasEquation(system.rawSystem,"pSimple"),
             "pressure-correction equation leaked into RawEquationSystem");
-    require(System::hasEquation(system.rawSystem,"E_MOMENTUM"),
+    require(System::hasEquation(system.rawSystem,"momentum"),
             "raw momentum equation is absent");
     require(System::hasConstraint(system.rawSystem,"C_INCOMPRESSIBILITY"),
             "raw incompressibility constraint is absent");
 
-    require(System::hasUnknown(system,"pPrime"),
-            "transformer did not generate pPrime workspace");
-    require(System::hasEquation(system,"E_MOMENTUM_PREDICTOR"),
-            "transformer did not generate momentum predictor");
-    require(System::hasEquation(system,"E_PRESSURE"),
-            "transformer did not generate pressure correction");
-
-    const auto& predictor = compiled(system,"E_MOMENTUM_PREDICTOR");
-    require(predictor.operatorBinding
-                == "momentum.predictor",
-            "momentum predictor operator binding is wrong");
-    require(predictor.assemblesRhs && !predictor.assemblesMatrix,
-            "momentum predictor matrix/RHS contract is wrong");
-    const auto& pressure = compiled(system,"E_PRESSURE");
-    require(pressure.operatorBinding
-                == "pressure.correction",
-            "pressure operator binding is wrong");
-    require(pressure.assemblesMatrix && pressure.assemblesRhs,
-            "pressure matrix/RHS contract is incomplete");
-    require(std::any_of(
-                pressure.resources.begin(),pressure.resources.end(),
-                [](const System::CompiledResourceBinding& resource) {
-                    return resource.storage == "pressureMatrix"
-                        && resource.access == System::ResourceAccessMode::Write;
-                }),
-            "pressure matrix storage binding is absent");
+    require(!System::hasUnknown(system,"pPrime") && !System::hasUnknown(system,"phi"),
+            "conservative pressure invented a base correction/face-flux authority");
+    require(system.executableSystem.state.at("rhoU").storageKey=="conservative"
+                && system.executableSystem.state.at("U").derivation==System::StateDerivation::Velocity,
+            "conservative momentum was mislabeled as primitive velocity");
+    require(system.executionPolicies.empty() && system.executableSystem.compiledEquations.empty(),
+            "single-fluid pressure retained legacy schedule/equation authority");
+    const auto& calls=system.solvePlan.compiledProgram.steps;
+    require(calls.size()==6 && calls.front().equationMethod=="ConservativePressureMomentum"
+                && calls.front().sourceMathInputs==std::vector<std::string>{"continuity","energy"}
+                && calls.front().writes==std::vector<std::string>{"rho","rhoU","rhoE"}
+                && calls.front().calls.size()==3,
+            "native conservative predictor lacks an explicit mass/momentum/energy fusion contract");
+    require(calls[1].target.symbol=="p" && calls[1].target.kind==System::TargetKind::Correction
+                && calls[3].target.symbol=="p" && calls[3].target.kind==System::TargetKind::Working
+                && calls[4].target.kind==System::TargetKind::Workspace
+                && calls[5].target.symbol=="rhoE",
+            "native conservative pressure targets do not match correction/EOS publication mathematics");
+    for (const auto& call:calls) require(call.backendProvider=="flow.conservative",
+            "native conservative method did not freeze its backend owner");
+    const auto owned=[&](const auto& self,const System::SolvePlanNode& node)->void {
+        if (!node.operation.empty()) require(!node.legacyAdapter && node.provider=="flow.conservative",
+            "single-fluid pressure leaf still depends on a legacy provider selector");
+        for (const auto& child:node.children) self(self,child);
+    };
+    owned(owned,system.solvePlan.root);
+    for (const auto& view:system.solvePlan.compiledProgram.stateViews) {
+        if (view.kind==System::StateViewKind::Correction || view.kind==System::StateViewKind::Working)
+            require(view.symbol=="p" && view.owner==System::StateViewOwner::NumericalProvider,
+                "pressure views acquired a second compiler workspace authority");
+    }
 
     require(system.runtime.report.status == System::RuntimeStatus::Runnable,
             "minimal PISO was not compiled as a runnable plan");
     require(system.solvePlan.root.kind == System::PlanNodeKind::Sequence,
             "PISO root is not a sequence");
     const auto* outer = findNode(
-        system.solvePlan.root,"PISO.outerCorrectors");
+        system.solvePlan.root,"outer");
     const auto* loop = findNode(
-        system.solvePlan.root,"PISO.pressureCorrectors");
+        system.solvePlan.root,"pressure");
     const auto* nonOrthogonal = findNode(
-        system.solvePlan.root,"PISO.nonOrthogonalCorrectors");
-    require(outer && loop && nonOrthogonal,
+        system.solvePlan.root,"nonOrthogonal");
+    require(!outer && loop && nonOrthogonal,
             "pressure-corrector loop is absent");
-    require(outer->repetitions == 1 && loop->repetitions == 1
-                && nonOrthogonal->repetitions == 1,
+    require(loop->repetitions == 1 && nonOrthogonal->repetitions == 1,
             "pressure-corrector loop count is not compiled from policy");
     requireOperationLeaves(system.solvePlan.root);
 
@@ -194,7 +234,7 @@ int main() {
         "pressure.prepare", "momentum.assemble", "momentum.solve",
         "pressure.boundary.prepare", "pressure.assemble", "pressure.solve",
         "velocity.correct", "pressure.update.prepare", "flux.correct",
-        "pressure.correction.commit", "pressure.step.commit"};
+        "pressure.correction.commit", "pressure.step.commit", "time.commit"};
     require(operations == expected,
             "structured PISO operation order differs from compiled plan contract");
     require(system.runtime.report.requiredOperations == expected,
@@ -219,6 +259,69 @@ int main() {
     Run::PlanExecutor::execute(genericPlan,genericOps);
     require(trace == std::vector<std::string>{"a","b","b","b"},
             "open plan executor did not preserve sequence/loop order");
+
+    // The executor knows only a signal ID. A callback decides convergence;
+    // the complete iteration body runs before the generic Loop may exit.
+    System::CompiledSolvePlan terminatingPlan;
+    auto& root=terminatingPlan.root;
+    root.kind=System::PlanNodeKind::Sequence;
+    root.id="mock.step";
+    System::SolvePlanNode begin;
+    begin.kind=System::PlanNodeKind::Update;
+    begin.id="mock.begin";
+    begin.operation="mock.begin";
+    root.children.push_back(begin);
+    System::SolvePlanNode iterations;
+    iterations.kind=System::PlanNodeKind::Loop;
+    iterations.id="mock.outer";
+    iterations.repetitions=5;
+    iterations.terminationSignal="mock.converged";
+    for (const auto& id:{"mock.predict","mock.evaluate","mock.end"}) {
+        System::SolvePlanNode leaf;
+        leaf.kind=System::PlanNodeKind::Update;
+        leaf.id=id;
+        leaf.operation=id;
+        iterations.children.push_back(std::move(leaf));
+    }
+    root.children.push_back(std::move(iterations));
+    System::SolvePlanNode commit;
+    commit.kind=System::PlanNodeKind::Commit;
+    commit.id="mock.commit";
+    commit.operation="mock.commit";
+    root.children.push_back(commit);
+    int iteration=0,target=2,commits=0;
+    double physicalTime=0.0,base=2.0,working=base,observedBase=base;
+    Run::OpRegistry terminatingOps;
+    terminatingOps.bind("mock.begin",[&](const Run::ExecutionContext& context) {
+        iteration=0;
+        observedBase=base;
+        working=base;
+        context.signals->reset("mock.converged");
+    });
+    terminatingOps.bind("mock.predict",[&] {
+        ++iteration;
+        working=observedBase+0.5*(4.0-working);
+    });
+    terminatingOps.bind("mock.evaluate",[&](const Run::ExecutionContext& context) {
+        context.signals->publish("mock.converged",iteration>=target);
+    });
+    int ended=0;
+    terminatingOps.bind("mock.end",[&] { ++ended; });
+    terminatingOps.bind("mock.commit",[&] {
+        ++commits;
+        base=working;
+        physicalTime+=0.5;
+    });
+    Run::PlanExecutor::execute(terminatingPlan,terminatingOps);
+    require(iteration==2 && ended==2 && commits==1
+                && std::abs(working-2.5)<1e-14
+                && std::abs(physicalTime-0.5)<1e-14,
+            "generic early exit changed the fixed physical-time base or commit");
+    target=3;
+    Run::PlanExecutor::execute(terminatingPlan,terminatingOps);
+    require(iteration==3 && ended==5 && commits==2
+                && std::abs(physicalTime-1.0)<1e-14,
+            "loop termination signal leaked into the next physical step");
 
     System::CompiledSolvePlan stagePlan;
     stagePlan.root = {System::PlanNodeKind::StageLoop,"stages","stages",
@@ -269,6 +372,8 @@ int main() {
         FDM::SolverConfig explicitConfig;
         explicitConfig.numerics.timeRecipe = FDM::builtInTimeRecipe(item.first);
         System::BuildRequest explicitRequest;
+    explicitRequest.composition.stateDeclared = true;
+    explicitRequest.composition.solutionVariables = {"rho","rhoU","rhoE"};
         explicitRequest.templateOrigin =
             System::PhysicsTemplateKind::SingleFluid;
         explicitRequest.singleFluidPreset =
@@ -307,18 +412,22 @@ int main() {
                 && twoCorrector.runtime.capabilities.nonOrthogonalCorrectors == 0,
             "pressure schedule count meanings are inconsistent");
 
-    auto renamedPolicies = system.executionPolicies;
-    for (auto& policy : renamedPolicies) {
-        if (policy.id == "S_PRESSURE") policy.strategyName = "display-only";
+    // A different relation cannot be accepted by a fixed existing kernel.
+    auto changedMath=system.executableSystem;
+    auto changed=changedMath.registry.at("correctP");
+    changed.rhs=System::FormulaExpr::constantValue(1.0);
+    changedMath.registry.replace(changed);
+    System::ExecutionProgram authoredHow;
+    authoredHow.root=system.solvePlan.compiledProgram.root;
+    bool changedMathRejected=false;
+    try {
+        (void)System::compileExecutionProgram(changedMath,authoredHow,
+            system.numericalSelection.bindings,System::builtinProviders(),
+            &system.numericalSystem.time.recipe);
+    } catch (const std::runtime_error& error) {
+        changedMathRejected=std::string(error.what()).find("changed mathematics")!=std::string::npos;
     }
-    // Planner 只做 merge/order：coupling preset 的 plan fragment 提供顺序与
-    // 重复次数，stage -> OpId 由 executable operation authority 解析。
-    const auto renamedPlan = System::SolvePlanner::compile(
-        system.executableSystem,renamedPolicies,system.timeRecipe,
-        {System::couplingPlanFragment(*request.coupling)});
-    require(System::SolvePlanner::requiredOperations(renamedPlan)
-                == expected,
-            "strategyName still controls pressure Plan lowering");
+    require(changedMathRejected,"conservative pressure provider accepted unsupported authored mathematics");
 
     for (const auto algorithm : {
             FDM::PressureCouplingPreset::SIMPLE,
@@ -326,52 +435,62 @@ int main() {
         auto fixedPointConfig = pisoConfig();
         fixedPointConfig.pressure.coupling.preset = algorithm;
         fixedPointConfig.pressure.coupling.outerCorrectors = 2;
-        fixedPointConfig.pressure.coupling.pressureCorrectors = 3;
+        fixedPointConfig.pressure.coupling.pressureCorrectors =
+            algorithm==FDM::PressureCouplingPreset::SIMPLE ? 1 : 3;
         fixedPointConfig.pressure.coupling.nonOrthogonalCorrectors = 1;
         const auto fixedPoint =
             System::build(fixedPointConfig,requestFor(fixedPointConfig));
         System::validate(fixedPoint);
-        const auto policy = std::find_if(
-            fixedPoint.executionPolicies.begin(),
-            fixedPoint.executionPolicies.end(),
-            [](const System::ExecutionPolicy& item) {
-                return item.id == "S_PRESSURE";
-            });
-        require(policy != fixedPoint.executionPolicies.end()
-                    && policy->kind
-                        == System::ExecutionPolicyKind::PressureVelocityFixedPoint
-                    && policy->strategyKind
-                        == FDM::SolveStrategyKind::PressureVelocityCoupling,
-                "SIMPLE/PIMPLE did not retain typed fixed-point semantics");
-        require(policy->repeatCount == 2
-                    && policy->nestedRepeatCount == 3
-                    && policy->innerRepeatCount == 2,
-                "single-fluid pressure policy lost outer/pressure/non-orthogonal counts");
+        require(fixedPoint.executionPolicies.empty(),
+                "SIMPLE/PIMPLE conservative HOW retained a duplicate legacy schedule");
         require(fixedPoint.runtime.report.status
                     == System::RuntimeStatus::Unsupported
                     && !fixedPoint.runtime.report.missingOperations.empty(),
                 "fixed-point pressure schedule was reported Runnable");
-        require(fixedPoint.runtime.report.reason.find("full dt")
-                    != std::string::npos,
-                "fixed-point provider failure does not explain the predictor guard");
+        require(fixedPoint.runtime.report.reason.find(
+                    "pressure.step.begin") != std::string::npos,
+                "conservative fixed-point path did not report its missing "
+                "fixed-time provider");
         const auto fixedOps = System::SolvePlanner::requiredOperations(
             fixedPoint.solvePlan);
+        std::vector<System::OpId> fixedOrder;
+        collectOperations(fixedPoint.solvePlan.root,fixedOrder);
+        const std::vector<System::OpId> expectedFixedOrder = {
+            "pressure.prepare","pressure.step.begin","pressure.iteration.begin",
+            "momentum.assemble","momentum.solve",
+            "pressure.boundary.prepare","pressure.assemble","pressure.solve",
+            "velocity.correct","pressure.update.prepare","flux.correct",
+            "pressure.correction.commit","pressure.relaxation.apply",
+            "pressure.flux.consistency.restore","pressure.convergence.evaluate",
+            "pressure.iteration.end","pressure.step.commit","time.commit"};
+        require(fixedOrder==expectedFixedOrder,
+            "SIMPLE/PIMPLE flattened pressure operation order changed");
         require(std::find(fixedOps.begin(),fixedOps.end(),"momentum.solve")
-                    == fixedOps.end()
+                    != fixedOps.end()
                     && std::find(fixedOps.begin(),fixedOps.end(),
-                                 "pressure.schedule.predictor.solve")
-                        != fixedOps.end(),
-                "fixed-point schedule reuses the physical-time momentum solve");
+                                 "pressure.step.begin")!=fixedOps.end()
+                    && std::find(fixedOps.begin(),fixedOps.end(),
+                                 "pressure.relaxation.apply")!=fixedOps.end()
+                    && std::find(fixedOps.begin(),fixedOps.end(),
+                                 "pressure.flux.consistency.restore")
+                        !=fixedOps.end(),
+                "fixed-point schedule lost its frozen-time operation contract");
         const auto* fixedOuter = findNode(
-            fixedPoint.solvePlan.root,"PressureSchedule.outerCorrectors");
+            fixedPoint.solvePlan.root,"outer");
         const auto* fixedPressure = findNode(
-            fixedPoint.solvePlan.root,"PressureSchedule.pressureCorrectors");
+            fixedPoint.solvePlan.root,"pressure");
+        const auto* singleCorrection = findNode(
+            fixedPoint.solvePlan.root,"pressureCorrection");
         const auto* fixedNonOrthogonal = findNode(
             fixedPoint.solvePlan.root,
-            "PressureSchedule.nonOrthogonalCorrectors");
-        require(fixedOuter && fixedPressure && fixedNonOrthogonal
+            "nonOrthogonal");
+        require(fixedOuter && fixedNonOrthogonal
                     && fixedOuter->repetitions == 2
-                    && fixedPressure->repetitions == 3
+                    && fixedOuter->terminationSignal
+                        == System::kPressureOuterConvergedSignal
+                    && (algorithm==FDM::PressureCouplingPreset::SIMPLE
+                        ? singleCorrection && !fixedPressure
+                        : fixedPressure && fixedPressure->repetitions==3)
                     && fixedNonOrthogonal->repetitions == 2,
                 "fixed-point Plan does not preserve all three schedule levels");
         requireOperationLeaves(fixedPoint.solvePlan.root);
@@ -383,6 +502,8 @@ int main() {
     eulerianConfig.pressure.coupling.pressureCorrectors = 3;
     eulerianConfig.pressure.coupling.nonOrthogonalCorrectors = 1;
     System::BuildRequest eulerianRequest;
+    eulerianRequest.composition.stateDeclared = true;
+    eulerianRequest.composition.solutionVariables = {"rho","rhoU","rhoE"};
     eulerianRequest.templateOrigin =
         System::PhysicsTemplateKind::EulerianEulerian;
     eulerianRequest.phaseNames = {"water","air"};
@@ -427,15 +548,16 @@ int main() {
     bool unconsumedVisible = false;
     try {
         auto policies = eulerian.executionPolicies;
-        System::ExecutionPolicy orphan;
+        System::LegacyExecutionPolicy orphan;
         orphan.id = "S_ORPHAN";
         orphan.name = "unconsumed test contribution";
-        orphan.kind = System::ExecutionPolicyKind::BoundaryClosure;
+        orphan.kind = System::LegacyExecutionPolicyKind::BoundaryClosure;
         orphan.strategyName = "test";
         orphan.strategyKind = FDM::SolveStrategyKind::BoundaryClosure;
         policies.push_back(orphan);
         (void)System::SolvePlanner::compile(
-            eulerian.executableSystem,policies,eulerian.timeRecipe);
+            eulerian.executableSystem,policies,
+            eulerian.numericalSystem.time.recipe);
     } catch (const std::runtime_error& error) {
         unconsumedVisible = std::string(error.what()).find("S_ORPHAN")
             != std::string::npos;
@@ -446,7 +568,9 @@ int main() {
     eulerianImmersed.id = "testEulerianIBM";
     eulerianImmersed.enforcement = FDM::IBMEnforcement::FractionalDLM;
     auto unsupportedEulerianRequest = eulerianRequest;
-    unsupportedEulerianRequest.immersed = &eulerianImmersed;
+    unsupportedEulerianRequest.unsupportedCompositionReason =
+        "Eulerian multiphase IBM constraint exists, but required "
+        "phase-wise IBM fluid-port assembly is unavailable.";
     bool eulerianIbmRejected = false;
     try {
         (void)System::build(eulerianConfig,unsupportedEulerianRequest);
@@ -479,8 +603,11 @@ int main() {
             "missing flow provider requirement did not fail during validation");
 
     System::BuildRequest constantDensityRequest;
+    constantDensityRequest.composition.stateDeclared = true;
+    constantDensityRequest.composition.solutionVariables = {"rho","rhoU","rhoE"};
     constantDensityRequest.templateOrigin = System::PhysicsTemplateKind::SingleFluid;
     constantDensityRequest.composition.declared = true;
+    constantDensityRequest.composition.solutionVariables = {"U","p"};
     constantDensityRequest.composition.equations = {"Momentum","Continuity"};
     constantDensityRequest.composition.thermoDynamics.equationOfState =
         "rhoConst";
@@ -497,8 +624,9 @@ int main() {
                 && System::hasConstraint(constantDensity.rawSystem,
                                          "C_INCOMPRESSIBILITY"),
             "rhoConst composition must lower Continuity to div(U)=0, not transport rho");
-    require(!System::hasUnknown(constantDensity.rawSystem,"rhoE"),
-            "rhoConst composition fabricated a total-energy unknown");
+    require(!constantDensity.rawSystem.state.contains("rhoE")
+                && !System::hasEquation(constantDensity.rawSystem,"energy"),
+            "rhoConst composition activated a catalog total-energy state/equation");
     require(constantDensity.classification.densityBehavior == "constant"
                 && constantDensity.classification.thermodynamicCompressibility
                        == "zero",
@@ -554,16 +682,124 @@ int main() {
                 && bindingFor(primitive,"flux.correct")->provider
                     == "flow.rhie-chow",
             "constant-density PISO did not bind neutral pressure/face-flux operations");
+    auto heatOnlyRequest=constantDensityRequest;
+    FDM::SourceConfig heatConfig;
+    heatConfig.enabled={FDM::SourceKind::WallHeat};
+    System::SystemContribution heatContribution;
+    Physics::SourceContribution::contribute(heatContribution,heatConfig);
+    heatOnlyRequest.modelContributions.push_back(std::move(heatContribution));
+    bool heatRejected=false;
+    try {
+        (void)System::build(primitiveConfig,heatOnlyRequest);
+    } catch (const std::runtime_error& error) {
+        heatRejected=std::string(error.what()).find(
+            "Source contribution has no registered target equation")!=std::string::npos;
+    }
+    require(heatRejected,
+            "wallHeat on pressure-only equations was silently ignored");
+    auto customRequest=constantDensityRequest;
+    {
+        const TestBodyForceModel model{0.01};
+        customRequest.termProviders.push_back(model.provider());
+        customRequest.modelContributions.push_back(model.contribution());
+    }
+    const auto customSystem=System::build(primitiveConfig,customRequest);
+    System::validate(customSystem);
+    require(customSystem.runtime.report.status==System::RuntimeStatus::Runnable,
+            "typed custom Momentum term with registered provider is not runnable");
+    require(std::any_of(customSystem.numericalSystem.operators.begin(),
+                        customSystem.numericalSystem.operators.end(),
+        [](const System::CompiledSpatialBinding& term) {
+            return term.primary=="customForce"
+                && term.executionEquationId=="momentum"
+                && term.provider=="source.customForce.primitive"
+                && term.providerOwner=="test.bodyForce"
+                && term.compiledDataAvailable
+                && term.primitiveSource;
+        }),"custom term did not bind to the transformed Momentum predictor");
+    const auto compiledForce=std::find_if(
+        customSystem.numericalSystem.operators.begin(),
+        customSystem.numericalSystem.operators.end(),
+        [](const auto& term) { return term.primary=="customForce"; });
+    Field testGeometry;
+    const auto executed=compiledForce->primitiveSource(
+        testGeometry,0,0,0,Vector3());
+    require(executed.x==0.01 && executed.y==0.0 && executed.z==0.0,
+            "test model did not execute after its configuration lifetime");
+    std::vector<System::OpId> baseOperations,customOperations;
+    collectOperations(primitive.solvePlan.root,baseOperations);
+    collectOperations(customSystem.solvePlan.root,customOperations);
+    require(baseOperations==customOperations,
+            "custom Momentum source changed pressure solve-plan operations");
+    for (const auto recipe:{FDM::TimeRecipeId::SSPRK3,
+                           FDM::TimeRecipeId::ClassicalRK4}) {
+        for (const auto preset:{FDM::PressureCouplingPreset::PISO,
+                               FDM::PressureCouplingPreset::SIMPLE,
+                               FDM::PressureCouplingPreset::PIMPLE}) {
+            auto unsupportedConfig=primitiveConfig;
+            unsupportedConfig.numerics.timeRecipe=FDM::builtInTimeRecipe(recipe);
+            auto unsupportedRequest=constantDensityRequest;
+            unsupportedRequest.composition.algorithm=FDM::toString(preset);
+            unsupportedRequest.coupling->presetKind=preset;
+            unsupportedRequest.coupling->preset=FDM::toString(preset);
+            bool rejected=false;
+            try {
+                const auto unsupported=System::build(unsupportedConfig,unsupportedRequest);
+                rejected=unsupported.runtime.report.status!=System::RuntimeStatus::Runnable;
+            } catch (const std::runtime_error& error) {
+                rejected=std::string(error.what()).find("Unsupported: provider")!=std::string::npos;
+            }
+            require(rejected,"multi-stage pressure capability was accepted or silently replaced");
+        }
+    }
     for (const auto preset:{FDM::PressureCouplingPreset::SIMPLE,
                             FDM::PressureCouplingPreset::PIMPLE}) {
-        auto unsupported=constantDensityRequest;
-        unsupported.coupling->presetKind=preset;
-        const auto selected=System::build(primitiveConfig,unsupported);
-        require(selected.runtime.report.status==System::RuntimeStatus::Unsupported,
-                "SIMPLE/PIMPLE became runnable without fixed-point operations");
+        auto fixed=constantDensityRequest;
+        fixed.composition.algorithm=FDM::toString(preset);
+        fixed.coupling->presetKind=preset;
+        fixed.coupling->preset=FDM::toString(preset);
+        fixed.coupling->outerCorrectors=2;
+        const auto selected=System::build(primitiveConfig,fixed);
+        require(selected.runtime.report.status==System::RuntimeStatus::Runnable,
+                "constant-density fixed-time pressure schedule is not runnable");
+        for (const System::OpId& operation:{
+                "pressure.assemble", "pressure.solve",
+                "velocity.correct", "flux.correct"}) {
+            const auto* pisoBinding=bindingFor(primitive,operation);
+            const auto* fixedBinding=bindingFor(selected,operation);
+            require(pisoBinding && fixedBinding
+                        && pisoBinding->status==System::BindingStatus::Resolved
+                        && fixedBinding->status==System::BindingStatus::Resolved
+                        && fixedBinding->provider==pisoBinding->provider,
+                    "fixed-point plan selected a different provider for "
+                        +operation);
+        }
+        const auto operations=System::SolvePlanner::requiredOperations(
+            selected.solvePlan);
+        require(std::find(operations.begin(),operations.end(),
+                          "pressure.step.begin")!=operations.end()
+                    && std::find(operations.begin(),operations.end(),
+                                 "pressure.relaxation.apply")!=operations.end(),
+                "fixed-point plan lacks base capture or relaxation");
     }
+    auto distributedPressure = constantDensityRequest;
+    distributedPressure.parallel = true;
+    const auto distributed = System::build(primitiveConfig,distributedPressure);
+    require(distributed.runtime.report.status == System::RuntimeStatus::Runnable
+                && distributed.runtime.report.missingOperations.empty(),
+            "distributed constant-density pressure lost its shared operations");
+    auto nonOrthogonalPressure = constantDensityRequest;
+    nonOrthogonalPressure.coupling->nonOrthogonalCorrectors = 1;
+    const auto unsupportedNonOrthogonal = System::build(
+        primitiveConfig,nonOrthogonalPressure);
+    require(unsupportedNonOrthogonal.runtime.report.status
+                == System::RuntimeStatus::Unsupported
+                && !unsupportedNonOrthogonal.runtime.report.missingOperations.empty(),
+            "non-orthogonal constant-density correction was reported Runnable");
 
     System::BuildRequest sodRequest;
+    sodRequest.composition.stateDeclared = true;
+    sodRequest.composition.solutionVariables = {"rho","rhoU","rhoE"};
     sodRequest.templateOrigin = System::PhysicsTemplateKind::SingleFluid;
     sodRequest.singleFluidPreset = System::SingleFluidPresetSpec{false};
     sodRequest.composition.declared = true;
@@ -586,9 +822,37 @@ int main() {
                     sod,"thermodynamics.single-fluid"),
             "explicit single-fluid system lacks derived numerical providers");
 
+    require(!sod.executableSystem.state.contains("k") && !sod.executableSystem.state.contains("omega")
+            && !sod.executableSystem.state.contains("alpha") && !sod.executableSystem.state.contains("h")
+            && !primitive.executableSystem.state.contains("rhoE"),
+            "Unused catalog symbols leaked into active case STATE.");
+    auto requestedState=sodRequest;
+    System::SystemContribution closureRequest;
+    closureRequest.requireState("h");
+    requestedState.modelContributions.push_back(closureRequest);
+    const auto withEnthalpy=System::build(pisoConfig(),requestedState);
+    require(withEnthalpy.executableSystem.state.contains("h")
+            && withEnthalpy.executableSystem.registry.entries().size()==sod.executableSystem.registry.entries().size()
+            && withEnthalpy.solvePlan.compiledProgram.steps.size()==sod.solvePlan.compiledProgram.steps.size()
+            && !withEnthalpy.executableSystem.state.contains("k"),
+            "Module STATE request required repeated metadata or activated equations/models.");
+    bool unknownRequestRejected=false;
+    closureRequest.requiredStates={"customWithoutMetadata"};
+    requestedState.modelContributions={closureRequest};
+    try { (void)System::build(pisoConfig(),requestedState); }
+    catch (const std::runtime_error& error) {
+        unknownRequestRejected=std::string(error.what()).find("addState")!=std::string::npos;
+    }
+    require(unknownRequestRejected,"Unknown custom STATE request inferred metadata.");
+
     auto levelSetRequest = sodRequest;
-    levelSetRequest.levelSet =
-        Physics::InterfaceModels::LevelSetContribution::Spec{};
+    levelSetRequest.modelRequiresDiffusion=true;
+    levelSetRequest.additionalExecutionContributions=true;
+    System::SystemContribution levelSetContribution;
+    Physics::InterfaceModels::LevelSetContribution::contribute(
+        levelSetContribution,{});
+    levelSetRequest.modelContributions.push_back(
+        std::move(levelSetContribution));
     const auto levelSet = System::build(pisoConfig(),levelSetRequest);
     require(System::requiresProvider(levelSet,"equation.level-set"),
             "level-set equation did not derive its state/equation provider");

@@ -16,10 +16,13 @@ namespace SF::System {
 class ExecutableEquationSystemBuilder {
 public:
     explicit ExecutableEquationSystemBuilder(const RawEquationSystem& raw);
+    explicit ExecutableEquationSystemBuilder(const ExecutableEquationSystem& composed);
 
-    void addUnknown(UnknownDescriptor unknown);
+    void addState(StateSymbol unknown);
     void addEquation(
-        EquationDescriptor descriptor, Equation::Definition definition);
+        EquationDescriptor descriptor, SF::Equation::Definition definition);
+    void replaceEquation(Equation formula);
+    void addEquation(Equation formula);
     void addOperator(GeneratedOperatorDescriptor operation);
     /// @brief 声明一个 executable operation（runtime provider 必须实现它）。
     void addExecutableOperation(ExecutableOperation operation);
@@ -44,7 +47,7 @@ public:
     virtual void transform(
         const RawEquationSystem& raw,
         ExecutableEquationSystemBuilder& executable,
-        std::vector<ExecutionPolicy>& policies,
+        std::vector<LegacyExecutionPolicy>& policies,
         TransformationRecord& record) const = 0;
 };
 
@@ -64,12 +67,12 @@ public:
         const RawEquationSystem& raw,
         const std::vector<TransformationDescriptor>& requests,
         const TransformerRegistry& registry,
-        std::vector<ExecutionPolicy>& policies,
+        std::vector<LegacyExecutionPolicy>& policies,
         std::vector<TransformationRecord>& records);
 };
 
 /// @brief Builtin pressure-constraint transformer；applicability 只检查数学 contract。
-std::unique_ptr<IEquationSystemTransformer> makePressureConstraintTransformer();
+std::unique_ptr<IEquationSystemTransformer> makePressureConstraintTransformer(std::string momentumTarget);
 
 /// @brief Eulerian shared-pressure constraint 使用相同 registry/pipeline。
 std::unique_ptr<IEquationSystemTransformer> makeSharedPressureTransformer();

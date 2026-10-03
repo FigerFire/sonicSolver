@@ -66,7 +66,7 @@ public:
             field, config_.velocity, momentum,
             config_.ilwEnabled, config_.ilwOrder);
         SF::Boundary::updateEnergyFromPressure(
-            field, config_.energyFromPressure,
+            field, config_.pressure,
             config_.ilwEnabled, config_.ilwOrder);
         SF::Boundary::updateEnergyFromThermalBoundary(
             field, config_.thermal, config_.thermalDynamicViscosity,
@@ -165,7 +165,7 @@ private:
         for (const auto& bc : config_.velocity) {
             mark(bc);
         }
-        for (const auto& bc : config_.energyFromPressure) {
+        for (const auto& bc : config_.pressure) {
             mark(bc);
         }
         for (const auto& bc : config_.thermal) {

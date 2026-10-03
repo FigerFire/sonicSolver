@@ -57,6 +57,13 @@ void executeNode(
     if (node.repetitions <= 0) throw std::runtime_error("Compiled solve-plan node '"+node.id+"' has a non-positive repetition count.");
     if (node.kind == System::PlanNodeKind::Sequence || node.kind == System::PlanNodeKind::Loop) {
         if (node.kind == System::PlanNodeKind::Loop && node.children.empty()) throw std::runtime_error("Compiled solve-plan loop '"+node.id+"' is empty.");
+        if (!node.terminationSignal.empty()) {
+            if (node.kind != System::PlanNodeKind::Loop
+                || node.minimumIterations < 1
+                || node.minimumIterations > node.repetitions)
+                throw std::runtime_error("Invalid loop termination contract for '"+node.id+"'.");
+            execution.signals->reset(node.terminationSignal);
+        }
         for (int repeat = 0; repeat < node.repetitions; ++repeat) {
             if (node.kind == System::PlanNodeKind::Loop) {
                 loops.push_back({node.id,{repeat+1,node.repetitions}});
@@ -65,6 +72,9 @@ void executeNode(
                 executeNode(child,operations,trace,loops,execution);
             }
             if (node.kind == System::PlanNodeKind::Loop) loops.pop_back();
+            if (!node.terminationSignal.empty()
+                && repeat+1 >= node.minimumIterations
+                && execution.signals->value(node.terminationSignal)) break;
         }
         return;
     }
@@ -89,7 +99,10 @@ void executeNode(
     if (!node.children.empty()) throw std::runtime_error("Leaf solve-plan node '"+node.id+"' has child nodes.");
     if (node.operation.empty()) throw std::runtime_error("Executable solve-plan leaf '"+node.id+"' has no operation ID.");
     traceOperation(node.operation,trace,loops,execution);
-    operations.invoke(node.operation,execution);
+    const auto* previousTarget=execution.target;
+    execution.target=node.target ? &*node.target : nullptr;
+    operations.invoke(node.operation,execution,node.provider);
+    execution.target=previousTarget;
 }
 
 void validateNode(
@@ -106,6 +119,9 @@ void validateNode(
                 "CompiledSolvePlan requires runtime operation '"
                 +node.operation+"', but no numerical provider is bound.");
         }
+        if (!operations.contains(node.operation,node.provider))
+            throw std::runtime_error("CompiledSolvePlan operation '"+node.operation
+                +"' requires frozen provider '"+node.provider+"', but its runtime owner differs.");
         return;
     }
     for (const auto& child : node.children) {
@@ -114,20 +130,46 @@ void validateNode(
 }
 
 }
+void LoopSignalState::reset(const System::LoopSignalId& id) {
+    if (id.empty()) throw std::runtime_error("Loop signal ID is empty.");
+    values_.erase(id);
+}
+void LoopSignalState::publish(const System::LoopSignalId& id, bool value) {
+    if (id.empty()) throw std::runtime_error("Loop signal ID is empty.");
+    values_[id]=value;
+}
+bool LoopSignalState::value(const System::LoopSignalId& id) const {
+    const auto found=values_.find(id);
+    if (found==values_.end())
+        throw std::runtime_error("Loop termination signal '"+id
+            +"' was not published by its operation.");
+    return found->second;
+}
 void OpRegistry::bind(System::OpId id, Operation operation) {
+    bind(std::move(id),{},std::move(operation));
+}
+void OpRegistry::bind(System::OpId id, ContextOperation operation) {
+    bind(std::move(id),{},std::move(operation));
+}
+void OpRegistry::bind(System::OpId id,std::string provider,Operation operation) {
     if (id.empty() || !operation) throw std::runtime_error("Cannot bind an empty plan operation.");
     if (contains(id)) throw std::runtime_error("Duplicate plan operation binding '"+id+"'.");
-    bind(std::move(id),
+    bind(std::move(id),std::move(provider),
          [operation=std::move(operation)](const ExecutionContext&) {
              operation();
          });
 }
-void OpRegistry::bind(System::OpId id, ContextOperation operation) {
+void OpRegistry::bind(System::OpId id,std::string provider,ContextOperation operation) {
     if (id.empty() || !operation) throw std::runtime_error("Cannot bind an empty plan operation.");
     if (contains(id)) throw std::runtime_error("Duplicate plan operation binding '"+id+"'.");
-    entries_.push_back({std::move(id),std::move(operation)});
+    entries_.push_back({std::move(id),std::move(provider),std::move(operation)});
 }
 bool OpRegistry::contains(const System::OpId& id) const { return std::any_of(entries_.begin(),entries_.end(),[&](const Entry& entry) { return entry.id == id; }); }
+bool OpRegistry::contains(const System::OpId& id,std::string_view provider) const {
+    return std::any_of(entries_.begin(),entries_.end(),[&](const Entry& entry) {
+        return entry.id==id && (provider.empty() || entry.provider==provider);
+    });
+}
 void OpRegistry::retain(const std::vector<System::OpId>& assigned) {
     entries_.erase(std::remove_if(entries_.begin(),entries_.end(),
         [&](const Entry& entry) {
@@ -137,10 +179,12 @@ void OpRegistry::retain(const std::vector<System::OpId>& assigned) {
 }
 void OpRegistry::invoke(
         const System::OpId& id,
-        const ExecutionContext& context) const {
+        const ExecutionContext& context,std::string_view provider) const {
     if (id.empty()) throw std::runtime_error("Executable solve-plan leaf has no operation binding.");
     const auto found = std::find_if(entries_.begin(),entries_.end(),[&](const Entry& entry) { return entry.id == id; });
     if (found == entries_.end()) throw std::runtime_error("No runtime implementation is bound for plan operation '"+id+"'.");
+    if (!provider.empty() && found->provider!=provider)
+        throw std::runtime_error("Runtime provider differs from frozen operation owner: "+id);
     found->operation(context);
 }
 void PlanExecutor::execute(
@@ -150,6 +194,8 @@ void PlanExecutor::execute(
     validateBindings(plan,operations);
     std::vector<LoopFrame> loops;
     ExecutionContext execution;
+    LoopSignalState signals;
+    execution.signals=&signals;
     executeNode(plan.root,operations,trace,loops,execution);
 }
 

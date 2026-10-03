@@ -24,6 +24,8 @@ public:
     double allReduceMin(double localValue) const override;
     double allReduceMax(double localValue) const override;
     double allReduceSum(double localValue) const override;
+    std::int64_t allReduceMin(std::int64_t localValue) const override;
+    std::int64_t allReduceMax(std::int64_t localValue) const override;
     void allReduceSum(std::vector<double>& values) const override;
     void copyCanonical(
         const std::vector<std::int64_t>& entityIds,
@@ -40,6 +42,13 @@ public:
         const std::vector<int>& neighbours,
         int tag,
         std::vector<double>& received) const override;
+    void exchangeNeighbours(
+        const std::vector<std::int64_t>& send,
+        const std::vector<int>& counts,
+        const std::vector<int>& displacements,
+        const std::vector<int>& neighbours,
+        int tag,
+        std::vector<std::int64_t>& received) const override;
 
 private:
     bool requested_ = false;

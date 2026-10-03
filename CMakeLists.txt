@@ -85,18 +85,45 @@ if(BUILD_TESTS)
     add_test(NAME numericalFluxContract COMMAND test_numericalFlux)
 
     add_executable(test_pisoArchitecture test/test_pisoArchitecture.cpp)
-    target_link_libraries(test_pisoArchitecture PRIVATE SF_solverSystem)
+    target_link_libraries(test_pisoArchitecture PRIVATE SF_solverSystem SF_physics)
     add_test(NAME pisoArchitecture COMMAND test_pisoArchitecture)
+    if(MPI_CXX_FOUND AND TARGET SF_mpi)
+        add_executable(test_formulaExecution test/test_formulaExecution.cpp)
+        target_link_libraries(test_formulaExecution PRIVATE
+            SF_solverSystem SF_run SF_linearAlgebra SF_mpi MPI::MPI_CXX)
+        add_test(NAME formulaExecutionContract COMMAND test_formulaExecution)
+    endif()
     add_executable(test_rhieChow test/test_rhieChow.cpp)
     target_link_libraries(test_rhieChow PRIVATE SF_headers)
     add_test(NAME rhieChowFaceCoupling COMMAND test_rhieChow)
 
+    add_executable(test_fixedTimePressure test/test_fixedTimePressure.cpp)
+    target_link_libraries(test_fixedTimePressure PRIVATE SF_headers)
+    add_test(NAME fixedTimePressureContract COMMAND test_fixedTimePressure)
+
     add_executable(test_explicitStages test/test_explicitStages.cpp)
-    target_link_libraries(test_explicitStages PRIVATE SF_solverAlgorithm)
+    target_link_libraries(test_explicitStages PRIVATE SF_solverAlgorithm SF_solverSystem)
     add_test(NAME explicitStageMathematics COMMAND test_explicitStages)
 
+    add_executable(test_mixedTemporalComposition test/test_mixedTemporalComposition.cpp)
+    target_link_libraries(test_mixedTemporalComposition PRIVATE SF_solverSystem SF_run)
+    add_test(NAME mixedTemporalComposition COMMAND test_mixedTemporalComposition)
+    add_executable(test_nativeEulerian test/test_nativeEulerian.cpp)
+    target_link_libraries(test_nativeEulerian PRIVATE SF_solverSystem SF_physics SF_turbulence SF_run)
+    add_test(NAME nativeEulerianExecution COMMAND test_nativeEulerian)
+    add_executable(test_nativeTurbulence test/test_nativeTurbulence.cpp)
+    target_link_libraries(test_nativeTurbulence PRIVATE SF_solverSystem SF_turbulence SF_run)
+    add_test(NAME nativeTurbulenceExecution COMMAND test_nativeTurbulence)
+    add_executable(test_methodObjects test/test_methodObjects.cpp)
+    target_link_libraries(test_methodObjects PRIVATE SF_solverSystem SF_run)
+    add_test(NAME methodObjectCompilation COMMAND test_methodObjects)
+
+    add_executable(test_providerCatalog test/test_providerCatalog.cpp)
+    target_link_libraries(test_providerCatalog PRIVATE SF_solverSystem SF_physics)
+    add_test(NAME providerCatalogResolution COMMAND test_providerCatalog)
+
     add_executable(test_termRecipes test/test_termRecipes.cpp)
-    target_link_libraries(test_termRecipes PRIVATE SF_solverSystem)
+    target_link_libraries(test_termRecipes PRIVATE SF_solverSystem SF_physics)
     add_test(NAME termRecipeAuthority COMMAND test_termRecipes)
 
     add_executable(test_equationInstances test/test_equationInstances.cpp)
@@ -126,6 +153,20 @@ if(BUILD_TESTS)
 
     find_package(Python3 QUIET COMPONENTS Interpreter)
     if(TARGET sonicSolver AND Python3_Interpreter_FOUND)
+        add_test(NAME eulerianNativeNumericalRegression
+            COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/check_eulerian_native.py
+                --solver $<TARGET_FILE:sonicSolver>
+                --case ${CMAKE_SOURCE_DIR}/test/eulerianEulerianCase)
+        add_test(NAME singleFluidTurbulenceNumericalRegression
+            COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/tools/check_single_fluid_turbulence.py
+                --solver $<TARGET_FILE:sonicSolver>
+                --case ${CMAKE_SOURCE_DIR}/test/turbulence/singleFluidSST)
+        add_test(NAME explicitSolutionStateSelection
+            COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/tools/check_solution_state_selection.py
+                --solver $<TARGET_FILE:sonicSolver>
+                --case ${CMAKE_SOURCE_DIR}/test/pressure/constantDensityPiso)
         add_test(NAME cliGeneratedRecipe
             COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_SOURCE_DIR}/tools/check_cli_init_recipe.py
@@ -151,6 +192,17 @@ if(BUILD_TESTS)
                 ${CMAKE_SOURCE_DIR}/tools/check_poiseuille_pressure.py
                 --solver $<TARGET_FILE:sonicSolver>
                 --case ${CMAKE_SOURCE_DIR}/test/pressure/constantDensityPoiseuille)
+        add_test(NAME fixedTimePressureRegression
+            COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/tools/check_fixed_time_pressure.py
+                --solver $<TARGET_FILE:sonicSolver>
+                --cavity ${CMAKE_SOURCE_DIR}/test/pressure/constantDensityPiso
+                --poiseuille ${CMAKE_SOURCE_DIR}/test/pressure/constantDensityPoiseuille)
+        add_test(NAME pressureTermProviders
+            COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/tools/check_pressure_term_providers.py
+                --solver $<TARGET_FILE:sonicSolver>
+                --case ${CMAKE_SOURCE_DIR}/test/pressure/constantDensityPiso)
     endif()
 
     if(Python3_Interpreter_FOUND)
@@ -205,6 +257,30 @@ if(BUILD_TESTS)
             PRIVATE SF_linearAlgebra)
         add_test(NAME distributedConstraintLayout
             COMMAND test_distributedConstraintLayout)
+    endif()
+
+    if(TARGET SF_mpi AND MPI_CXX_FOUND)
+        add_executable(test_haloFailureContract test/test_haloFailureContract.cpp)
+        target_link_libraries(test_haloFailureContract PRIVATE SF_mpi SF_mesh MPI::MPI_CXX)
+        add_test(NAME haloFailureContract
+            COMMAND mpirun -np 2 $<TARGET_FILE:test_haloFailureContract>)
+        set_tests_properties(haloFailureContract PROPERTIES TIMEOUT 30)
+        add_executable(test_distributedPressure test/test_distributedPressure.cpp)
+        target_link_libraries(test_distributedPressure PRIVATE SF_linearAlgebra SF_mpi SF_executionRuntime MPI::MPI_CXX)
+        add_test(NAME distributedPressurePrimitives
+            COMMAND mpirun -np 2 $<TARGET_FILE:test_distributedPressure>)
+        set_tests_properties(distributedPressurePrimitives PROPERTIES TIMEOUT 30)
+        add_test(NAME distributedPressureFailStop
+            COMMAND mpirun -np 2 $<TARGET_FILE:test_distributedPressure> --fail-on-one-rank)
+        set_tests_properties(distributedPressureFailStop PROPERTIES WILL_FAIL TRUE TIMEOUT 30)
+        if(TARGET sonicSolver AND Python3_Interpreter_FOUND)
+            add_test(NAME distributedPressureRegression
+                COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/check_distributed_pressure.py
+                    --solver $<TARGET_FILE:sonicSolver>
+                    --cavity ${CMAKE_SOURCE_DIR}/test/pressure/constantDensityPiso
+                    --poiseuille ${CMAKE_SOURCE_DIR}/test/pressure/constantDensityPoiseuille)
+            set_tests_properties(distributedPressureRegression PROPERTIES TIMEOUT 300)
+        endif()
     endif()
 
     if(TARGET SF_mpi AND MPI_CXX_FOUND

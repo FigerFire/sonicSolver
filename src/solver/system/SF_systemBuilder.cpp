@@ -1,27 +1,20 @@
+#include "core/system/SF_operationIds.h"
 /// @file SF_systemBuilder.cpp
-/// @brief 显式声明单流体、多相、湍流和 IBM 对数学系统的贡献。
+/// @brief Compile built-in equations and neutral model/user contribution values.
 
 #include "SF_systemBuilder.h"
 #include "SF_couplingStatus.h"
 #include "SF_equationContribution.h"
-#include "SF_couplingStatus.h"
 #include "SF_solvePlan.h"
-#include "SF_couplingStatus.h"
 #include "SF_transformation.h"
-#include "SF_couplingStatus.h"
 #include "SF_numericalCompiler.h"
-#include "SF_providerResolver.h"
-#include "SF_couplingStatus.h"
 #include "SF_presets.h"
 #include "SF_singleFluidPreset.h"
-#include "SF_couplingStatus.h"
 #include "SF_pressureCoupling.h"
-#include "SF_couplingStatus.h"
-#include "SF_stateRealization.h"
-#include "SF_couplingStatus.h"
-#include "models/physics/SF_sourceContribution.h"
-#include "models/ibm/SF_ibmSystemContribution.h"
-#include "SF_immersedSystem.h"
+#include "SF_builtinState.h"
+#include "SF_executionComposition.h"
+#include "SF_eulerianRelations.h"
+#include "SF_providerResolver.h"
 
 #include "SF_config.h"
 
@@ -37,7 +30,7 @@ namespace {
 
 bool hasRawEquationPrefix(
         const RawEquationSystem& system, std::string_view prefix) {
-    return std::any_of(system.equations.begin(),system.equations.end(),
+    return std::any_of(system.legacyEquations.begin(),system.legacyEquations.end(),
         [&](const EquationDescriptor& value) {
             return value.id.compare(0,prefix.size(),prefix) == 0;
         });
@@ -59,32 +52,22 @@ bool hasOperation(const RuntimeReport& runtime, std::string_view id) {
 bool hasExecutableEquation(
         const ResolvedSimulationSystem& system, std::string_view id) {
     return std::any_of(
-        system.executableSystem.equations.begin(),
-        system.executableSystem.equations.end(),
+        system.executableSystem.legacyEquations.begin(),
+        system.executableSystem.legacyEquations.end(),
         [&](const EquationDescriptor& equation) { return equation.id == id; });
 }
 
-bool hasExecutableEquationPrefix(
-        const ExecutableEquationSystem& system, std::string_view prefix) {
-    return std::any_of(
-        system.equations.begin(),
-        system.equations.end(),
-        [&](const EquationDescriptor& equation) {
-            return equation.id.compare(0,prefix.size(),prefix) == 0;
-        });
-}
-
-void addUnknown(
+void addState(
         SystemCompositionBuilder& system,
         std::string id,
         std::string name,
         int components = 1,
-        UnknownRole role = UnknownRole::Primary,
+        StateRole role = StateRole::Primary,
         StorageBinding binding = StorageBinding::SpecializedExecutor,
         std::string storageKey = {},
         int componentOffset = 0,
         std::string nameSpace = {}) {
-    UnknownDescriptor unknown;
+    StateSymbol unknown;
     unknown.id = std::move(id);
     unknown.name = std::move(name);
     unknown.components = components;
@@ -94,13 +77,13 @@ void addUnknown(
     unknown.storageKey = std::move(storageKey);
     unknown.componentOffset = componentOffset;
     unknown.nameSpace = std::move(nameSpace);
-    system.addUnknown(std::move(unknown));
+    system.addState(std::move(unknown));
 }
 
 void addEquation(
         SystemCompositionBuilder& system,
         EquationDescriptor descriptor,
-        Equation::Definition definition) {
+        SF::Equation::Definition definition) {
     system.addEquation(std::move(descriptor),std::move(definition));
 }
 
@@ -148,15 +131,10 @@ void deriveExecutionComposition(
         requireProvider(system,"equation.legacy-mixture",
                         "bind transported mixture state and RHS contribution");
     }
-    if (hasExecutableEquation(system,"E_LEVEL_SET")) {
-        requireProvider(system,"equation.level-set",
-                        "bind interface state, transport, jump, and curvature");
-    }
-    if (hasExecutableEquation(system,"E_PHASE_MASS")) {
+    if (hasExecutableEquation(system,"E_PHAScontinuity")) {
         requireProvider(system,"thermodynamics.homogeneous",
                         "bind homogeneous primary state and equation set");
-    } else if (!eulerianOperations
-               && !system.runtime.capabilities.constantDensity) {
+    } else if (requiresProvider(system,"flow.conservative")) {
         requireProvider(system,"thermodynamics.single-fluid",
                         "bind the conservative single-fluid equation set");
     }
@@ -169,32 +147,11 @@ void deriveExecutionComposition(
         requireProvider(system,"equation.phase-change",
                         "bind phase-change equation contribution");
     }
-    const bool turbulenceClosure = std::any_of(
-        system.executableSystem.closures.begin(),
-        system.executableSystem.closures.end(),
-        [](const std::string& closure) {
-            return closure.compare(0,4,"mu_t") == 0
-                || closure.find("turbulence") != std::string::npos;
-        });
-    if (turbulenceClosure) {
-        requireProvider(system,"closure.turbulence",
-                        "bind turbulence closure and transported equations");
-        if (hasExecutableEquationPrefix(system.executableSystem,"E_TURB_")) {
-            requireProvider(system,"equation.turbulence-transport",
-                            "bind transported turbulence state and equations");
-        }
-    }
-    if (request.immersed) {
-        if (request.immersed->enforcement == FDM::IBMEnforcement::GhostCell) {
-            requireProvider(system,"ibm.boundary",
-                            "bind ghost/ILW boundary closure");
-        }
-        if (hasOperation(system.runtime.report,"ibm.constraint.project")
-            || hasOperation(system.runtime.report,"ibm.kkt.solve")) {
-            requireProvider(system,"ibm.constraint",
-                            "bind immersed constraint state and operations");
-        }
-    }
+    for (const auto* contributions:
+         {&request.modelContributions,&request.userContributions})
+        for (const auto& contribution:*contributions)
+            for (const auto& required:contribution.providerRequirements)
+                requireProvider(system,required.id,required.responsibility);
 
     requireRuntimeService(system,"execution.contract",
                           "honor halo, canonical COPY, and SUM contracts");
@@ -213,21 +170,13 @@ void deriveExecutionComposition(
                                  OperationCapability::PressureLinearSolve)
                         != operation.requirements.end();
             })
-        || hasOperation(system.runtime.report,"ibm.kkt.solve");
+        || hasOperation(system.runtime.report,OpIds::IbmKktSolve);
     if (needsHypre) {
         requireProvider(system,"linear.hypre",
                         "bind pressure or monolithic distributed linear solve");
         requireRuntimeService(system,"mpi.initialized",
                               "HYPRE requires an initialized MPI context");
     }
-}
-
-FDM::PressureCouplingPreset pressurePreset(const std::string& kind) {
-    if (kind == "SIMPLE") return FDM::PressureCouplingPreset::SIMPLE;
-    if (kind == "PISO") return FDM::PressureCouplingPreset::PISO;
-    if (kind == "PIMPLE") return FDM::PressureCouplingPreset::PIMPLE;
-    throw std::runtime_error(
-        "A pressure-constraint composition requires SIMPLE, PISO, or PIMPLE.");
 }
 
 void validateSemanticComposition(const EquationCompositionConfig& composition) {
@@ -260,30 +209,14 @@ void validateSemanticComposition(const EquationCompositionConfig& composition) {
         throw std::runtime_error("No registered caloric-thermo provider for '"
             +composition.thermoDynamics.thermo+"'.");
     }
-    if (composition.thermoDynamics.equationOfState == "rhoConst") {
-        if (energy) throw std::runtime_error(
-            "rhoConst composition currently supports Momentum + Continuity; "
-            "select an explicit Energy/Enthalpy equation before adding caloric closure.");
-        if (!providers.hasTransport(composition.thermoDynamics.transport)) {
-            throw std::runtime_error(
-                "rhoConst Momentum requires transport; no transport model is registered.");
-        }
-        // rhoConst 方程族不选择 coupling preset；preset 由 BuildRequest 显式
-        // 注册并由 resolved constraint structure 匹配。这里只要求输入没有
-        // 声明一个无法解析的 preset 名字。
-        if (!composition.algorithm.empty()) {
-            (void)pressurePreset(composition.algorithm);
-        }
-    } else if (composition.thermoDynamics.equationOfState == "perfectGas") {
-        if (!energy) throw std::runtime_error(
-            "perfectGas single-fluid execution currently requires Energy; "
-            "a non-caloric variable-density equation pack is unsupported.");
-        if (!composition.algorithm.empty() && composition.algorithm != "Explicit") {
-            throw std::runtime_error(
-                "The selected pressure algorithm requires an incompressibility constraint; "
-                "the perfectGas conservative system has none.");
-        }
-    }
+    if (!composition.thermoDynamics.transport.empty()
+        && !providers.hasTransport(composition.thermoDynamics.transport))
+        throw std::runtime_error("No registered transport provider for '"+composition.thermoDynamics.transport+"'.");
+    if (!composition.stateDeclared || composition.solutionVariables.empty())
+        throw std::runtime_error("Native composition requires explicit solution STATE (stateRegistry.use).");
+    if (composition.algorithm.empty() || !providers.hasAlgorithm(composition.algorithm))
+        throw std::runtime_error("Native composition requires explicit HOW (algorithmRegistry).");
+
 }
 
 } // namespace
@@ -291,54 +224,77 @@ void validateSemanticComposition(const EquationCompositionConfig& composition) {
 ResolvedSimulationSystem build(
         const FDM::SolverConfig& config,
         const BuildRequest& request) {
+    if (!request.unsupportedCompositionReason.empty())
+        throw std::runtime_error(request.unsupportedCompositionReason);
     ResolvedSimulationSystem result;
+    ExecutionProgram executionProgram;
+    std::vector<NumericalBinding> equationMethods;
     result.classification.templateOrigin = request.templateOrigin;
     result.timeRecipe = config.numerics.timeRecipe;
     validateSemanticComposition(request.composition);
+    if (request.composition.declared) {
+        const auto& algorithm=request.composition.algorithm;
+        if ((algorithm=="Explicit" && request.coupling)
+            || (algorithm!="Explicit" && (!request.coupling
+                || algorithm!=FDM::toString(request.coupling->presetKind))))
+            throw std::runtime_error("Explicit HOW selection and contributed coupling contract disagree.");
+    }
     const bool legacyFluidDiffusion = config.numerics.viscousEnabled
-        || request.turbulence || request.legacyMixture || request.levelSet;
+        || request.modelRequiresDiffusion || request.legacyMixture;
 
     std::vector<TransformationDescriptor> transformationRequests;
     SystemCompositionBuilder builtin(
         result.rawSystem,transformationRequests,result.executionPolicies,
-        {OriginKind::BuiltinPreset,"default system"});
+        {request.templateOrigin==PhysicsTemplateKind::EulerianEulerian ? OriginKind::Model : OriginKind::BuiltinPreset,
+         request.templateOrigin==PhysicsTemplateKind::EulerianEulerian ? "Eulerian PhaseSystem" : "default system"});
 
-    if (request.singleFluidPreset) {
-        result.classification.templateOrigin = PhysicsTemplateKind::SingleFluid;
-        Preset::installSingleFluid(
-            builtin,*request.singleFluidPreset);
-    } else if (request.composition.declared) {
-        if (request.templateOrigin != PhysicsTemplateKind::SingleFluid) {
-            throw std::runtime_error(
-                "Semantic single-fluid equation composition cannot be combined "
-                "with the current multiphase template.");
+    const auto& selection=request.composition;
+    result.rawSystem.state.setSelectionOrigin(selection.stateSelectionOrigin);
+    if (selection.declared && request.templateOrigin!=PhysicsTemplateKind::SingleFluid)
+        throw std::runtime_error("Native single-fluid equation/STATE composition has no current multiphase provider contract.");
+    if (request.templateOrigin!=PhysicsTemplateKind::EulerianEulerian) {
+        if (!selection.stateDeclared || selection.solutionVariables.empty())
+            throw std::runtime_error("Single-fluid equations require explicit solution STATE selection.");
+        const auto includes=[&](const char* id) {
+            return std::find(selection.solutionVariables.begin(),selection.solutionVariables.end(),id)!=selection.solutionVariables.end();
+        };
+        if (includes("U") && includes("rhoU"))
+            throw std::runtime_error("Ambiguous Momentum target: solution STATE selects both U and rhoU; provide an explicit equation-target contract.");
+        if (!includes("U") && !includes("rhoU"))
+            throw std::runtime_error("Momentum has no selected solution STATE target (U or rhoU).");
+        const BuiltinStateCatalog catalog;
+        for (const auto& id:selection.solutionVariables)
+            if (catalog.contains(id)) {
+                if (result.rawSystem.state.isSolution(id))
+                    throw std::runtime_error("Duplicate solution STATE: "+id);
+                builtin.addState(catalog.solution(id));
+                result.rawSystem.state.selectSolution(id);
+            }
+        if (selection.declared && selection.thermoDynamics.equationOfState=="rhoConst"
+            && !includes("rho")) {
+            auto density=catalog.at("rho");
+            density.name="constant density closure";
+            density.storageBinding=StorageBinding::SpecializedExecutor;
+            density.storageKey="rhoConst";
+            density.constantValue=selection.thermoDynamics.constantDensity;
+            density.restartEligible=false;
+            builtin.addState(std::move(density));
         }
-        // Equations choose the raw mathematical system. EOS contributes a
-        // closure and may simplify that system; it never selects a solver
-        // family or swaps in a different equation pack.
-        if (usesEquation(request.composition,"Energy")) {
-            throw std::runtime_error(
-                "Density single-fluid composition requires the explicit "
-                "single-fluid preset selection.");
+        if (const auto reason=validateSolutionProviderContract(result.rawSystem.state,selection); !reason.empty())
+            throw std::runtime_error(reason);
+        if (selection.declared && includes("U")) {
+            if (!includes("p")) throw std::runtime_error("Pressure constraint requires selected solution p; HOW cannot add a solution unknown.");
+            Compose::addConstantDensityFluid(builtin,selection,legacyFluidDiffusion);
+        } else if (request.pressureConstraint || selection.compatibilityPressureConstraint
+            || usesEquation(selection,"PressureConstraint")) {
+            Compose::addPressureConstraintFluid(builtin,PressureConstraintSpec{legacyFluidDiffusion},selection);
+        } else {
+            Preset::installSingleFluid(builtin,SingleFluidPresetSpec{
+                request.singleFluidPreset ? request.singleFluidPreset->diffusion : legacyFluidDiffusion},selection);
         }
-        Compose::addConstantDensityFluid(
-            builtin,request.composition,legacyFluidDiffusion);
-    } else if (request.templateOrigin == PhysicsTemplateKind::EulerianEulerian) {
-        Compose::addEulerianEulerianTemplate(builtin,result,request.phaseNames);
-    } else if (request.pressureConstraint) {
-        // Equation-source 请求：单流体压力约束方程族。它不是 solver family。
-        Compose::addPressureConstraintFluid(builtin,*request.pressureConstraint);
     } else {
-        // Legacy multiphase/level-set/thermal 模板：这些路径的守恒连续体来自
-        // 同一个 authoritative preset。纯单流体必须显式选择 equation source。
-        if (request.templateOrigin == PhysicsTemplateKind::SingleFluid) {
-            throw std::runtime_error(
-                "A single-fluid system must declare its equation source "
-                "(single-fluid preset, declared equations, or a "
-                "pressure-constraint request).");
-        }
-        Preset::installSingleFluid(
-            builtin,SingleFluidPresetSpec{legacyFluidDiffusion});
+        Compose::addEulerianEulerianTemplate(builtin,result,request.phaseNames,
+            request.referencePhase.empty() && !request.phaseNames.empty() ? request.phaseNames.front() : request.referencePhase);
     }
 
     if (request.composition.declared) {
@@ -362,76 +318,62 @@ ResolvedSimulationSystem build(
     SystemCompositionBuilder models(
         result.rawSystem,transformationRequests,result.executionPolicies,
         {OriginKind::Model,"configured models"});
-    {
-        SystemContribution contribution(result.rawSystem);
-        Physics::SourceContribution::contribute(contribution,config.sources);
-        models.applyContribution(std::move(contribution));
-    }
-
     if (request.homogeneousThermodynamics) {
         models.recordContribution(
             "model.homogeneousMultiphase","homogeneous multiphase equations");
-        addUnknown(models,"phaseMassAux","homogeneous phase mass auxiliary",1,
-                   UnknownRole::Transported,
+        addState(models,"phaseMassAux","homogeneous phase mass auxiliary",1,
+                   StateRole::Transported,
                    StorageBinding::SpecializedExecutor,{},0,"homogeneous");
         addEquation(models,{
-            "E_PHASE_MASS","homogeneous phase-mass transport",
+            "E_PHAScontinuity","homogeneous phase-mass transport",
             "conservation",{"phaseMassAux"}},
-            Equation::named("E_PHASE_MASS",
-                Equation::ddt({"phaseMassAux"})
-                    + Equation::div({"phaseMassFlux"})
-                    == Equation::Symbol{"phaseMassSources"}));
+            SF::Equation::named("E_PHAScontinuity",
+                SF::Equation::ddt({"phaseMassAux"})
+                    + SF::Equation::div({"phaseMassFlux"})
+                    == SF::Equation::Symbol{"phaseMassSources"}));
     } else if (request.legacyMixture) {
         models.recordContribution(
             "model.legacyMixture","legacy mixture equations");
-        addUnknown(models,"alphaAux","legacy transported volume fraction",1,
-                   UnknownRole::Transported,
+        addState(models,"alphaAux","legacy transported volume fraction",1,
+                   StateRole::Transported,
                    StorageBinding::SpecializedExecutor,{},0,"legacyMultiphase");
         addEquation(models,{
             "E_LEGACY_ALPHA","legacy volume-fraction transport",
             "conservation",{"alphaAux"}},
-            Equation::named("E_LEGACY_ALPHA",
-                Equation::ddt({"alphaAux"})
-                    + Equation::div({"alphaFlux"})
-                    == Equation::Symbol{"zero"}));
+            SF::Equation::named("E_LEGACY_ALPHA",
+                SF::Equation::ddt({"alphaAux"})
+                    + SF::Equation::div({"alphaFlux"})
+                    == SF::Equation::Symbol{"zero"}));
     }
-    if (request.levelSet) {
-        SystemContribution contribution(result.rawSystem);
-        Physics::InterfaceModels::LevelSetContribution::contribute(
-            contribution,*request.levelSet);
-        models.applyContribution(std::move(contribution));
-    }
-    if (request.turbulence) {
-        SystemContribution contribution(result.rawSystem);
-        Turbulence::contribute(contribution,*request.turbulence);
-        models.applyContribution(std::move(contribution));
-    }
-    if (request.immersed) {
-        if (request.templateOrigin == PhysicsTemplateKind::EulerianEulerian) {
-            if (request.immersed->enforcement
-                == FDM::IBMEnforcement::GhostCell) {
-                throw std::runtime_error(
-                    "Eulerian multiphase + Ghost IBM is unsupported: "
-                    "phase-wise ghost-state boundary closure is unavailable.");
-            }
-            throw std::runtime_error(
-                "Eulerian multiphase IBM constraint exists, but required "
-                "phase-wise IBM fluid-port assembly is unavailable.");
-        }
-        SystemContribution contribution(result.rawSystem);
-        IBM::SystemContribution::contribute(
-            contribution,*request.immersed);
-        models.applyContribution(std::move(contribution));
-    }
+    for (const SystemContribution& contribution:request.modelContributions)
+        models.applyContribution(contribution);
     // §15 precedence：用户修改必须排在 builtin defaults 与 model
     // contributions 之后、formulation/transformation 之前。当前没有 typed
     // lowering 的动作会显式失败，绝不静默覆盖。
+    SystemCompositionBuilder users(
+        result.rawSystem,transformationRequests,result.executionPolicies,
+        {OriginKind::User,"user C++ contribution"});
+    for (const SystemContribution& contribution:request.userContributions)
+        users.applyContribution(contribution);
     for (const SystemModification& modification : request.userModifications) {
-        models.applyModification(modification);
+        users.applyModification(modification);
     }
 
+    const BuiltinStateCatalog stateCatalog;
+    for (const auto* module:{&builtin,&models,&users})
+        for (const auto& symbol:module->requiredStates)
+            stateCatalog.require(result.rawSystem.state,symbol);
+
+    if (request.templateOrigin!=PhysicsTemplateKind::EulerianEulerian)
+    for (const auto& id:selection.solutionVariables)
+        if (!result.rawSystem.state.isSolution(id)) result.rawSystem.state.selectSolution(id);
+
     TransformerRegistry transformers;
-    transformers.registerTransformer(makePressureConstraintTransformer());
+    const auto momentum=std::find_if(builtin.execution.begin(),builtin.execution.end(),[](const auto& node) {
+        return node.kind==ExecutionKind::EquationCall && node.step.equation=="momentum";
+    });
+    transformers.registerTransformer(makePressureConstraintTransformer(
+        momentum==builtin.execution.end()?std::string{}:momentum->step.target.symbol));
     transformers.registerTransformer(makeSharedPressureTransformer());
     transformers.registerTransformer(makeImmersedConstraintTransformer());
     // REGISTERED MODEL：压力耦合 preset。它的生效条件来自 resolved raw
@@ -445,14 +387,19 @@ ResolvedSimulationSystem build(
     // Unsupported（缺 formulation operation），但 plan 仍必须真实描述该
     // schedule，provider resolver 才能报告缺失。
     const bool couplingPolicyContributed = isCouplingActive(result.coupling);
-    if (request.immersed && request.immersed->monolithic
+    const bool monolithicPolicy = std::any_of(
+        result.executionPolicies.begin(),result.executionPolicies.end(),
+        [](const LegacyExecutionPolicy& policy) {
+            return policy.kind==LegacyExecutionPolicyKind::MonolithicKKT;
+        });
+    if (monolithicPolicy
         && couplingPolicyContributed) {
         // DLM/KKT 是完全隐式约束耦合：它取代 segregated pressure policy，
         // 不是与之并存。preset 仍然必须被显式报告为未生效。
         result.executionPolicies.erase(
             std::remove_if(
                 result.executionPolicies.begin(),result.executionPolicies.end(),
-                [](const ExecutionPolicy& policy) {
+                [](const LegacyExecutionPolicy& policy) {
                     return policy.id == kPressureScheduleId;
                 }),
             result.executionPolicies.end());
@@ -463,121 +410,50 @@ ResolvedSimulationSystem build(
     result.executableSystem = TransformationPipeline::apply(
         result.rawSystem,transformationRequests,transformers,
         result.executionPolicies,result.transformations);
-    // STATE REALIZATION：只由 executable system 的 role/binding 导出。
-    result.realization = compileStateRealization(result.executableSystem);
-    // Time/constraint plan leaves are executable operations too. Their IDs are
-    // declared before planning so provider resolution can validate every leaf.
-    if (result.realization.conservativeTransportedMass) {
-        const Provenance origin{OriginKind::Generated,"explicitTimeRecipe"};
-        for (const char* id : {"flow.step.prepare", "flow.dt.compute",
-                "flow.step.begin", "explicit.stage.execute",
-                "flow.step.commit", "time.commit"}) {
-            result.executableSystem.operations.push_back({
-                id,id,OperationStage::Prepare,
-                {OperationCapability::ConservativeExplicit},origin});
-        }
+    if (hasConstraint(result.executableSystem,"C_SHARED_PRESSURE"))
+        projectEulerianBackendDefinitions(result.executableSystem);
+    for (auto* module:{&builtin,&models,&users}) {
+        executionProgram.root.children.insert(executionProgram.root.children.end(),
+            module->execution.begin(),module->execution.end());
+        equationMethods.insert(equationMethods.end(),module->numerics.begin(),module->numerics.end());
+        executionProgram.legacyEntries.insert(executionProgram.legacyEntries.end(),
+            module->legacyExecution.begin(),module->legacyExecution.end());
     }
-    for (const ExecutionPolicy& policy : result.executionPolicies) {
-        const char* id = policy.kind == ExecutionPolicyKind::ConstraintProjection
-            ? "ibm.constraint.project"
-            : policy.kind == ExecutionPolicyKind::MonolithicKKT
-                ? "ibm.kkt.solve" : nullptr;
-        if (id) result.executableSystem.operations.push_back({
-            id,id,OperationStage::Prepare,
-            {OperationCapability::ImmersedConstraint},policy.origin});
-    }
-    // COUPLING PLAN CONTRIBUTION：片段只引用 formulation 声明的
-    // executable operations；缺失的 stage 由 provider resolver 报告。
-    std::vector<PlanFragment> planFragments;
-    if (request.coupling && couplingPolicyContributed) {
-        const auto sharedPolicy = std::find_if(
-            result.executionPolicies.begin(),result.executionPolicies.end(),
-            [](const ExecutionPolicy& policy) {
-                return policy.id == kSharedPressureScheduleId;
+    const auto legacyFragments=composeContributions(result,request,executionProgram,equationMethods);
+    requireTargetStates(result.executableSystem.state,executionProgram.root);
+    result.numericalSelection=selectNumerics(config,request,result.executableSystem,std::move(equationMethods));
+    // Source composition is complete; the compiler receives immutable WHAT/HOW/WHICH.
+    NumericalCompiler::compileSystem(result,executionProgram,result.numericalSelection,legacyFragments,
+        request.additionalExecutionContributions);
+    for (const auto& provider:result.numericalSystem.providerRequirements)
+        requireProvider(result,provider,"execute a compiled mathematical term binding");
+    if (!result.solvePlan.compiledProgram.steps.empty() && result.coupling.status==CouplingStatus::Active)
+        result.coupling.derivedOperations=
+            SolvePlanner::requiredOperations(result.solvePlan);
+    // A declared equation without HOW lowering is an explicit capability gap;
+    // it must never inherit the Flow timestep merely for report ownership.
+    for (const auto& equation:result.executableSystem.legacyEquations) {
+        const bool owned=std::any_of(result.solvePlan.blocks.begin(),
+            result.solvePlan.blocks.end(),[&](const SolveBlock& block) {
+                return std::find(block.equations.begin(),block.equations.end(),
+                                 equation.id)!=block.equations.end();
             });
-        PlanFragment fragment = sharedPolicy == result.executionPolicies.end()
-            ? couplingPlanFragment(*request.coupling)
-            : sharedPressurePlanFragment(*sharedPolicy,result.executableSystem);
-        // monolithic KKT 已经显式取代该 preset（status=Inactive + reason）时
-        // 保持那个报告，不把它降级成 provider 问题。
-        const bool reportResolution =
-            result.coupling.status == CouplingStatus::Active;
-        std::vector<std::string> unresolved;
-        if (!reportResolution) {
-            // 保持既有状态报告（例如 superseded by monolithic KKT）。
-        } else if (couplingPlanResolved(
-                fragment,result.executableSystem,&unresolved)) {
-            result.coupling.derivedOperations.clear();
-            for (const ExecutableOperation& operation
-                 : result.executableSystem.operations) {
-                result.coupling.derivedOperations.push_back(
-                    operation.operation);
-            }
-        } else {
-            result.coupling.status = CouplingStatus::Unsupported;
-            std::string list;
-            for (const std::string& id : unresolved) {
-                if (!list.empty()) list += ", ";
-                list += id;
-            }
-            result.coupling.reason =
-                "the registered coupling preset requires operations the "
-                "formulation does not declare: [" + list + "]";
-            result.coupling.derivedOperations = unresolved;
+        if (!owned) {
+            result.runtime.report.status=RuntimeStatus::Unsupported;
+            result.runtime.report.reason += " Equation '"+equation.id
+                +"' has no compiled HOW execution step.";
         }
-        planFragments.push_back(std::move(fragment));
     }
-    auto numericalRecipes = config.numerics.recipes;
-    numericalRecipes.time = result.timeRecipe;
-    const bool coreDiffusionConsumer = std::any_of(
-        result.executableSystem.equations.begin(),
-        result.executableSystem.equations.end(),
-        [&](const EquationDescriptor& equation) {
-            if (equation.id != "E_MASS" && equation.id != "E_MOMENTUM"
-                && equation.id != "E_ENERGY") return false;
-            const auto& definition = result.executableSystem
-                .equationDefinitions.at(equation.id);
-            const auto hasDiffusion = [](const Equation::Expression& expression) {
-                return std::any_of(expression.terms.begin(),expression.terms.end(),
-                    [](const Equation::Term& term) {
-                        return term.kind == Equation::TermKind::Diffusion;
-                    });
-            };
-            return hasDiffusion(definition.left)
-                || hasDiffusion(definition.right);
-        });
-    if (coreDiffusionConsumer && !numericalRecipes.diffusion
-        && !config.numerics.termRecipesDeclared) {
-        numericalRecipes.diffusion =
-            FDM::builtInDiffusionRecipe(config.numerics.viscous);
-    }
-    result.numericalSystem = NumericalCompiler::compile(
-        result.executableSystem,numericalRecipes);
-    // dt 限制策略属于 compiled HOW：runtime 读这份冻结值，而不是 raw config。
-    result.numericalSystem.dt.cfl = config.numerics.cfl;
-    result.numericalSystem.dt.maxDeltaT = config.numerics.maxDeltaT;
-    result.numericalSystem.phaseTransport.convection =
-        config.pressure.phaseTransport.convection;
-    result.numericalSystem.phaseTransport.sourceCfl =
-        config.pressure.phaseTransport.sourceCfl;
-    for (const auto& provider : result.numericalSystem.providerRequirements) {
-        requireProvider(result,provider,
-                        "execute a compiled mathematical term binding");
-    }
-    result.solvePlan = SolvePlanner::compile(
-        result.executableSystem,result.executionPolicies,result.timeRecipe,
-        planFragments);
-    result.runtime.capabilities = compileExecutionCapabilities(
-        result.executableSystem,result.executionPolicies);
-    result.runtime.operationBindings = resolveOperationBindings(
-        result.executableSystem,result.realization,result.numericalSystem,
-        result.solvePlan,result.executionPolicies,request.parallel,
-        request.immersed || request.turbulence || request.levelSet
-            || request.legacyMixture || request.homogeneousThermodynamics
-            || request.phaseChange || request.transportedLegacyAlpha);
-    result.runtime.report = reportOperationBindings(
-        result.solvePlan,result.runtime.operationBindings);
 
+    const bool nativeTurbulence=std::any_of(result.runtime.operationBindings.begin(),
+        result.runtime.operationBindings.end(),[](const auto& binding) {
+            return binding.operation==OpIds::TurbulenceAdvance;
+        });
+    result.runtime.requirements.push_back({"SingleFluidTurbulenceScope",nativeTurbulence,
+        !nativeTurbulence || (!request.parallel && request.templateOrigin==PhysicsTemplateKind::SingleFluid
+            && std::none_of(result.rawSystem.contributions.begin(),result.rawSystem.contributions.end(),
+                [](const auto& contribution) { return contribution.id.rfind("model.ibm.",0)==0; })),
+        "native RAS transport is single-fluid, serial, single patch; pressure/IBM/MPI providers are unavailable"});
     result.runtime.requirements.push_back({
         "EulerianGlobalDof",true,true,"canonical cell ownership"});
     // 共享面的 canonical flux identity 需要真实的 rank-to-rank 通信；
@@ -589,22 +465,24 @@ ResolvedSimulationSystem build(
     // Backend availability 是 host 事实（BuildCapabilities），case 只回答
     // “是否需要”。编译器把两者相比，得到 required/available/reason 三者一致
     // 的 RuntimeRequirement，并在 validation 阶段 fail-fast。
-    const bool constraintDof = request.immersed
-        && request.immersed->introducesMultiplier && request.parallel;
+    const bool constraintDof = request.parallel && std::any_of(
+        result.rawSystem.state.symbols().begin(),result.rawSystem.state.symbols().end(),
+        [](const StateSymbol& unknown) {
+            return unknown.location==VariableLocation::BodyConstraint
+                || unknown.location==VariableLocation::SurfaceConstraint;
+        });
     result.runtime.requirements.push_back({
         "ConstraintGlobalDof",constraintDof,
         !constraintDof || request.capabilities.canonicalConstraintDof,
         "unique owner for Lambda/lambda and sparse J/S edges"});
-    const bool distributedSolve = request.immersed
-        && request.immersed->monolithic;
+    const bool distributedSolve = monolithicPolicy;
     result.runtime.requirements.push_back({
         "DistributedLinearSystem",distributedSolve,
         !distributedSolve || request.capabilities.distributedLinearSystem,
         "GlobalDofId is mapped to backend rows outside equation assembly"});
     const bool homogeneousUnsupported = request.homogeneousThermodynamics
         && (!result.realization.conservativeTransportedMass
-            || (config.turbulence.enabled
-                && config.turbulence.family != FDM::TurbulenceFamily::DNS));
+            || request.homogeneousTurbulenceUnsupported);
     result.runtime.requirements.push_back({
         "HomogeneousEquationExecution",request.homogeneousThermodynamics,
         !homogeneousUnsupported,
@@ -620,11 +498,9 @@ ResolvedSimulationSystem build(
         !eulerianExecution || eulerianDtPolicy,
         "current Eulerian equation executor requires a shared-pressure "
         "constraint formulation and a finite positive maxDeltaT"});
-    const bool unsupportedPhaseChange = request.phaseChange
-        && (request.levelSet || request.legacyMixture);
     result.runtime.requirements.push_back({
         "PhaseChangeExecution",request.phaseChange,
-        !unsupportedPhaseChange,
+        request.phaseChangeExecutionAvailable,
         "phase change is implemented for homogeneous or Eulerian equation systems"});
     result.runtime.requirements.push_back({
         "CanonicalScalarInterfaceFlux",
@@ -640,13 +516,13 @@ bool hasUnknown(const ResolvedSimulationSystem& system, std::string_view id) {
 }
 
 bool hasUnknown(const RawEquationSystem& system, std::string_view id) {
-    return std::any_of(system.unknowns.begin(),system.unknowns.end(),
-        [&](const UnknownDescriptor& value) { return value.id == id; });
+    return std::any_of(system.state.symbols().begin(),system.state.symbols().end(),
+        [&](const StateSymbol& value) { return value.id == id; });
 }
 
 bool hasUnknown(const ExecutableEquationSystem& system, std::string_view id) {
-    return std::any_of(system.unknowns.begin(),system.unknowns.end(),
-        [&](const UnknownDescriptor& value) { return value.id == id; });
+    return std::any_of(system.state.symbols().begin(),system.state.symbols().end(),
+        [&](const StateSymbol& value) { return value.id == id; });
 }
 
 bool hasEquation(const ResolvedSimulationSystem& system, std::string_view id) {
@@ -654,25 +530,23 @@ bool hasEquation(const ResolvedSimulationSystem& system, std::string_view id) {
 }
 
 bool hasEquation(const RawEquationSystem& system, std::string_view id) {
-    return std::any_of(system.equations.begin(),system.equations.end(),
-        [&](const EquationDescriptor& value) { return value.id == id; });
+    return system.registry.contains(id);
 }
 
 bool hasEquation(const ExecutableEquationSystem& system, std::string_view id) {
-    return std::any_of(system.equations.begin(),system.equations.end(),
-        [&](const EquationDescriptor& value) { return value.id == id; });
+    return system.registry.contains(id);
 }
 
-const Equation::Definition& equationDefinition(
+const SF::Equation::Definition& equationDefinition(
         const ResolvedSimulationSystem& system, std::string_view id) {
-    return system.executableSystem.equationDefinitions.at(std::string(id));
+    return system.executableSystem.legacyDefinitions.at(std::string(id));
 }
 
 bool hasEquationPrefix(
         const ExecutableEquationSystem& system, std::string_view prefix) {
     return std::any_of(
-        system.equations.begin(),
-        system.equations.end(),
+        system.legacyEquations.begin(),
+        system.legacyEquations.end(),
         [&](const EquationDescriptor& value) {
             return value.id.compare(0, prefix.size(), prefix) == 0;
         });

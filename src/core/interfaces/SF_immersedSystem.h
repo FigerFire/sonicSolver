@@ -30,7 +30,7 @@ enum class ImmersedOwnershipKind {
 };
 
 /// @brief 一个 IBM 算法显式引入的未知量。
-struct ImmersedUnknownDescriptor {
+struct ImmersedStateSymbol {
     std::string id;
     std::string name;
     ImmersedVariableLocation location =
@@ -92,7 +92,7 @@ struct ImmersedAlgorithmDescriptor {
     bool introducesMultiplier = false;
     bool monolithic = false;
     ImmersedVariationalDescriptor variational;
-    std::vector<ImmersedUnknownDescriptor> unknowns;
+    std::vector<ImmersedStateSymbol> unknowns;
     std::vector<ImmersedEquationDescriptor> equations;
     std::vector<ImmersedConstraintDescriptor> constraints;
     std::vector<ImmersedSolveBlockDescriptor> solveBlocks;

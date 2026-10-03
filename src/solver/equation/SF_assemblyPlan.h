@@ -1,7 +1,7 @@
 #pragma once
 
 /// @file SF_assemblyPlan.h
-/// @brief Equation::Definition 到 specialized assembler 的非拥有 lowering。
+/// @brief SF::Equation::Definition 到 specialized assembler 的非拥有 lowering。
 
 #include "core/system/SF_expression.h"
 

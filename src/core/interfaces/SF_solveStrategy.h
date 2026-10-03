@@ -3,8 +3,6 @@
 /// @file SF_solveStrategy.h
 /// @brief 与方程数学内容正交的类型化求解/耦合策略。
 
-#include <string>
-
 namespace SF::FDM {
 
 /// @brief 一个 solve block 的数值耦合方式。
@@ -19,12 +17,6 @@ enum class SolveStrategyKind {
     MonolithicKKT,
     BoundaryClosure,
     AlgebraicUpdate
-};
-
-/// @brief 启动阶段冻结的求解策略描述。
-struct SolveStrategyDescriptor {
-    SolveStrategyKind kind = SolveStrategyKind::AlgebraicUpdate;
-    std::string name;
 };
 
 inline const char* toString(SolveStrategyKind kind) {

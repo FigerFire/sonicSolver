@@ -22,7 +22,7 @@ void validateComposition(const RawEquationSystem& raw) {
         }
     }
     std::set<std::string> unknowns;
-    for (const auto& unknown : raw.unknowns) {
+    for (const auto& unknown : raw.state.symbols()) {
         if (unknown.id.empty() || !unknowns.insert(unknown.id).second) {
             throw std::runtime_error(
                 "Raw equation system has an invalid/duplicate unknown.");
@@ -34,9 +34,9 @@ void validateComposition(const RawEquationSystem& raw) {
         }
     }
     std::set<std::string> equations;
-    for (const auto& equation : raw.equations) {
+    for (const auto& equation : raw.legacyEquations) {
         if (equation.id.empty() || !equations.insert(equation.id).second
-            || raw.equationDefinitions.at(equation.id).name != equation.id) {
+            || raw.legacyDefinitions.at(equation.id).name != equation.id) {
             throw std::runtime_error(
                 "Raw equation system has an invalid/duplicate equation.");
         }
@@ -56,16 +56,8 @@ void validateCompiledEquations(const ExecutableEquationSystem& executable) {
             throw std::runtime_error(
                 "Executable system has an invalid/duplicate compiled equation.");
         }
-        const auto descriptor = std::find_if(
-            executable.equations.begin(),executable.equations.end(),
-            [&](const EquationDescriptor& item) {
-                return item.id == compiled.equationId;
-            });
-        if (descriptor == executable.equations.end()) {
-            throw std::runtime_error(
-                "Compiled equation '"+compiled.equationId
-                +"' has no executable equation descriptor.");
-        }
+        if (!executable.registry.contains(compiled.equationId))
+            throw std::runtime_error("Compiled equation has no registry definition: "+compiled.equationId);
         if (compiled.origin.kind != OriginKind::Generated
             || compiled.resources.empty()) {
             throw std::runtime_error(
@@ -122,6 +114,8 @@ void validatePlanNode(const SolvePlanNode& node) {
 } // namespace
 
 void validate(const ResolvedSimulationSystem& system) {
+    if (system.coupling.status==CouplingStatus::Invalid)
+        throw std::runtime_error("Invalid explicitly selected coupling preset: "+system.coupling.reason);
     validateComposition(system.rawSystem);
     validateTransformations(system);
     validatePlanNode(system.solvePlan.root);
@@ -147,7 +141,9 @@ void validate(const ResolvedSimulationSystem& system) {
         providers.count("flow.eulerian-pressure") != 0;
     const bool hasConservativeProvider =
         providers.count("flow.conservative") != 0;
-    if (hasEulerianProvider && hasConservativeProvider) {
+    const bool hasPressureProvider=providers.count("flow.pressure-operators")!=0;
+    if ((int)hasEulerianProvider+(int)hasConservativeProvider+(int)hasPressureProvider>1
+        || (providers.count("flow.rhie-chow") && !hasPressureProvider)) {
         throw std::runtime_error(
             "Resolved system cannot bind two flow operation provider groups.");
     }
@@ -184,6 +180,17 @@ void validate(const ResolvedSimulationSystem& system) {
                 "Plan operation '"+id+"' has no provider resolution result.");
         }
     }
+    const auto validateOwners=[&](const auto& self,const SolvePlanNode& node)->void {
+        if (!node.operation.empty()) {
+            const auto binding=std::find_if(system.runtime.operationBindings.begin(),system.runtime.operationBindings.end(),
+                [&](const auto& item) { return item.operation==node.operation; });
+            if (binding!=system.runtime.operationBindings.end() && binding->status==BindingStatus::Resolved
+                && (node.provider.empty() || node.provider!=binding->provider))
+                throw std::runtime_error("Compiled operation ownership disagrees with its runtime binding: "+node.operation);
+        }
+        for (const auto& child:node.children) self(self,child);
+    };
+    validateOwners(validateOwners,system.solvePlan.root);
     if (std::set<OpId>(system.runtime.report.missingOperations.begin(),
                        system.runtime.report.missingOperations.end())
             != missingBindings
@@ -193,7 +200,7 @@ void validate(const ResolvedSimulationSystem& system) {
             "RuntimeReport missing operations disagree with provider bindings.");
     }
     std::set<std::string> unknowns;
-    for (const auto& unknown : executable.unknowns) {
+    for (const auto& unknown : executable.state.symbols()) {
         if (unknown.id.empty() || unknown.name.empty()
             || unknown.components <= 0
             || (unknown.storageBinding != StorageBinding::SpecializedExecutor
@@ -205,10 +212,11 @@ void validate(const ResolvedSimulationSystem& system) {
         }
     }
     std::set<std::string> equations;
+    for (const auto& equation:executable.registry.entries()) equations.insert(equation.id);
     std::vector<std::string> equationIds;
-    for (const auto& equation : executable.equations) {
+    for (const auto& equation : executable.legacyEquations) {
         if (equation.id.empty() || equation.name.empty()
-            || !equations.insert(equation.id).second) {
+            || !executable.registry.contains(equation.id)) {
             throw std::runtime_error(
                 "Resolved system has an invalid/duplicate equation.");
         }
@@ -276,15 +284,18 @@ void validate(const ResolvedSimulationSystem& system) {
     // Build every plan during initialization.  A resolved equation may not be
     // explain-only metadata: it needs a stable lowering view and at least one
     // solve block that owns its execution.
-    const Equation::AssemblyPlanRegistry plans(
-        executable.equationDefinitions,equationIds);
-    for (const std::string& equation : equationIds) {
-        (void)plans.at(equation);
-        if (equationBlockReferences[equation] == 0) {
-            throw std::runtime_error(
-                "Resolved equation '"+equation
-                +"' is not owned by any solve block.");
+    if (system.solvePlan.compiledProgram.steps.empty()) {
+        const SF::Equation::AssemblyPlanRegistry legacyPlans(executable.legacyDefinitions,equationIds);
+        for (const auto& equation:equationIds) {
+            (void)legacyPlans.at(equation);
+            if (equationBlockReferences[equation]==0 && system.runtime.report.status==RuntimeStatus::Runnable)
+                throw std::runtime_error("Legacy equation lacks execution ownership: "+equation);
         }
+    }
+    for (const auto& call:system.solvePlan.compiledProgram.steps) {
+        (void)executable.registry.at(call.source.equation);
+        if (call.target.resources.empty())
+            throw std::runtime_error("Compiled occurrence lacks a typed target binding.");
     }
     std::set<std::string> capabilities;
     for (const auto& requirement : system.runtime.requirements) {

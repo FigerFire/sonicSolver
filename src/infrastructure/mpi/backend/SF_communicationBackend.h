@@ -25,6 +25,8 @@ public:
     virtual double allReduceMin(double localValue) const = 0;
     virtual double allReduceMax(double localValue) const = 0;
     virtual double allReduceSum(double localValue) const = 0;
+    virtual std::int64_t allReduceMin(std::int64_t localValue) const = 0;
+    virtual std::int64_t allReduceMax(std::int64_t localValue) const = 0;
     /// @brief 对同一长度的数值向量执行逐项 SUM；只用于显式 Runtime 边界。
     virtual void allReduceSum(std::vector<double>& values) const = 0;
     /// @brief 按稳定 entity id 将 owner 值稀疏复制到所有 replicas。
@@ -46,6 +48,13 @@ public:
         const std::vector<int>& neighbours,
         int tag,
         std::vector<double>& received) const = 0;
+    virtual void exchangeNeighbours(
+        const std::vector<std::int64_t>& send,
+        const std::vector<int>& counts,
+        const std::vector<int>& displacements,
+        const std::vector<int>& neighbours,
+        int tag,
+        std::vector<std::int64_t>& received) const = 0;
 };
 
 } // namespace SF::Parallel::Backend

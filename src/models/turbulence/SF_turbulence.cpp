@@ -314,6 +314,16 @@ int Manager::distributedHaloDepth() const {
     return distributedReadFields().empty() ? 0 : 1;
 }
 
+void Manager::registerDistributed(State::DistributedFieldRegistry& registry,
+                                 int blockId, Field& geometry) {
+    for (const auto& name:distributedWriteFields()) {
+        const auto slot=name=="k" ? ScalarSlot::K
+            : name=="epsilon" ? ScalarSlot::Epsilon
+            : name=="omega" ? ScalarSlot::Omega : ScalarSlot::EddyMu;
+        registry.add(State::workspaceView(name,blockId,geometry,state_.values(slot),1));
+    }
+}
+
 void applyScalarInitialConditions(const Field& flow,
                                   const std::vector<BCSetting<double>>& settings,
                                   ScalarFields& state,

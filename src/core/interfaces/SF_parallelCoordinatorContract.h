@@ -20,6 +20,9 @@ public:
     virtual void markModified(const std::string& name) = 0;
     virtual void synchronizeTransient(
         const std::vector<State::DistributedFieldView>& fields) = 0;
+    virtual void synchronizeIdentifiers(
+        const Field& geometry, int blockId,
+        std::vector<std::int64_t>& values) = 0;
     virtual void assembleCanonicalInterfaceFluxes(
         const std::vector<Field*>& fields,
         const std::vector<FluxField*>& fluxes,
@@ -31,6 +34,7 @@ public:
 
     enum class Reduction { Minimum, Maximum, Sum };
     virtual double reduce(double localValue, Reduction operation) = 0;
+    virtual std::int64_t reduce(std::int64_t localValue, Reduction operation) = 0;
     virtual void reduceSum(std::vector<double>& values) = 0;
     virtual void copyCanonicalEntities(
         const std::vector<std::int64_t>& entityIds,

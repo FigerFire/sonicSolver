@@ -1,0 +1,4 @@
+SonicFile:
+  object: state
+  type: registry
+use: [U, p]

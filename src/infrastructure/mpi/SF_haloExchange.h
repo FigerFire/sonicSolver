@@ -3,6 +3,7 @@
 /*----------code by LPF, 2026.08.21-----------*/
 
 #pragma once
+#include "core/state/SF_distributedField.h"
 
 /// @file SF_haloExchange.h
 /// @brief 基于 Mesh communication plan 的 Field halo 与 processor-face 通量通信。
@@ -50,8 +51,13 @@ public:
         const std::vector<ScalarBlockValues>& views) const;
     void exchangeScalarIdentifiers(
         const std::vector<ScalarBlockValues>& views) const;
+    /// @brief Exact int64 owner-to-replica COPY for algorithmic GlobalDof IDs.
+    void exchangeIdentifiers(
+        const Field& geometry, int blockId,
+        std::vector<std::int64_t>& values) const;
+    /// @brief 显式借用本地 face workspace；仅打包接口候选并 COPY canonical 值。
     void synchronizeCanonicalFaceFlux(
-        const Field& field, std::vector<double>& values) const;
+        const std::vector<State::DistributedFieldView*>& fields) const;
     void assembleCanonicalInterfaceFluxes(
         std::vector<MeshBlockField>& blocks,
         const std::vector<FluxField*>& fluxes,

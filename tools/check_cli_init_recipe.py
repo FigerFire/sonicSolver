@@ -28,6 +28,12 @@ def main() -> int:
         runnable = root / "runnable"
         shutil.copytree(args.case, runnable)
         shutil.copy2(generated_numerics, runnable / "solvers" / "numerics.yaml")
+        for category in ("state", "equations", "algorithms"):
+            shutil.copytree(generated / category, runnable / category, dirs_exist_ok=True)
+        shutil.copy2(generated / "models/thermoDynamics.yaml", runnable / "models/thermoDynamics.yaml")
+        registry=runnable / "models/models.yaml"
+        if "type: thermoDynamics" not in registry.read_text():
+            registry.write_text(registry.read_text()+"thermoDynamics:\n  type: thermoDynamics\n  file: models/thermoDynamics.yaml\n")
         completed = subprocess.run(
             [args.solver, "check", str(runnable)], check=False,
             text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
@@ -35,6 +41,20 @@ def main() -> int:
             raise RuntimeError(
                 "production case reader rejected CLI-generated TimeRecipe:\n"
                 + completed.stdout)
+        algorithm = runnable / "solvers" / "algorithm.yaml"
+        algorithm.write_text("SonicFile:\n  object: solver\n  type: algorithm\n"
+                             "type: densityBase\nalgorithm: PIMPLE\n"
+                             "PIMPLE:\n  outerCorrectors: 1\n")
+        (runnable / "algorithms/algorithms.yaml").write_text(
+            "SonicFile:\n  object: algorithms\n  type: registry\nPIMPLE: {}\n")
+        # The native algorithm has complete numerical controls, independent of old type labels.
+        pressure_controls=pathlib.Path(args.case).parents[1] / "pressure/constantDensityPiso/solvers/algorithm.yaml"
+        if pressure_controls.exists():
+            shutil.copy2(pressure_controls, algorithm)
+        invalid = subprocess.run([args.solver, "check", str(runnable)],
+                                 text=True, capture_output=True)
+        if invalid.returncode == 0 or "constraint" not in (invalid.stdout + invalid.stderr).lower():
+            raise RuntimeError("Explicit inapplicable coupling was silently ignored")
     print("CLI init recipe resolution passed")
     return 0
 

@@ -1,0 +1,5 @@
+# Solver algorithm.
+SonicFile:
+  object: solver
+  type: algorithm
+type: densityBase

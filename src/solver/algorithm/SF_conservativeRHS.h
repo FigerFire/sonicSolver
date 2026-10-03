@@ -34,7 +34,7 @@ void assembleAllPatches(
     std::vector<PatchWorkspace>& workspaces,
     const FDM::SolverConfig& config,
     const System::CompiledNumericalSystem& numericalSystem,
-    Equation::Compressible::System& equations,
+    SF::Equation::Compressible::System& equations,
     State::StateBundle& state,
     FDM::SolverServices& services,
     Boundary::Applicator& boundaryApplicator,

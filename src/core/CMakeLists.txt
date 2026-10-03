@@ -1,4 +1,5 @@
 add_subdirectory(model)
+add_subdirectory(system)
 add_subdirectory(residual)
 add_subdirectory(flux)
 add_subdirectory(field)

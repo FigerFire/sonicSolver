@@ -2,6 +2,7 @@
 /// @brief 单相 SIMPLE/PISO/PIMPLE 压力—速度校正循环。
 
 #include "solver/algorithm/pressureBased/SF_corrector.h"
+#include "solver/system/SF_stateRealizer.h"
 
 #include "core/mesh/SF_dimension.h"
 #include "methods/numerics/structured/SF_structured.h"
@@ -225,6 +226,30 @@ struct Corrector::Workspace {
     bool fluxCorrected = false;
 };
 
+void Corrector::bindStateViews(System::StateRealization& state,Field& geometry) {
+    const auto bind=[&](State::DistributedFieldView& view,const char* symbol,
+            System::StateViewKind kind,const char* storage) {
+        if (!state.requestsView(symbol,kind)) return;
+        view.name=storage;view.blockId=0;view.geometry=&geometry;
+        view.components=1;view.haloDepth=geometry.NG();view.exchange=State::ExchangeKind::None;
+        view.read=[this,kind](int cell,int component) {
+            if (component!=0 || !workspace_)
+                throw std::runtime_error("Conservative pressure view is outside its correction lifetime.");
+            if (kind==System::StateViewKind::Workspace) return workspace_->fluxCorrected ? 1.0 : 0.0;
+            const auto& values=kind==System::StateViewKind::Correction
+                ? workspace_->correction : workspace_->targetPressure;
+            return values.at(0).at((std::size_t)cell);
+        };
+        view.write=[](int,int,double) {
+            throw std::runtime_error("Conservative pressure workspace is published by its numerical provider.");
+        };
+        state.bindView(symbol,kind,view);
+    };
+    bind(correctionView_,"p",System::StateViewKind::Correction,"pressureCorrection");
+    bind(preparedPressureView_,"p",System::StateViewKind::Working,"preparedPressure");
+    bind(fluxValidityView_,"fluxValidity",System::StateViewKind::Workspace,"derivedFluxValidity");
+}
+
 Corrector::~Corrector() = default;
 
 CorrectionSummary Corrector::correct(Field& field, double dt) {
@@ -277,7 +302,7 @@ void Corrector::assemble(
     for (size_t block = 0; block < fields.size(); ++block) {
         Field& field = *fields[block];
         workspace->fixed[block].assign((size_t)field.TotalSize(), 0);
-        for (const auto& boundary : boundaries_.energyFromPressure) {
+        for (const auto& boundary : boundaries_.pressure) {
             if (boundary.type != FIXED_VALUE) continue;
             const auto set = field.getAllSets().find(boundary.name);
             if (set == field.getAllSets().end()) continue;

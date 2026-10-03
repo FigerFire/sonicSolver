@@ -1,4 +1,5 @@
 add_library(SF_turbulence STATIC
+    SF_eulerianTurbulence.cpp
     SF_turbulence.cpp
     SF_turbulenceSystemContribution.cpp
     SF_turbulenceSystemContribution.h

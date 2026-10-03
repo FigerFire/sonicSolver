@@ -56,18 +56,8 @@ void broadcastSolverConfig(
               std::string("equations + coupling preset")
                   + (eulerianEulerian ? " (Eulerian shared pressure)"
                                       : ""));
-    {
-        const auto& pressure = config.pressure.linear.pressure;
-        broadcast("Coupling algorithm : ",
-                  FDM::toString(config.pressure.coupling.preset));
-        broadcast("Pressure solve     : ",
-                  "HYPRE maxIter=" + std::to_string(pressure.maxIterations)
-                  + ", relTol=" + formatTimeValue(pressure.relativeTolerance)
-                  + ", pRelax=" + formatTimeValue(
-                      config.pressure.coupling.pressureRelaxation)
-                  + ", uRelax=" + formatTimeValue(
-                      config.pressure.coupling.momentumRelaxation));
-    }
+    // Coupling applicability and pressure bindings are printed by the resolved
+    // system report; SolverConfig defaults are not a second execution authority.
     broadcast("CFL number       : ", config.numerics.cfl);
     broadcast("Maximum deltaT   : ", config.numerics.maxDeltaT);
     broadcast("Active directions : ", Math::activeDirectionText());

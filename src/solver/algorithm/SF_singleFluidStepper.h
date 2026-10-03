@@ -18,7 +18,7 @@
 #include "core/state/SF_state.h"
 #include "solver/algorithm/SF_patchWorkspace.h"
 #include "solver/algorithm/pressureBased/SF_corrector.h"
-#include "solver/algorithm/pressureBased/SF_pressureOperators.h"
+#include "solver/algorithm/pressure/SF_pressureOperators.h"
 #include "solver/algorithm/pressureBased/SF_kkt.h"
 #include "solver/system/SF_runtimeRequirements.h"
 #include "solver/system/SF_stateRealizer.h"
@@ -72,7 +72,7 @@ public:
     void bindSolvePlan(const System::CompiledSolvePlan& plan) override;
     void prepare(FDM::SolverState& state) override;
 
-    /// @brief 推进 bundle 中全部 density-based patches。
+    /// @brief 推进 bundle 中全部参与求解的 patches。
     FDM::StepResult advance(FDM::SolverState& state) override;
 
     double physicalTime() const;
@@ -81,7 +81,6 @@ public:
 
     /// @brief Access the immutable view of solver configuration.
     /// @return Current solver configuration value.
-    const FDM::SolverConfig& config() const { return config_; }
 
 private:
     FDM::SolverConfig config_;
@@ -90,9 +89,9 @@ private:
     const System::CompiledSolvePlan& solve_;
     const System::RuntimeRequirements& runtime_;
     Boundary::Applicator boundaryApplicator_;
-    std::unique_ptr<Equation::Compressible::System> equations_;
-    std::unique_ptr<PressureBased::Corrector> genericPisoCorrector_;
-    std::unique_ptr<PressureBased::PressureOperators> pressureOperators_;
+    std::unique_ptr<SF::Equation::Compressible::System> equations_;
+    std::unique_ptr<PressureBased::Corrector> conservativePressureCorrector_;
+    std::unique_ptr<Pressure::PressureOperators> pressureOperators_;
     std::unique_ptr<PressureBased::MonolithicKKT> monolithicKkt_;
 
     FDM::SolverServices services_;
@@ -102,6 +101,9 @@ private:
     bool solvePlanBound_ = false;
     std::vector<System::OpId> requiredOperations_;
     System::StateRealization realizedState_;
+    /// @brief Stable handles into temporal backend arrays; no duplicated stage storage.
+    std::vector<std::unique_ptr<State::DistributedFieldView>> temporalViews_;
+    void bindTemporalStateViews();
     /// @brief solver-owned operation registry；每步复用，不重新分配。
     Run::OpRegistry operations_;
     /// @brief solver-owned 显式 stage 存储（q0/k1..k4）；只按 layout 变化 resize。

@@ -64,7 +64,7 @@ struct BoundaryConfig {
     bool ilwEnabled = false;
     int ilwOrder = 0;
     std::vector<BCSetting<Vector3>> velocity;
-    std::vector<BCSetting<double>> energyFromPressure;
+    std::vector<BCSetting<double>> pressure;
     std::vector<BCSetting<double>> density;
     std::vector<ThermalBCSetting> thermal;
     double thermalDynamicViscosity = 0.0;

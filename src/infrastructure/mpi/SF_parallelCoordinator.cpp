@@ -156,14 +156,33 @@ void ParallelCoordinator::synchronizeTransient(
     exchangeViews(views);
 }
 
+void ParallelCoordinator::synchronizeIdentifiers(
+        const Field& geometry, int blockId,
+        std::vector<std::int64_t>& values) {
+    if (halo_) halo_->exchangeIdentifiers(geometry, blockId, values);
+}
+
 void ParallelCoordinator::exchangeViews(
         const std::vector<State::DistributedFieldView*>& fields) {
     if (fields.empty() || !halo_ || !halo_->active()) return;
 
+    if (fields.front()->exchange == State::ExchangeKind::CanonicalFaceFlux) {
+        halo_->synchronizeCanonicalFaceFlux(fields);
+        return;
+    }
+
     // Pressure corrector 等算法只拥有本 rank 的 patch workspace，而 halo plan
     // 仍以全局 block 列表构造固定消息段。由协调器补齐非本地 scratch，保证所有
     // rank 的 payload 形状一致；物理/方程模块无需认识全局拓扑。
-    if (blocks_ && fields.size() != blocks_->size()) {
+    // A one-patch-per-rank topology already has a direct scalar halo path.
+    // Do not allocate scratch for every remote patch on each workspace exchange.
+    bool directLocal=fields.size()==1 && blocks_ && blocks_->size()==(size_t)size();
+    if (directLocal) {
+        for (size_t block=0;block<blocks_->size();++block)
+            directLocal=directLocal && (*blocks_)[block].ownerRank==(int)block;
+        directLocal=directLocal && fields.front()->geometry==&(*blocks_)[(size_t)rank()].field;
+    }
+    if (blocks_ && !directLocal && fields.size() != blocks_->size()) {
         std::vector<std::vector<double>> scratch(blocks_->size());
         std::vector<State::DistributedFieldView> expandedViews;
         expandedViews.reserve(blocks_->size());
@@ -209,31 +228,6 @@ void ParallelCoordinator::exchangeViews(
     }
     if (kind == State::ExchangeKind::None) return;
 
-    if (kind == State::ExchangeKind::CanonicalFaceFlux) {
-        if (fields.size() != 1 || components != 3) {
-            throw std::runtime_error(
-                "CanonicalFaceFlux transient exchange requires one three-component view.");
-        }
-        auto* field = fields.front();
-        std::vector<double> packed(
-            (size_t)field->geometry->TotalSize() * 3u);
-        for (int component = 0; component < 3; ++component) {
-            for (int cell = 0; cell < field->geometry->TotalSize(); ++cell) {
-                packed[(size_t)component * (size_t)field->geometry->TotalSize()
-                       + (size_t)cell] = field->read(cell, component);
-            }
-        }
-        halo_->synchronizeCanonicalFaceFlux(*field->geometry, packed);
-        for (int component = 0; component < 3; ++component) {
-            for (int cell = 0; cell < field->geometry->TotalSize(); ++cell) {
-                field->write(cell, component,
-                    packed[(size_t)component * (size_t)field->geometry->TotalSize()
-                           + (size_t)cell]);
-            }
-        }
-        return;
-    }
-
     // 主守恒状态保留原有多分量 Field halo 路径，数值和共享点顺序不变。
     if (fields.front()->name == "conservative") {
         if (blocks_) halo_->exchange(*blocks_);
@@ -263,7 +257,8 @@ void ParallelCoordinator::exchangeViews(
                 field->blockId, field->geometry, &buffer, field->name});
         }
         if (fields.size() == 1
-            && kind == State::ExchangeKind::State) {
+            && (kind == State::ExchangeKind::State
+                || (directLocal && kind == State::ExchangeKind::Identifier))) {
             halo_->exchangeScalarValues(
                 *fields.front()->geometry, buffers.front());
         } else if (kind == State::ExchangeKind::Identifier) {
@@ -351,6 +346,17 @@ double ParallelCoordinator::reduce(
         case Reduction::Sum: return reduction_->sum(localValue);
     }
     throw std::runtime_error("Unknown parallel reduction operation.");
+}
+
+std::int64_t ParallelCoordinator::reduce(
+        std::int64_t localValue, Reduction operation) {
+    if (!backend_ || !backend_->active()) return localValue;
+    switch (operation) {
+        case Reduction::Minimum: return backend_->allReduceMin(localValue);
+        case Reduction::Maximum: return backend_->allReduceMax(localValue);
+        case Reduction::Sum: return backend_->allReduceSum(localValue);
+    }
+    throw std::runtime_error("Unknown integer parallel reduction operation.");
 }
 
 void ParallelCoordinator::reduceSum(std::vector<double>& values) {

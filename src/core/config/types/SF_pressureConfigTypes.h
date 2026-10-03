@@ -87,16 +87,29 @@ inline void validatePressureCorrectionConfig(const PressureCorrectionConfig& con
         || coupling.pressureRelaxation > 1.0
         || !std::isfinite(config.phaseTransport.sourceCfl)
         || config.phaseTransport.sourceCfl <= 0.0
-        || config.phaseTransport.sourceCfl > 1.0) {
+        || config.phaseTransport.sourceCfl > 1.0
+        || !std::isfinite(config.relativeTolerance)
+        || config.relativeTolerance <= 0.0
+        || !std::isfinite(config.absoluteTolerance)
+        || config.absoluteTolerance < 0.0) {
         throw std::invalid_argument(
             "solverProperties has invalid corrector or relaxation controls.");
     }
+    if (coupling.preset == PressureCouplingPreset::PISO
+        && coupling.outerCorrectors != 1)
+        throw std::invalid_argument(
+            "PISO does not define an outer fixed-point iteration; "
+            "use PIMPLE for outerCorrectors > 1.");
+    if (coupling.preset == PressureCouplingPreset::SIMPLE
+        && coupling.pressureCorrectors != 1)
+        throw std::invalid_argument(
+            "SIMPLE uses one pressure correction per outer iteration; "
+            "use PIMPLE for multiple inner pressure corrections.");
     if (config.reference.referenceCell < 0
-        || !std::isfinite(config.reference.referencePressure)
-        || config.reference.referencePressure <= 0.0) {
+        || !std::isfinite(config.reference.referencePressure)) {
         throw std::invalid_argument(
             "pressure workflow requires explicit non-negative referenceCell "
-            "and finite referencePressure > 0.");
+            "and finite referencePressure.");
     }
     validateLinearSolverConfig(config.linear.pressure, "pressure linear solver");
     validateLinearSolverConfig(config.linear.momentum, "momentum linear solver");

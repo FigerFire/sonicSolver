@@ -1,42 +1,37 @@
 /// @file SF_presets.cpp
-/// @brief COMPOSE — built-in 方程族 preset 的 composition（WHAT only）。
+/// @brief COMPOSE — built-in 物理方程 bundle 的四模块贡献。
 ///
-/// 这里只声明未知量、方程与约束。Coupling preset / plan / backend / time
-/// recipe 不由方程 preset 选择。
+/// 默认 equation calls 与 numerical bindings 随数学贡献声明；全局 coupling/time
+/// 仍来自独立显式请求，Equation pack 不选择 loop topology。
 
 #include "SF_systemBuilder.h"
 #include "SF_equationContribution.h"
 #include "SF_singleFluidPreset.h"
+#include "SF_eulerianRelations.h"
 
 #include "SF_config.h"
 
 #include <algorithm>
 #include <string>
 #include <utility>
+#include <tuple>
 #include <vector>
 
 namespace SF::System {
 namespace Compose {
 namespace {
 
-bool usesEquation(
-        const EquationCompositionConfig& composition,
-        const std::string& name) {
-    return std::find(composition.equations.begin(),composition.equations.end(),
-                     name) != composition.equations.end();
-}
-
-void addUnknown(
+void addState(
         SystemCompositionBuilder& system,
         std::string id,
         std::string name,
         int components = 1,
-        UnknownRole role = UnknownRole::Primary,
+        StateRole role = StateRole::Primary,
         StorageBinding binding = StorageBinding::SpecializedExecutor,
         std::string storageKey = {},
         int componentOffset = 0,
         std::string nameSpace = {}) {
-    UnknownDescriptor unknown;
+    StateSymbol unknown;
     unknown.id = std::move(id);
     unknown.name = std::move(name);
     unknown.components = components;
@@ -46,13 +41,15 @@ void addUnknown(
     unknown.storageKey = std::move(storageKey);
     unknown.componentOffset = componentOffset;
     unknown.nameSpace = std::move(nameSpace);
-    system.addUnknown(std::move(unknown));
+    system.addState(std::move(unknown));
 }
 
 void addEquation(
         SystemCompositionBuilder& system,
         EquationDescriptor descriptor,
-        Equation::Definition definition) {
+        SF::Equation::Definition definition,
+        LegacyEquationRole role = LegacyEquationRole::Generic) {
+    descriptor.role=role;
     system.addEquation(std::move(descriptor),std::move(definition));
 }
 
@@ -60,42 +57,22 @@ void addEquation(
 
 void addPressureConstraintFluid(
         SystemCompositionBuilder& system,
-        const PressureConstraintSpec& spec) {
-    system.recordContribution("builtin.navierStokes","core Navier-Stokes preset");
-    addUnknown(system,"rho","density",1,UnknownRole::Primary,
-               StorageBinding::PackedDistributed,"conservative",0,"fluid");
-    addUnknown(system,"U","velocity",3,UnknownRole::Primary,
-               StorageBinding::PackedDistributed,"conservative",1,"fluid");
-    addUnknown(system,"rhoE","total energy",1,UnknownRole::Primary,
-               StorageBinding::PackedDistributed,"conservative",4,"fluid");
-    addUnknown(system,"p","thermodynamic pressure",1,
-               UnknownRole::Derived,StorageBinding::SpecializedExecutor,
-               "thermodynamicClosure",0,"pressure");
-    addEquation(system,{"E_MASS","mass","conservation",{"rho"}},
-        Equation::named("E_MASS",
-            Equation::ddt({"rho"}) + Equation::div({"massFlux"})
-                == Equation::Symbol{"zero"}));
-    addEquation(system,
-        {"E_MOMENTUM","momentum predictor","conservation",{"U"}},
-        Equation::named("E_MOMENTUM",
-            Equation::ddt({"U"}) + Equation::div({"momentumFlux"})
-                == Equation::Symbol{"zero"}));
-    addEquation(system,
-        {"E_ENERGY","total energy","conservation",{"rhoE"}},
-        Equation::named("E_ENERGY",
-            Equation::ddt({"rhoE"}) + Equation::div({"energyFlux"})
-                == Equation::Symbol{"zero"}));
-    ConstraintDescriptor pressureConstraint{
-        "C_INCOMPRESSIBILITY","pressure/continuity constraint",
-        "pressureVelocityConsistency = 0","p"};
-    system.addConstraint(std::move(pressureConstraint));
+        const PressureConstraintSpec& spec,
+        const EquationCompositionConfig& composition) {
+    // The pressure predictor advances the same packed physical equations.
+    // Its native WHICH method explicitly fuses these inputs without duplicating WHAT.
+    Preset::installSingleFluid(system,SingleFluidPresetSpec{false},composition);
+    system.addConstraint({"C_INCOMPRESSIBILITY","pressure/continuity constraint",
+                          "pressureVelocityConsistency = 0","p"});
 }
 
 /// @brief Raw U/p composition for rho=rho0.  It intentionally does not
 /// fabricate rhoE or a PerfectGas closure: execution is enabled only after a
 /// dedicated constant-density predictor/corrector operator is bound.
 ///
-/// 它只声明 WHAT（守恒量 + div 约束 + 乘子）；coupling preset 与 plan 由
+/// STATE already supplies U/p; WHAT uses rho=rho0 to divide momentum and reduce continuity.
+/// It never substitutes ddt(U) for variable-density ddt(rhoU).
+/// Coupling preset 与 plan 由
 /// pressure-coupling 模型贡献。
 void addConstantDensityFluid(
         SystemCompositionBuilder& system,
@@ -104,29 +81,28 @@ void addConstantDensityFluid(
     system.recordContribution("builtin.continuity","builtin incompressibility constraint");
     system.recordContribution("builtin.momentum","builtin Momentum equation");
     system.recordContribution("model.rhoConst","constant-density EOS closure");
-    UnknownDescriptor density;
-    density.id = "rho";
-    density.name = "constant density closure";
-    density.role = UnknownRole::Derived;
-    density.storageBinding = StorageBinding::SpecializedExecutor;
-    density.storageKey = "rhoConst";
-    density.constantValue = composition.thermoDynamics.constantDensity;
-    density.runtimeStorageRequired = false;
-    density.boundaryRequired = false;
-    density.restartEligible = false;
-    system.addUnknown(std::move(density));
-    addUnknown(system,"U","velocity",3,UnknownRole::Primary,
-               StorageBinding::PackedDistributed,"velocity",0,"fluid");
-    addUnknown(system,"p","pressure multiplier",1,UnknownRole::Multiplier,
-               StorageBinding::NamedDistributed,"pressure",0,"pressure");
-    auto momentum = Equation::ddt({"U"})
-        + Equation::div({"momentumFlux"});
-    if (includeDiffusion) {
-        momentum = std::move(momentum) + Equation::diffusion({"nu"},{"U"});
-    }
-    addEquation(system,{"E_MOMENTUM","momentum","conservation",{"U"}},
-        Equation::named("E_MOMENTUM",
-            std::move(momentum) == Equation::Symbol{"zero"}));
+    if (includeDiffusion) system.requireState("nu");
+    auto momentumFormula=FormulaExpr::add(
+        FormulaExpr::op("ddt",{FormulaExpr::symbol("U")},"momentum.time"),
+        FormulaExpr::op("div",{FormulaExpr::symbol("momentumFlux")},
+                        "momentum.convection"));
+    if (includeDiffusion)
+        momentumFormula=FormulaExpr::add(std::move(momentumFormula),
+            FormulaExpr::op("diffusion",
+                {FormulaExpr::symbol("nu"),FormulaExpr::symbol("U")},
+                "momentum.diffusion"));
+    system.addEquation({"momentum",std::move(momentumFormula),
+        FormulaExpr::constantValue(0.0),{}});
+    system.addEquation({"continuity",
+        FormulaExpr::op("div",{FormulaExpr::symbol("U")},"continuity.constraint"),
+        FormulaExpr::constantValue(0.0),{}});
+    ExecutionScope call;
+    call.kind=ExecutionKind::EquationCall;
+    call.order=20;
+    call.id="momentum.default";
+    call.step={"momentum",{"U"}};
+    call.origin={OriginKind::BuiltinPreset,"NavierStokes"};
+    system.addExecution(std::move(call));
     system.addConstraint({"C_INCOMPRESSIBILITY","constant-density continuity",
                           "div(U) = 0","p"});
 }
@@ -134,44 +110,38 @@ void addConstantDensityFluid(
 void addPhaseEquationPack(
         SystemCompositionBuilder& system,
         const std::string& phase,
-        std::size_t phaseIndex) {
+        std::size_t phaseIndex, bool reference) {
     const std::string suffix = "."+phase;
     const std::string storage = "phase"+std::to_string(phaseIndex)+".";
-    addUnknown(system,"phaseMass"+suffix,"phase mass "+phase,1,
-               UnknownRole::Transported,StorageBinding::NamedDistributed,
+    addState(system,"phaseMass"+suffix,"phase mass "+phase,1,
+               StateRole::Transported,StorageBinding::ProviderDistributed,
                storage+"mass",0,phase);
-    addUnknown(system,"momentum"+suffix,"phase momentum "+phase,3,
-               UnknownRole::Transported,StorageBinding::NamedDistributed,
+    addState(system,"momentum"+suffix,"phase momentum "+phase,3,
+               StateRole::Transported,StorageBinding::ProviderDistributed,
                storage+"momentum",0,phase);
-    addUnknown(system,"enthalpy"+suffix,"phase total enthalpy "+phase,1,
-               UnknownRole::Transported,StorageBinding::NamedDistributed,
+    addState(system,"enthalpy"+suffix,"phase total enthalpy "+phase,1,
+               StateRole::Transported,StorageBinding::ProviderDistributed,
                storage+"enthalpy",0,phase);
-    addEquation(system,{
-        "E_CONTINUITY"+suffix,"phase continuity "+phase,
-        "conservation",{"phaseMass"+suffix}},
-        Equation::named("E_CONTINUITY"+suffix,
-            Equation::ddt({"phaseMass"+suffix})
-                + Equation::div({"phaseMassFlux"+suffix})
-                == Equation::Symbol{"phaseMassSources"+suffix}));
-    addEquation(system,{
-        "E_MOMENTUM"+suffix,"phase momentum "+phase,
-        "conservation",{"momentum"+suffix}},
-        Equation::named("E_MOMENTUM"+suffix,
-            Equation::ddt({"momentum"+suffix})
-                + Equation::div({"phaseMomentumFlux"+suffix})
-                + Equation::gradient({"alphaPressure"+suffix})
-                + Equation::diffusion(
-                    {"effectivePhaseViscosity"+suffix},{"U"+suffix})
-                == Equation::Symbol{"phaseMomentumSources"+suffix}));
-    addEquation(system,{
-        "E_ENTHALPY"+suffix,"phase enthalpy "+phase,
-        "conservation",{"enthalpy"+suffix}},
-        Equation::named("E_ENTHALPY"+suffix,
-            Equation::ddt({"enthalpy"+suffix})
-                + Equation::div({"phaseEnthalpyFlux"+suffix})
-                + Equation::diffusion(
-                    {"effectivePhaseConductivity"+suffix},{"h"+suffix})
-                == Equation::Symbol{"phaseEnthalpySources"+suffix}));
+    const auto relations=eulerianPhaseRelations(phase,reference);
+    for (std::size_t i=0;i<relations.size();++i) {
+        if (i<3) {
+            EquationDescriptor descriptor{relations[i].id,relations[i].id,"phase transport",
+                {i==0 ? "phaseMass"+suffix : i==1 ? "momentum"+suffix : "enthalpy"+suffix}};
+            descriptor.role=i==0 ? LegacyEquationRole::Mass : i==1 ? LegacyEquationRole::Momentum : LegacyEquationRole::Enthalpy;
+            system.addEquation(std::move(descriptor),eulerianBackendDefinition(relations[i]),relations[i]);
+        } else system.addEquation(relations[i]);
+    }
+    for (const auto& item:std::vector<std::tuple<std::string,std::string,std::string,int>>{
+            {"E_CONTINUITY"+suffix,"phaseMass"+suffix,"EulerianPhaseContinuity",10},
+            {"momentum"+suffix,"momentum"+suffix,"EulerianPhaseMomentum",20},
+            {"E_ENTHALPY"+suffix,"enthalpy"+suffix,"EulerianPhaseEnthalpy",60}}) {
+        ExecutionScope call;call.kind=ExecutionKind::EquationCall;
+        call.order=std::get<3>(item);call.step={std::get<0>(item),{std::get<1>(item)}};
+        call.origin={OriginKind::Model,"Eulerian phase equations"};
+        system.addExecution(std::move(call));
+        system.bindNumerics({std::get<0>(item),std::get<2>(item)});
+    }
+
 }
 
 void addSharedPressureConstraint(SystemCompositionBuilder& system) {
@@ -189,19 +159,26 @@ void addSharedPressureConstraint(SystemCompositionBuilder& system) {
 void addEulerianEulerianTemplate(
         SystemCompositionBuilder& system,
         ResolvedSimulationSystem& resolved,
-        const std::vector<std::string>& names) {
+        const std::vector<std::string>& names,const std::string& referencePhase) {
     if (names.size() < 2) {
         throw std::runtime_error(
             "Resolved Eulerian-Eulerian system requires at least two phases.");
     }
+    if (std::find(names.begin(),names.end(),referencePhase)==names.end())
+        throw std::runtime_error("Eulerian reference phase must be explicitly declared in PhaseSystem.");
     system.recordContribution(
         "preset.eulerianEulerian","Eulerian-Eulerian equation preset");
-    system.recordContribution(
-        "preset.coupling.PIMPLE","PIMPLE shared-pressure preset");
-    addUnknown(system,"p","shared pressure",1,UnknownRole::Algebraic,
-               StorageBinding::NamedDistributed,"pressure",0,"pressure");
+    addState(system,"p","shared pressure",1,StateRole::Algebraic,
+               StorageBinding::ProviderDistributed,"pressure",0,"pressure");
     for (std::size_t phase = 0; phase < names.size(); ++phase) {
-        addPhaseEquationPack(system,names[phase],phase);
+        addPhaseEquationPack(system,names[phase],phase,names[phase]==referencePhase);
+        for (const auto& item:std::vector<std::tuple<std::string,std::string,int>>{
+                {"alpha","alpha",1},{"rho","density",1},{"U","velocity",3},
+                {"h","primitiveEnthalpy",1},{"T","temperature",1}}) {
+            addState(system,std::get<0>(item)+"."+names[phase],"recovered phase state",std::get<2>(item),
+                StateRole::Derived,StorageBinding::ProviderDistributed,
+                "phase"+std::to_string(phase)+"."+std::get<1>(item),0,names[phase]);
+        }
         const std::string prefix = "phase"+std::to_string(phase)+".";
         resolved.runtime.workspaceRequirements.push_back({
             prefix+"momentumDiagonal",1,VariableLocation::EulerianCell,
@@ -216,6 +193,12 @@ void addEulerianEulerianTemplate(
     resolved.runtime.workspaceRequirements.push_back({
         "pressureCorrection",1,VariableLocation::EulerianCell,
         OwnershipKind::EulerianGlobalDof});
+    system.addClosure("pressure reference row: pPrime(referenceCell)=0; homogeneous correction boundary closure follows existing pressure matrix");
+    system.addClosure("referencePhaseRemainder = 1 - sum(non-reference alpha); existing recovery guards and EOS remain unchanged");
+    system.addClosure("sumFaceAlphaSquaredOverDiagonal = sum_phase faceAverage(alpha^2 / momentumDiagonal)");
+    system.addClosure("mixtureCompressibilityOverDt = sum(perfectGas alpha/p) / dt; pressureHistory = sum(perfectGas alpha/p)*(p-pOld)/dt");
+    system.addClosure("effectivePhaseViscosity = alpha*(mu+mu_t); effectivePhaseConductivity = alpha*(k/Cp+eddyEnergyDiffusivity)");
+    system.addClosure("materialPressureRate.phase = (p-pOld)/dt + U.phase dot gradient(p)");
     addSharedPressureConstraint(system);
 }
 

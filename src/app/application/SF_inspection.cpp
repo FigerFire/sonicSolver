@@ -8,8 +8,16 @@
 #include "SF_pressureCoupling.h"
 #include "SF_systemBuilder.h"
 #include "SF_systemValidator.h"
+#include "SF_termProviderCatalog.h"
 #include "app/application/model/SF_model.h"
 #include "app/application/model/SF_runtimeConfig.h"
+#include "models/physics/SF_sourceContribution.h"
+#include "models/physics/gravity/SF_accelerationProvider.h"
+#include "models/physics/mrf/SF_frameProvider.h"
+#include "models/physics/heat/SF_wallFluxProvider.h"
+#include "models/physics/interfaceModel/levelSet/SF_levelSetSystemContribution.h"
+#include "models/ibm/SF_ibmSystemContribution.h"
+#include "models/turbulence/SF_turbulenceSystemContribution.h"
 
 #include <algorithm>
 #include <stdexcept>
@@ -86,14 +94,15 @@ CaseInspection inspectCase(const CaseConfig& config) {
     systemRequest.templateOrigin = resolvePhysics(config);
     systemRequest.phaseNames =
         config.multiPhase.eulerianEulerian.phaseNames;
+    systemRequest.referencePhase = config.multiPhase.eulerianEulerian.referencePhase;
     const bool levelSet = config.multiPhaseEnabled && config.multiPhase.enabled
         && Physics::Multiphase::isLevelSetType(config.multiPhase.type);
     if (levelSet) {
-        systemRequest.levelSet =
-            Physics::InterfaceModels::LevelSetContribution::Spec{
-                Physics::Multiphase::normalizeModelType(
-                    config.multiPhase.levelSet.surfaceTensionModel)
-                    == "ghostfluid"};
+        System::SystemContribution contribution;
+        Physics::InterfaceModels::LevelSetContribution::contribute(
+            contribution,{Physics::Multiphase::normalizeModelType(
+                config.multiPhase.levelSet.surfaceTensionModel)=="ghostfluid"});
+        systemRequest.modelContributions.push_back(std::move(contribution));
     }
     systemRequest.homogeneousThermodynamics =
         config.multiPhaseEnabled && config.multiPhase.enabled
@@ -106,34 +115,27 @@ CaseInspection inspectCase(const CaseConfig& config) {
         systemRequest.legacyMixture
         && config.multiPhase.alpha.transportEnabled;
     if (config.solver.turbulence.enabled) {
-        systemRequest.turbulence = Turbulence::SystemContributionSpec{
+        systemRequest.homogeneousTurbulenceUnsupported =
+            config.solver.turbulence.family != FDM::TurbulenceFamily::DNS;
+        System::SystemContribution contribution;
+        Turbulence::contribute(contribution,Turbulence::SystemContributionSpec{
             turbulenceName(config.solver.turbulence.model),
             config.solver.turbulence.phaseNames,
             systemRequest.templateOrigin
-                == System::PhysicsTemplateKind::EulerianEulerian};
+                == System::PhysicsTemplateKind::EulerianEulerian});
+        systemRequest.modelContributions.push_back(std::move(contribution));
     }
+    systemRequest.modelRequiresDiffusion =
+        config.solver.turbulence.enabled || systemRequest.legacyMixture
+        || levelSet;
     const bool fluidDiffusion = config.solver.numerics.viscousEnabled
-        || systemRequest.turbulence || systemRequest.legacyMixture
-        || systemRequest.levelSet;
-    const bool semanticEnergy = config.composition.declared
-        && std::find(config.composition.equations.begin(),
-                     config.composition.equations.end(),"Energy")
-            != config.composition.equations.end();
-    // Legacy `type: densityBase|pressureBase` 只在 composition root 被翻译成
-    // 显式 equation request；runtime 不再看到 family 标签。
-    const bool pressureConstraintRequested =
-        config.compatFlowLabel == "pressureBase"
-        && !config.composition.declared
-        && systemRequest.templateOrigin
-            == System::PhysicsTemplateKind::SingleFluid;
-    if (pressureConstraintRequested) {
-        systemRequest.pressureConstraint =
-            System::PressureConstraintSpec{fluidDiffusion};
-    } else if (systemRequest.templateOrigin
-                   == System::PhysicsTemplateKind::SingleFluid
-               && (!config.composition.declared || semanticEnergy)) {
-        systemRequest.singleFluidPreset =
-            System::SingleFluidPresetSpec{fluidDiffusion};
+        || systemRequest.modelRequiresDiffusion;
+    if (systemRequest.templateOrigin==System::PhysicsTemplateKind::SingleFluid
+        && !config.composition.declared) {
+        if (config.composition.compatibilityPressureConstraint)
+            systemRequest.pressureConstraint=System::PressureConstraintSpec{fluidDiffusion};
+        else
+            systemRequest.singleFluidPreset=System::SingleFluidPresetSpec{fluidDiffusion};
     }
     if (config.pressureCouplingDeclared) {
         // 显式注册的 coupling preset：是否生效由 resolved equation system
@@ -145,12 +147,47 @@ CaseInspection inspectCase(const CaseConfig& config) {
     // host backend 能力来自真实链接的 backend，而不是 SystemBuilder 的假设。
     systemRequest.capabilities = detectBuildCapabilities();
     systemRequest.composition = config.composition;
+    {
+        System::SystemContribution contribution;
+        Physics::SourceContribution::contribute(
+            contribution,config.solver.sources);
+        systemRequest.modelContributions.insert(
+            systemRequest.modelContributions.begin(),std::move(contribution));
+    }
     if (result.ibm.enabled) {
         immersedDescriptor = result.ibm.method == FDM::IBMMethod::Ghost
             ? IBM::Descriptor::ghostCell()
             : IBM::Descriptor::variational(result.ibm.forcing);
-        systemRequest.immersed = &immersedDescriptor;
+        if (systemRequest.templateOrigin
+            == System::PhysicsTemplateKind::EulerianEulerian) {
+            systemRequest.unsupportedCompositionReason =
+                immersedDescriptor.enforcement==FDM::IBMEnforcement::GhostCell
+                    ? "Eulerian multiphase + Ghost IBM is unsupported: "
+                      "phase-wise ghost-state boundary closure is unavailable."
+                    : "Eulerian multiphase IBM constraint exists, but required "
+                      "phase-wise IBM fluid-port assembly is unavailable.";
+        }
+        System::SystemContribution contribution;
+        IBM::SystemContribution::contribute(contribution,immersedDescriptor);
+        systemRequest.modelContributions.push_back(std::move(contribution));
     }
+    systemRequest.additionalExecutionContributions = result.ibm.enabled
+        || config.solver.turbulence.enabled || levelSet
+        || systemRequest.legacyMixture
+        || systemRequest.homogeneousThermodynamics
+        || systemRequest.phaseChange
+        || systemRequest.transportedLegacyAlpha;
+    systemRequest.phaseChangeExecutionAvailable =
+        !(systemRequest.phaseChange
+          && (levelSet || systemRequest.legacyMixture));
+    for (auto descriptor:Physics::Gravity::termProviders(
+             config.solver.sources.gravity))
+        systemRequest.termProviders.push_back(std::move(descriptor));
+    for (auto descriptor:Physics::MRF::termProviders(
+             config.solver.sources.rotating))
+        systemRequest.termProviders.push_back(std::move(descriptor));
+    systemRequest.termProviders.push_back(
+        Physics::WallHeat::termProvider(config.solver.sources.wallHeat));
     result.ibmExplain = IBM::explainSnapshot(immersedDescriptor);
     result.system = System::build(config.solver, systemRequest);
     System::validate(result.system);

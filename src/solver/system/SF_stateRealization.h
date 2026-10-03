@@ -1,21 +1,11 @@
 #pragma once
 
 /// @file SF_stateRealization.h
-/// @brief STATE REALIZATION（编译期）— 由 executable equation system 的
-///        unknown/constraint role 导出的求解状态语义。
-///
-/// 它回答：
-///   - 哪些未知量是 transported conservative state？
-///   - 哪些是 derived closure（例如 rho = rho0）？
-///   - 哪些是 multiplier（例如 p 施加 div(U)=0）？
-///   - 每个 role group 的 storage/index binding 是什么？
-///
-/// 它不回答 runtime topology（rank/patch/field pointer）；那些属于
-/// `System::StateRealization`（realizeState）与 ExecutionEnvironment。
-/// 关键不变量：这里没有任何 solver family 开关。同一条 executable system
-/// 永远导出同一份 realization。
+/// @brief STATE compiler output: base roles/storage and lazy semantic views.
+/// Role summaries are reporting/backend capability data; they never schedule HOW.
 
 #include "core/system/SF_equationIR.h"
+#include "core/system/SF_solveProgram.h"
 
 #include <string>
 #include <vector>
@@ -25,7 +15,7 @@ namespace SF::System {
 /// @brief 一个 role group 的编译期视图。
 struct RealizedRoleGroup {
     std::string id;
-    UnknownRole role = UnknownRole::Primary;
+    StateRole role = StateRole::Primary;
     int components = 1;
     std::string storageKey;
     int componentOffset = 0;
@@ -33,7 +23,7 @@ struct RealizedRoleGroup {
     std::string nameSpace;
 };
 
-/// @brief ExecutableEquationSystem 导出的 state realization。
+/// @brief STATE specification 导出的角色摘要。
 struct CompiledStateRealization {
     /// @brief rho/rhoU/rhoE 之类的守恒量被 transported（density formulation）。
     bool conservativeTransportedMass = false;
@@ -60,8 +50,14 @@ struct CompiledStateRealization {
     }
 };
 
-/// @brief 从 executable equation system 导出 state realization。
+/// @brief 从 STATE specification 与已声明约束导出角色摘要。
 CompiledStateRealization compileStateRealization(
-    const ExecutableEquationSystem& system);
+    const StateRegistry& state,const std::vector<ConstraintDescriptor>& constraints);
+
+/// @brief Generic state binding; providers may demand backend-owned storage only.
+CompiledStateView realizeTarget(const StateRegistry& state,CompiledTarget& target);
+/// @brief Temporal methods request versions without changing source HOW ordering.
+void realizeTemporalViews(const StateRegistry& state,CompiledExecutionProgram& program,
+    int stages);
 
 } // namespace SF::System

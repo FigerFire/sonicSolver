@@ -3,15 +3,7 @@ SonicFile:
   object: solver
   type: algorithm
 type: densityBase
-algorithm: PIMPLE
-PIMPLE:
-  nOuterCorrectors: 1
-  nCorrectors: 1
-  nNonOrthogonalCorrectors: 0
-  momentumRelaxation: 0.1
-  pressureRelaxation: 0.001
-  referenceCell: 0
-  referencePressure: 101325.0
+# No pressure coupling preset: this equation system has no pressure constraint.
 linearSolvers:
   pressure:
     backend: hypre

@@ -42,13 +42,13 @@ struct StateBundle {
             if (stateModel && patch->stateModel()
                 && patch->stateModel() != stateModel) {
                 throw std::runtime_error(
-                    "StateBundle equation binding differs from a participating Field.");
+                    "StateBundle thermodynamic closure differs from a participating Field.");
             }
         }
     }
 
-    /// @brief 验证 density-based timestep 的唯一热力学 binding。
-    void validateDensityEquationBinding() const {
+    /// @brief 验证各 patch 与状态包引用同一个热力学 closure。
+    void validateThermodynamicBinding() const {
         validatePatches();
         if (!stateModel) {
             throw std::runtime_error(

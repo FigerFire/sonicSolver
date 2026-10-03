@@ -7,10 +7,13 @@
 #include "SF_field.h"
 #include "core/interfaces/SF_executionRuntime.h"
 #include "core/interfaces/SF_equationCoupling.h"
+#include "core/state/SF_distributedField.h"
 #include "solver/linearAlgebra/SF_linearAlgebra.h"
 
 #include <functional>
 #include <memory>
+
+namespace SF::System { class StateRealization; }
 
 namespace SF::PressureBased {
 
@@ -51,6 +54,9 @@ public:
     CorrectionSummary correct(Field& field, double dt);
     CorrectionSummary correct(const std::vector<Field*>& fields, double dt);
 
+    /// Aliases the existing correction/prepared-pressure arrays; owns no second Q.
+    void bindStateViews(System::StateRealization& state,Field& geometry);
+
     /// @brief Typed operations used by the structured PISO plan.
     void assemble(const std::vector<Field*>& fields, double dt);
     void solve();
@@ -71,6 +77,7 @@ private:
     InterfaceJumpProvider interfaceJumpProvider_;
     struct Workspace;
     std::unique_ptr<Workspace> workspace_;
+    State::DistributedFieldView correctionView_,preparedPressureView_,fluxValidityView_;
 };
 
 } // namespace SF::PressureBased

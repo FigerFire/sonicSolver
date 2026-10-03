@@ -1,0 +1,8 @@
+SonicFile:
+  object: models
+  type: thermoDynamics
+thermoDynamics:
+  equationOfState: perfectGas
+  thermo: hConst
+  transport: const
+properties: {}

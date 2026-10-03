@@ -190,6 +190,9 @@ IO::IORegistry nativeRegistry() {
     registry.add("equations","registry",[](IO::LoadContext& context,const Sonic& document) {
         addObject(context.model,{"equations","equations","equationRegistry",{},document.body,{}},document.source);
     });
+    registry.add("state","registry",[](IO::LoadContext& context,const Sonic& document) {
+        addObject(context.model,{"state","state","stateRegistry",{},document.body,{}},document.source);
+    });
     registry.add("algorithms","registry",[](IO::LoadContext& context,const Sonic& document) {
         addObject(context.model,{"algorithms","algorithms","algorithmRegistry",{},document.body,{}},document.source);
     });
@@ -259,6 +262,9 @@ Model::Description read(const std::string& path) {
     if (fs::exists(directory/"algorithms/algorithms.yaml")) {
         dispatch("algorithms/algorithms.yaml","","algorithms","registry","");
     }
+    if (fs::exists(directory/"state/state.yaml")) {
+        dispatch("state/state.yaml","","state","registry","");
+    }
     dispatch("models/models.yaml","","models","registry","");
     return model;
 }
@@ -300,6 +306,11 @@ void write(const Model::Description& model,const std::string& directory) {
     P modelRegistry=P::object();
     std::set<std::string> usedSolverNames,usedModelNames;
     for(const auto& object:model.objects) {
+        if (object.type=="stateRegistry" || object.type=="equationRegistry" || object.type=="algorithmRegistry") {
+            const std::string category=object.type=="stateRegistry"?"state":object.type=="equationRegistry"?"equations":"algorithms";
+            writeFile(category+"/"+category+".yaml",category,"registry",object.parameters);
+            continue;
+        }
         const auto type=semanticType(object.type);
         const bool solver=solverModule(object);
         auto& used=solver?usedSolverNames:usedModelNames;

@@ -48,6 +48,12 @@ struct EquationSystemInstanceConfig {
 
 struct EquationCompositionConfig {
     bool declared = false;
+    /// Solution membership is independent of mathematical role and dependency activation.
+    bool stateDeclared = false;
+    std::vector<std::string> solutionVariables;
+    std::string stateSelectionOrigin;
+    /// Compatibility adapters lower old equation-source requests once, before composition.
+    bool compatibilityPressureConstraint = false;
     std::vector<std::string> equations;
     ThermoDynamicsSelection thermoDynamics;
     std::string algorithm;

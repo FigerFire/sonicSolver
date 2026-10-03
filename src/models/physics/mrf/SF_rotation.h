@@ -38,6 +38,17 @@ inline Vector3 rotatingFrameAcceleration(const Field& field, int i, int j, int k
          + centrifugalAcceleration(radius, omegaVector);
 }
 
+inline Vector3 rotatingFrameAcceleration(const Vector3& position,
+                                         const Vector3& velocity,
+                                         const Vector3& origin,
+                                         const Vector3& omegaVector,
+                                         const Vector3& frameVelocity) {
+    const Vector3 radius=position-origin;
+    const Vector3 velocityRelative=velocity-frameVelocity;
+    return coriolisAcceleration(velocityRelative,omegaVector)
+         + centrifugalAcceleration(radius,omegaVector);
+}
+
 inline void addRotatingFrame(Field& field, Residual& residual,
                              int i, int j, int k,
                              const Vector3& origin,

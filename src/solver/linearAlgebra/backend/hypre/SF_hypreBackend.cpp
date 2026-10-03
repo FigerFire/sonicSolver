@@ -307,7 +307,9 @@ struct HypreSolverSession::Impl {
         const bool ownsWholeSystem =
             system.firstRow == 0
             && system.lastRow + 1 == system.globalSize;
-        if (ownsWholeSystem) {
+        int globallyZeroGuess = zeroInitialGuess ? 1 : 0;
+        MPI_Allreduce(MPI_IN_PLACE,&globallyZeroGuess,1,MPI_INT,MPI_MIN,MPI_COMM_WORLD);
+        if (ownsWholeSystem || globallyZeroGuess) {
             const size_t count = system.rhs.size();
             std::vector<double> guess(count, 0.0);
             if (!system.initialGuess.empty()) guess = system.initialGuess;
@@ -317,13 +319,19 @@ struct HypreSolverSession::Impl {
                 double product = 0.0;
                 const SparseRow& row = system.rows[local];
                 for (size_t entry = 0;
-                     entry < row.columns.size(); ++entry) {
+                     !globallyZeroGuess && entry < row.columns.size(); ++entry) {
                     product += row.values[entry]
                         * guess[(size_t)row.columns[entry]];
                 }
                 const double residual = product - system.rhs[local];
                 residualSquared += residual * residual;
                 rhsSquared += system.rhs[local] * system.rhs[local];
+            }
+            if (!ownsWholeSystem) {
+                double sums[2]{residualSquared,rhsSquared};
+                MPI_Allreduce(MPI_IN_PLACE,sums,2,MPI_DOUBLE,MPI_SUM,MPI_COMM_WORLD);
+                residualSquared=sums[0];
+                rhsSquared=sums[1];
             }
             const double residualNorm = std::sqrt(residualSquared);
             const double rhsNorm = std::sqrt(rhsSquared);
@@ -332,8 +340,8 @@ struct HypreSolverSession::Impl {
             const bool relativeConverged = rhsNorm > 0.0
                 && residualNorm / rhsNorm <= config.relativeTolerance;
             if (absoluteConverged || relativeConverged) {
-                // 串行全局矩阵下可直接计算真实初始残差；满足用户配置
-                // 容差时返回初值，避免HYPRE对极小非零RHS报告伪失败。
+                // 完整串行矩阵或全局零初值可直接计算真实初始残差。
+                // 所有 rank 使用同一用户容差和全局范数决定是否返回。
                 SolveResult result;
                 result.solution = std::move(guess);
                 result.iterations = 0;

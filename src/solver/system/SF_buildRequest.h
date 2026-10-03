@@ -5,17 +5,15 @@
 
 #include "SF_physicsTemplate.h"
 #include "SF_couplingStatus.h"
+#include "SF_termProviderCatalog.h"
 #include "core/system/SF_equationIR.h"
+#include "core/system/SF_systemContribution.h"
 #include "core/config/SF_equationComposition.h"
 #include "core/interfaces/SF_buildCapabilities.h"
-#include "models/physics/interfaceModel/levelSet/SF_levelSetSystemContribution.h"
-#include "models/turbulence/SF_turbulenceSystemContribution.h"
 
 #include <optional>
 #include <string>
 #include <vector>
-
-namespace SF::FDM { struct ImmersedAlgorithmDescriptor; }
 
 namespace SF::System {
 
@@ -40,12 +38,16 @@ struct BuildRequest {
     std::optional<SingleFluidPresetSpec> singleFluidPreset;
     std::optional<PressureConstraintSpec> pressureConstraint;
     std::vector<std::string> phaseNames;
-    std::optional<Physics::InterfaceModels::LevelSetContribution::Spec> levelSet;
+    std::string referencePhase; ///< Explicit volume-fraction closure continuum.
     bool homogeneousThermodynamics = false;
     bool legacyMixture = false;
     bool phaseChange = false;
     bool transportedLegacyAlpha = false;
-    std::optional<Turbulence::SystemContributionSpec> turbulence;
+    bool modelRequiresDiffusion = false;
+    bool additionalExecutionContributions = false;
+    bool homogeneousTurbulenceUnsupported = false;
+    bool phaseChangeExecutionAvailable = true;
+    std::string unsupportedCompositionReason;
     /// @brief 显式注册的压力耦合 preset；生效与否由 resolved equation system
     ///        决定（active/inactive/invalid/unsupported），不做静默忽略。
     std::optional<CouplingPresetRequest> coupling;
@@ -57,6 +59,9 @@ struct BuildRequest {
     /// 当前只有 add/extend 有 typed lowering；replace/disable 会显式 fail-fast，
     /// 不允许同名后写覆盖前写，也不允许静默忽略。
     std::vector<SystemModification> userModifications;
+    /// @brief Typed C++ contributions run after built-in/model contributions.
+    std::vector<SystemContribution> modelContributions;
+    std::vector<SystemContribution> userContributions;
     bool parallel = false;
     /// @brief 本 binary 真实提供的 backend 能力；由 composition root 填入。
     ///
@@ -65,7 +70,10 @@ struct BuildRequest {
     /// 而不是静默假设 backend 存在。
     BuildCapabilities capabilities;
     EquationCompositionConfig composition;
-    const FDM::ImmersedAlgorithmDescriptor* immersed = nullptr;
+    /// @brief Model/user provider values; generic numerical providers are added by build.
+    std::vector<SourceTermProviderDescriptor> termProviders;
+    /// @brief Equation occurrence numerical overrides; consumed during compilation.
+    std::vector<FormulaOperatorBinding> operatorBindings;
 };
 
 } // namespace SF::System

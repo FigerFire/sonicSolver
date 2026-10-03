@@ -13,6 +13,7 @@
 #include "infrastructure/io/case/SF_case.h"
 #include "core/config/SF_runControl.h"
 
+#include <chrono>
 #include <cstdlib>
 #include <filesystem>
 #include <iostream>
@@ -88,6 +89,35 @@ int main() {
             "native mesh file registry was not projected onto CaseConfig");
     require(config.caseName == "sodCase_weno7_t0p2",
             "native case identity was not projected onto CaseConfig");
+
+    require(config.composition.stateDeclared
+        && config.composition.solutionVariables==std::vector<std::string>{"rho","rhoU","rhoE"}
+        && config.composition.algorithm=="Explicit",
+        "Native WHAT/STATE/HOW declarations were replaced by compatibility inference");
+    auto withoutState=description;
+    withoutState.objects.erase(std::remove_if(withoutState.objects.begin(),withoutState.objects.end(),
+        [](const auto& object) { return object.type=="stateRegistry"; }),withoutState.objects.end());
+    bool missingStateRejected=false;
+    try { (void)SF::CaseAdapter(caseDir.string()).build(withoutState); }
+    catch (const std::runtime_error& error) {
+        missingStateRejected=std::string(error.what()).find("explicit solution STATE")!=std::string::npos;
+    }
+    require(missingStateRejected,"A native EOS or legacy label silently supplied missing STATE");
+    const auto roundTrip=std::filesystem::temp_directory_path()/
+        ("sonic-explicit-state-io-"+std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    SF::CaseIO::write(description,roundTrip.string());
+    const auto reread=SF::CaseIO::read(roundTrip.string());
+    for (const auto* type:{"stateRegistry","equationRegistry","algorithmRegistry"}) {
+        const auto find=[&](const auto& model) {
+            return std::find_if(model.objects.begin(),model.objects.end(),
+                [&](const auto& object) { return object.type==type; });
+        };
+        const auto before=find(description),after=find(reread);
+        require(before!=description.objects.end() && after!=reread.objects.end()
+            && before->parameters==after->parameters,
+            std::string("Native registry round trip changed ")+type);
+    }
+    std::filesystem::remove_all(roundTrip);
 
     std::cout << "typed native IO produced CaseConfig without a Foam document\n";
     return 0;

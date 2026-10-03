@@ -91,7 +91,7 @@ MeshRuntimeConfig makeMeshRuntimeConfig(
                    solverConfig.turbulence.scalars.omegaInitial);
     appendSetNames(config.configuredSetNames, solverConfig.boundaries.velocity);
     appendSetNames(config.configuredSetNames,
-                   solverConfig.boundaries.energyFromPressure);
+                   solverConfig.boundaries.pressure);
     appendSetNames(config.configuredSetNames, solverConfig.boundaries.density);
     for (const auto& setting : solverConfig.boundaries.thermal) {
         appendSetName(config.configuredSetNames, setting.name);
@@ -107,7 +107,7 @@ MeshRuntimeConfig makeMeshRuntimeConfig(
     appendSetNames(config.physicalBoundaryNames,
                    solverConfig.boundaries.velocity);
     appendSetNames(config.physicalBoundaryNames,
-                   solverConfig.boundaries.energyFromPressure);
+                   solverConfig.boundaries.pressure);
     for (const auto& setting : solverConfig.boundaries.thermal) {
         appendSetName(config.physicalBoundaryNames, setting.name);
     }

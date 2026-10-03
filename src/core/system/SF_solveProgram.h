@@ -1,16 +1,135 @@
 #pragma once
 
 /// @file SF_solveProgram.h
-/// @brief ORDER — execution policies、solve blocks 与结构化 control-flow IR。
+/// @brief HOW — ordered equation occurrences and generic scope IR; frozen plan lowering.
 ///        执行顺序只来自 CompiledSolvePlan 的 root。
 
 #include "core/system/SF_equationIR.h"
 #include "core/interfaces/SF_solveStrategy.h"
+#include "core/config/types/SF_timeRecipe.h"
+#include "core/system/SF_numericalBinding.h"
+#include "core/system/SF_stateViews.h"
 
+#include <algorithm>
 #include <string>
 #include <vector>
+#include <initializer_list>
+#include <optional>
 
 namespace SF::System {
+
+/// @brief Typed execution storage; qualifiers do not prescribe time discretization.
+enum class TargetKind { Physical, Working, Correction, Workspace };
+using EquationRef = std::string;
+using Order = int;
+
+/// Source HOW contains semantics only; providers realize storage downstream.
+struct Target {
+    std::string symbol;
+    TargetKind kind = TargetKind::Physical;
+};
+
+inline std::string targetText(const Target& target) {
+    return target.symbol + (target.kind==TargetKind::Working ? "*"
+        : target.kind==TargetKind::Correction ? "'" : "");
+}
+
+/// Parse source notation before compilation; kernels receive only typed targets.
+inline Target targetFromSyntax(std::string symbol) {
+    Target target{std::move(symbol)};
+    if (!target.symbol.empty() && (target.symbol.back()=='*' || target.symbol.back()=='\'')) {
+        target.kind=target.symbol.back()=='*' ? TargetKind::Working : TargetKind::Correction;
+        target.symbol.pop_back();
+    }
+    return target;
+}
+
+struct CompiledTarget {
+    std::string symbol;
+    TargetKind kind = TargetKind::Physical;
+    std::string workspace;
+    VariableLocation workspaceLocation=VariableLocation::EulerianCell;
+    OwnershipKind workspaceOwnership=OwnershipKind::EulerianGlobalDof;
+    StateViewOwner viewOwner=StateViewOwner::CompilerWorkspace;
+    std::vector<CompiledResourceBinding> resources;
+};
+
+/// One occurrence references one mathematical definition and a semantic output.
+struct EquationCall {
+    EquationRef equation;
+    Target target;
+    std::string occurrence;
+};
+
+enum class ExecutionKind { Sequence, EquationCall, Loop, StageLoop, Commit };
+
+struct ExecutionScope {
+    ExecutionKind kind = ExecutionKind::Sequence;
+    std::string id;
+    EquationCall step;
+    std::vector<ExecutionScope> children;
+    Order order = 0;
+    Provenance origin;
+    int repetitions = 1;
+    int minimumIterations = 1;
+    std::string terminationSignal;
+};
+
+struct ExecutionProgram {
+    /// Root is the single source execution authority; legacy entries are explicit migration debt.
+    ExecutionScope root;
+    std::vector<ExecutionScope> legacyEntries;
+    ExecutionProgram() = default;
+    ExecutionProgram(std::initializer_list<EquationCall> legacySteps)
+    {
+        for (const auto& call:legacySteps) {
+            ExecutionScope node;
+            node.kind=ExecutionKind::EquationCall;
+            node.step=call;
+            root.children.push_back(std::move(node));
+        }
+    }
+};
+
+inline const char* toString(ExecutionKind value) {
+    switch (value) {
+        case ExecutionKind::Sequence: return "Sequence";
+        case ExecutionKind::EquationCall: return "EquationCall";
+        case ExecutionKind::Loop: return "Loop";
+        case ExecutionKind::StageLoop: return "StageLoop";
+        case ExecutionKind::Commit: return "Commit";
+    }
+    return "UnknownExecutionNode";
+}
+
+/// @brief Insertion order breaks ties, independently within every nested scope.
+inline void orderExecution(ExecutionScope& scope) {
+    std::stable_sort(scope.children.begin(),scope.children.end(),
+        [](const ExecutionScope& a,const ExecutionScope& b) { return a.order < b.order; });
+    for (std::size_t i=0;i<scope.children.size();++i) {
+        auto& child=scope.children[i];
+        const auto address=scope.id+"/"+std::to_string(i);
+        if (child.id.empty()) child.id=address;
+        if (child.kind==ExecutionKind::EquationCall && child.step.occurrence.empty())
+            child.step.occurrence=address;
+        orderExecution(child);
+    }
+}
+
+/// @brief A compiled reference to WHAT and its explicit HOW output. The
+/// selected EquationMethod, never a second mode flag, owns realization.
+struct CompiledMathRef {
+    EquationRef equation;
+    std::string target;
+};
+
+enum class LegacyExecutionPolicyKind {
+    SegregatedPressureCorrection,
+    PressureVelocityFixedPoint,
+    ConstraintProjection,
+    MonolithicKKT,
+    BoundaryClosure
+};
 
 /// @brief Explain/capability 使用的 typed solve-block view；执行顺序只来自 Plan root。
 struct SolveBlock {
@@ -21,6 +140,7 @@ struct SolveBlock {
     std::vector<std::string> constraints;
     std::vector<std::string> unknowns;
     FDM::SolveStrategyKind strategyKind = FDM::SolveStrategyKind::AlgebraicUpdate;
+    LegacyExecutionPolicyKind policyKind = LegacyExecutionPolicyKind::BoundaryClosure;
 };
 
 enum class PlanNodeKind {
@@ -41,20 +161,13 @@ enum class PlanNodeKind {
 
 /// @brief Open operation identifier resolved by Run::OpRegistry at runtime.
 using OpId = std::string;
-
-enum class ExecutionPolicyKind {
-    SegregatedPressureCorrection,
-    PressureVelocityFixedPoint,
-    ConstraintProjection,
-    MonolithicKKT,
-    BoundaryClosure
-};
+using LoopSignalId = std::string;
 
 /// @brief Transformation/preset 对 solve planning 的输入，不含 runtime objects。
-struct ExecutionPolicy {
+struct LegacyExecutionPolicy {
     std::string id;
     std::string name;
-    ExecutionPolicyKind kind = ExecutionPolicyKind::BoundaryClosure;
+    LegacyExecutionPolicyKind kind = LegacyExecutionPolicyKind::BoundaryClosure;
     std::string strategyName;
     FDM::SolveStrategyKind strategyKind =
         FDM::SolveStrategyKind::AlgebraicUpdate;
@@ -81,26 +194,88 @@ struct SolvePlanNode {
     int repetitions = 1;
     std::vector<SolvePlanNode> children;
     std::string unsupportedReason;
+    /// @brief Optional generic signal checked after each complete Loop body.
+    LoopSignalId terminationSignal;
+    int minimumIterations = 1;
+    /// @brief Frozen mathematical calls consumed by this leaf's numerical
+    /// provider; an optimized leaf may execute several calls as one kernel.
+    std::vector<CompiledMathRef> equationCalls;
+    std::optional<CompiledTarget> target;
+    std::string occurrence;
+    /// Final implementation identity from WHICH; runtime only looks it up.
+    std::string provider;
+    /// Only explicitly lowered compatibility leaves may use the legacy adapter.
+    bool legacyAdapter = false;
+};
+
+struct CompiledEquationCall {
+    EquationCall source;
+    CompiledTarget target;
+    bool spatialTerms = false;
+    bool primitiveSourceRequired = false;
+    std::string residualWorkspace;
+    std::vector<ExecutableOperation> operations;
+    std::vector<FDM::TimeRecipeId> temporalCapabilities;
+    std::string equationMethod;
+    bool temporalResidual = false;
+    /// @brief WHICH declares temporal storage; STATE does not select a time backend.
+    std::string oldTimeWorkspace;
+    std::string stageWorkspace;
+    bool publishesStageToPhysicalTarget=false;
+    std::vector<CompiledMathRef> calls;
+    std::vector<std::string> reads;
+    std::vector<std::string> writes;
+    std::vector<std::string> sourceMathInputs;
+    std::vector<std::string> requirements;
+    std::vector<std::string> operatorBindings;
+    std::vector<std::string> workspaceRequires;
+    std::vector<std::string> workspaceProvides;
+    /// Method-owned numerical micro-topology. A nonempty fragment supersedes
+    /// the compatibility backendOperation leaf.
+    SolvePlanNode fragment;
+    std::string backendOperation;
+    std::string backendProvider;
+    std::string temporalMethod;
+    /// Explicit local fusion contract; a shared backend/provider alone never fuses calls.
+    std::string fusionKey;
+    std::vector<CompiledMathRef> fusionMembers;
+};
+
+struct CompiledExecutionProgram {
+    /// @brief STATE views resolved from HOW targets and WHICH temporal demands.
+    std::vector<CompiledStateView> stateViews;
+    ExecutionScope root;
+    std::vector<CompiledEquationCall> steps;
+    /// Explicit legacy numerical inputs; never inferred by the generic compiler.
+    std::vector<CompiledMathRef> legacySpatialInputs;
+    /// The selected TemporalMethod, rather than SolvePlanner, owns this
+    /// numerical stage topology for a transient equation body.
+    SolvePlanNode temporalRoot;
+    bool hasTemporalRoot = false;
+    /// Provider lifecycle decorates compiled scopes, never source HOW.
+    SolvePlanNode loweredRoot;
 };
 
 /// @brief SolvePlanner 的冻结输出。它只描述执行控制流，不选择 runtime backend。
 struct CompiledSolvePlan {
     SolvePlanNode root;
     std::vector<SolveBlock> blocks;
+    ExecutionProgram sourceProgram;
+    CompiledExecutionProgram compiledProgram;
 };
 
 /// @brief ORDER/IR 枚举的稳定字符串；header-only，使 run/plan-IR consumers
 ///        （例如 PlanExecutor）不依赖 system 编译单元。
-inline const char* toString(ExecutionPolicyKind value) {
+inline const char* toString(LegacyExecutionPolicyKind value) {
     switch (value) {
-        case ExecutionPolicyKind::SegregatedPressureCorrection:
+        case LegacyExecutionPolicyKind::SegregatedPressureCorrection:
             return "segregated-pressure-correction";
-        case ExecutionPolicyKind::PressureVelocityFixedPoint:
+        case LegacyExecutionPolicyKind::PressureVelocityFixedPoint:
             return "pressure-velocity-fixed-point";
-        case ExecutionPolicyKind::ConstraintProjection:
+        case LegacyExecutionPolicyKind::ConstraintProjection:
             return "constraint-projection";
-        case ExecutionPolicyKind::MonolithicKKT: return "monolithic-kkt";
-        case ExecutionPolicyKind::BoundaryClosure: return "boundary-closure";
+        case LegacyExecutionPolicyKind::MonolithicKKT: return "monolithic-kkt";
+        case LegacyExecutionPolicyKind::BoundaryClosure: return "boundary-closure";
     }
     return "unknown-execution-policy";
 }

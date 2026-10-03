@@ -15,6 +15,7 @@
 #include "SF_field.h"
 #include "SF_config.h"
 #include "core/interfaces/SF_transportModel.h"
+#include "core/state/SF_distributedField.h"
 
 #include <memory>
 #include <string>
@@ -251,6 +252,9 @@ public:
     std::vector<std::string> distributedReadFields() const override;
     std::vector<std::string> distributedWriteFields() const override;
     int distributedHaloDepth() const override;
+    /// @brief Publish non-owning views of the existing Manager arrays; no second storage.
+    void registerDistributed(State::DistributedFieldRegistry& registry,
+                             int blockId, Field& geometry);
 
     /// @brief 只读访问湍流标量场，用于诊断和VTK输出。
     /// @return 当前模型自管的 k / epsilon / omega / mu_t 标量缓存。

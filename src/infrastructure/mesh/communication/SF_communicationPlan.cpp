@@ -1600,10 +1600,9 @@ static void finalizePlanInteriorIndices(
                     if (start < 0 || size <= 0 ||
                         size > kMaxHaloInterpolationStencil ||
                         start + size > axisSize) {
-                        broadcast("Fatal: ",
-                                  "haloExchange tensor interpolation stencil "
-                                  "is invalid during plan finalization.");
-                        std::exit(1);
+                        throw std::runtime_error(
+                            "haloExchange tensor interpolation stencil "
+                            "is invalid during plan finalization.");
                     }
                 }
             }

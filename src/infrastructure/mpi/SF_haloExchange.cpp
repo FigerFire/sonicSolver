@@ -235,10 +235,8 @@ static void requireScalarCompatible(const Field& field,
                                     const std::vector<double>& values,
                                     const char* context) {
     if ((int)values.size() != field.TotalSize()) {
-        broadcast("Fatal: ",
-                  std::string(context)
-                  + ": scalar value count does not match Field::TotalSize.");
-        std::exit(1);
+        throw std::runtime_error(std::string(context)
+            + ": scalar value count does not match Field::TotalSize.");
     }
 }
 
@@ -259,9 +257,8 @@ static std::vector<double> packInteriorScalar(
                 const int id = field.getIdx(i, j, k);
                 const double value = values[(size_t)id];
                 if (!std::isfinite(value)) {
-                    broadcast("Fatal: ",
-                              "haloExchange scalar pack found non-finite value.");
-                    std::exit(1);
+                    throw std::runtime_error(
+                        "haloExchange scalar pack found non-finite value.");
                 }
                 buffer[p++] = value;
             }
@@ -354,9 +351,8 @@ static void ownerCopyScalarInterfaceSyncGroups(
         if (participates && !participates(group)) continue;
         if (group.points.empty() || group.canonicalOwner < 0 ||
             group.canonicalOwner >= (int)group.points.size()) {
-            broadcast("Fatal: ",
-                      "GlobalDof scalar copy has no valid canonical owner.");
-            std::exit(1);
+            throw std::runtime_error(
+                "GlobalDof scalar copy has no valid canonical owner.");
         }
         const HaloInterfacePoint& owner =
             group.points[(size_t)group.canonicalOwner];
@@ -364,15 +360,13 @@ static void ownerCopyScalarInterfaceSyncGroups(
         if (!pointDataOffset(owner.blockId,
                              owner.interiorIndex,
                              ownerOffset)) {
-            broadcast("Fatal: ",
-                      "GlobalDof scalar owner is absent from the exchanged payload.");
-            std::exit(1);
+            throw std::runtime_error(
+                "GlobalDof scalar owner is absent from the exchanged payload.");
         }
         const double reference = allData[ownerOffset];
         if (!std::isfinite(reference)) {
-            broadcast("Fatal: ",
-                      "GlobalDof scalar owner produced a non-finite value.");
-            std::exit(1);
+            throw std::runtime_error(
+                "GlobalDof scalar owner produced a non-finite value.");
         }
 
         for (const HaloInterfacePoint& point : group.points) {
@@ -380,9 +374,8 @@ static void ownerCopyScalarInterfaceSyncGroups(
             if (!pointDataOffset(point.blockId,
                                  point.interiorIndex,
                                  offset)) {
-                broadcast("Fatal: ",
-                          "GlobalDof scalar replica is absent from the exchanged payload.");
-                std::exit(1);
+                throw std::runtime_error(
+                    "GlobalDof scalar replica is absent from the exchanged payload.");
             }
             allData[offset] = reference;
             localWriter(point.blockId, point.interiorIndex, reference);
@@ -432,9 +425,8 @@ static void ownerCopyInterfaceSyncGroups(
         if (participates && !participates(group)) continue;
         if (group.points.empty() || group.canonicalOwner < 0 ||
             group.canonicalOwner >= (int)group.points.size()) {
-            broadcast("Fatal: ",
-                      "GlobalDof state copy has no valid canonical owner.");
-            std::exit(1);
+            throw std::runtime_error(
+                "GlobalDof state copy has no valid canonical owner.");
         }
         const HaloInterfacePoint& owner =
             group.points[(size_t)group.canonicalOwner];
@@ -442,17 +434,15 @@ static void ownerCopyInterfaceSyncGroups(
         if (!pointDataOffset(owner.blockId,
                              owner.interiorIndex,
                              ownerOffset)) {
-            broadcast("Fatal: ",
-                      "GlobalDof state owner is absent from the exchanged payload.");
-            std::exit(1);
+            throw std::runtime_error(
+                "GlobalDof state owner is absent from the exchanged payload.");
         }
         std::vector<double> reference((size_t)nVar, 0.0);
         for (int v = 0; v < nVar; ++v) {
             reference[(size_t)v] = allData[ownerOffset + (size_t)v];
             if (!std::isfinite(reference[(size_t)v])) {
-                broadcast("Fatal: ",
-                          "GlobalDof state owner produced a non-finite value.");
-                std::exit(1);
+                throw std::runtime_error(
+                    "GlobalDof state owner produced a non-finite value.");
             }
         }
         if (nVar == 5) {
@@ -472,9 +462,8 @@ static void ownerCopyInterfaceSyncGroups(
             if (!pointDataOffset(point.blockId,
                                  point.interiorIndex,
                                  offset)) {
-                broadcast("Fatal: ",
-                          "GlobalDof state replica is absent from the exchanged payload.");
-                std::exit(1);
+                throw std::runtime_error(
+                    "GlobalDof state replica is absent from the exchanged payload.");
             }
 
             for (int v = 0; v < nVar; ++v) {
@@ -994,21 +983,142 @@ void HaloExchange::exchangeScalarIdentifiers(
     exchangeScalarBlockValues(views, true);
 }
 
+void HaloExchange::exchangeIdentifiers(
+        const Field& geometry, int blockId,
+        std::vector<std::int64_t>& values) const {
+    if (!plan_ || !backend_ || !backend_->active()) return;
+#if SF_USE_MPI
+    const bool localValid = blockId == localBlockId_
+        && values.size() == static_cast<std::size_t>(geometry.TotalSize());
+    if (!backend_->allRanksAgree(localValid)) {
+        throw std::runtime_error(
+            "Integer identifier COPY received inconsistent local geometry or block ID.");
+    }
+    const HaloBlockPlan* local = localPlan();
+    if (!local) throw std::runtime_error("Integer identifier COPY has no local halo plan.");
+    const std::vector<int> counts = rankInteriorCounts(1);
+    std::vector<int> displacements(static_cast<std::size_t>(mpiSize_),0);
+    int total=0;
+    for (int rank=0;rank<mpiSize_;++rank) {
+        displacements[static_cast<std::size_t>(rank)]=total;
+        total+=counts[static_cast<std::size_t>(rank)];
+    }
+    std::vector<std::int64_t> send;
+    send.reserve(static_cast<std::size_t>(geometry.NX()*geometry.NY()*geometry.NZ()));
+    const int ng=geometry.NG();
+    for (int k=ng;k<ng+geometry.NZ();++k)
+        for (int j=ng;j<ng+geometry.NY();++j)
+            for (int i=ng;i<ng+geometry.NX();++i)
+                send.push_back(values[static_cast<std::size_t>(geometry.getIdx(i,j,k))]);
+    const bool layoutValid = counts[static_cast<std::size_t>(mpiRank_)]
+        == static_cast<int>(send.size());
+    if (!backend_->allRanksAgree(layoutValid)) {
+        throw std::runtime_error(
+            "Integer identifier COPY requires one local pressure block per rank.");
+    }
+    std::vector<std::int64_t> received(static_cast<std::size_t>(total),-1);
+    std::copy(send.begin(),send.end(),
+              received.begin()+displacements[static_cast<std::size_t>(mpiRank_)]);
+    backend_->exchangeNeighbours(send,counts,displacements,
+                                 communicationRanks(),4113,received);
+    const auto offset = [&](int donorBlock,int interior) -> std::size_t {
+        const int rank=ownerRank(donorBlock);
+        if (rank<0 || rank>=mpiSize_ || interior<0
+            || interior>=counts[static_cast<std::size_t>(rank)]) {
+            throw std::runtime_error("Integer identifier COPY has an invalid donor.");
+        }
+        return static_cast<std::size_t>(displacements[static_cast<std::size_t>(rank)]
+                                        +interior);
+    };
+    const auto writeInterior = [&](int interior,std::int64_t value) {
+        if (interior<0 || interior>=geometry.NX()*geometry.NY()*geometry.NZ()) {
+            throw std::runtime_error("Integer identifier COPY has an invalid owner point.");
+        }
+        const int i=interior%geometry.NX()+ng;
+        const int j=(interior/geometry.NX())%geometry.NY()+ng;
+        const int k=interior/(geometry.NX()*geometry.NY())+ng;
+        values[static_cast<std::size_t>(geometry.getIdx(i,j,k))]=value;
+    };
+    for (const HaloInterfaceSyncGroup& group:plan_->interfaceSyncGroups) {
+        const bool localParticipant=std::any_of(
+            group.points.begin(),group.points.end(),
+            [blockId](const HaloInterfacePoint& point) {
+                return point.blockId==blockId;
+            });
+        if (!localParticipant) continue;
+        if (group.canonicalOwner<0
+            || group.canonicalOwner>=static_cast<int>(group.points.size())) {
+            throw std::runtime_error("Integer identifier COPY has no canonical owner.");
+        }
+        const auto& owner=group.points[static_cast<std::size_t>(group.canonicalOwner)];
+        const auto reference=received[offset(owner.blockId,owner.interiorIndex)];
+        for (const auto& point:group.points) {
+            received[offset(point.blockId,point.interiorIndex)]=reference;
+            if (point.blockId==blockId) writeInterior(point.interiorIndex,reference);
+        }
+    }
+    for (const HaloCellMapping& mapping:local->cells) {
+        if (mapping.kind!=HaloMappingKind::DirectCopy) {
+            throw std::runtime_error(
+                "Integer identifier COPY cannot interpolate a GlobalDof identity.");
+        }
+        const auto value=received[offset(mapping.donorBlock,
+                                         mapping.donorInteriorIndex)];
+        values[static_cast<std::size_t>(geometry.getIdx(
+            mapping.ownerIJK[0],mapping.ownerIJK[1],mapping.ownerIJK[2]))]=value;
+    }
+#else
+    (void)geometry;
+    (void)blockId;
+    (void)values;
+#endif
+}
+
 void HaloExchange::exchangeScalarBlockValues(
         const std::vector<ScalarBlockValues>& views,
         bool synchronizeSharedPoints) const {
-    if (!plan_ || views.empty()) return;
+    if (!plan_) return;
 
 #if SF_USE_MPI
     if (!mpiEnabled_) return;
 
+    // Every participating rank checks its own views before peer payloads are
+    // exchanged. A rank-local failure must become a collective failure here.
+    std::string localError;
+    std::set<int> seenBlocks;
+    for (const ScalarBlockValues& view:views) {
+        if (view.blockId<0 || !view.field || !view.values) {
+            localError="scalar block view is incomplete";
+            break;
+        }
+        if (!seenBlocks.insert(view.blockId).second) {
+            localError="scalar received duplicate block view";
+            break;
+        }
+        if ((int)view.values->size()!=view.field->TotalSize()) {
+            localError="scalar component count does not match Field::TotalSize";
+            break;
+        }
+        if (std::any_of(view.values->begin(),view.values->end(),
+                [](double value) { return !std::isfinite(value); })) {
+            localError="scalar values contain a non-finite value";
+            break;
+        }
+    }
+    const bool allValid=backend_->allRanksAgree(localError.empty());
+    if (!allValid) {
+        throw std::runtime_error("haloExchange scalar preflight on rank "
+            +std::to_string(mpiRank_)+": "
+            +(localError.empty() ? "peer rank rejected its scalar view" : localError));
+    }
+    const bool allEmpty=backend_->allRanksAgree(views.empty());
+    if (allEmpty) return;
+    if (views.empty()) throw std::runtime_error(
+        "haloExchange scalar preflight on rank "+std::to_string(mpiRank_)
+        +": missing local scalar views while peers are exchanging");
+
     int nBlocks = 0;
     for (const ScalarBlockValues& view : views) {
-        if (view.blockId < 0 || !view.field || !view.values) {
-            broadcast("Fatal: ",
-                      "haloExchange scalar block view is incomplete.");
-            std::exit(1);
-        }
         requireScalarCompatible(*view.field, *view.values,
                                 "haloExchange scalar block");
         nBlocks = std::max(nBlocks, view.blockId + 1);
@@ -1017,11 +1127,6 @@ void HaloExchange::exchangeScalarBlockValues(
 
     std::vector<const ScalarBlockValues*> byBlock((size_t)nBlocks, nullptr);
     for (const ScalarBlockValues& view : views) {
-        if (byBlock[(size_t)view.blockId] != nullptr) {
-            broadcast("Fatal: ",
-                      "haloExchange scalar received duplicate block view.");
-            std::exit(1);
-        }
         byBlock[(size_t)view.blockId] = &view;
     }
 
@@ -1065,21 +1170,18 @@ void HaloExchange::exchangeScalarBlockValues(
     for (int b = 0; b < nBlocks; ++b) {
         if (ownerRank(b) != mpiRank_) continue;
         const ScalarBlockValues* view = byBlock[(size_t)b];
-        if (!view) {
-            broadcast("Fatal: ",
-                      "haloExchange scalar missing local owner block view.");
-            std::exit(1);
-        }
+        if (!view) throw std::runtime_error(
+            "haloExchange scalar missing local owner block view on rank "
+            +std::to_string(mpiRank_));
         std::vector<double> packed =
             packInteriorScalar(*view->field, *view->values);
         sendBuffer.insert(sendBuffer.end(), packed.begin(), packed.end());
     }
     int sendCount = (int)sendBuffer.size();
     if (sendCount != counts[(size_t)mpiRank_]) {
-        broadcast("Fatal: ",
-                  "haloExchange scalar pack count mismatch for rank "
-                  + std::to_string(mpiRank_));
-        std::exit(1);
+        throw std::runtime_error(
+            "haloExchange scalar pack count mismatch for rank "
+            +std::to_string(mpiRank_));
     }
 
     std::vector<double> allData((size_t)totalCount, 0.0);
@@ -1184,13 +1286,14 @@ void HaloExchange::exchangeScalarBlockValues(
 }
 
 void HaloExchange::synchronizeCanonicalFaceFlux(
-        const Field& field, std::vector<double>& values) const {
+        const std::vector<State::DistributedFieldView*>& fields) const {
     if (!plan_ || plan_->interfaceFluxSyncGroups.empty()) return;
-    if (values.size() != 3U * static_cast<size_t>(field.TotalSize())) {
-        broadcast("Fatal: ",
-                  "Eulerian canonical face flux has invalid storage size.");
-        std::exit(1);
-    }
+    const auto viewFor = [&](int blockId) -> State::DistributedFieldView& {
+        for (auto* view:fields) {
+            if (view && view->blockId==blockId && view->components==3) return *view;
+        }
+        throw std::runtime_error("Canonical face has no local three-component workspace.");
+    };
 #if SF_USE_MPI
     if (!mpiEnabled_) return;
     std::vector<int> counts((size_t)mpiSize_, 0);
@@ -1202,7 +1305,7 @@ void HaloExchange::synchronizeCanonicalFaceFlux(
             if (owner < 0 || owner >= mpiSize_) {
                 broadcast("Fatal: ",
                           "Eulerian face flux references an invalid rank.");
-                std::exit(1);
+                throw std::runtime_error("Invalid canonical face exchange contract.");
             }
             ++counts[(size_t)owner];
             ++participantCount;
@@ -1232,27 +1335,20 @@ void HaloExchange::synchronizeCanonicalFaceFlux(
          plan_->interfaceFluxSyncGroups) {
         for (const HaloInterfaceFace& face : group.faces) {
             if (ownerRank(face.blockId) != mpiRank_) continue;
-            if (face.blockId != localBlockId_) {
-                broadcast("Fatal: ",
-                          "Eulerian face-flux overload requires one local "
-                          "block per MPI rank.");
-                std::exit(1);
-            }
+            auto& view=viewFor(face.blockId);
+            const Field& field=*view.geometry;
             if (!validInterfaceFluxFace(field, face)
                 || !std::isfinite(face.orientation)
                 || std::abs(std::abs(face.orientation) - 1.0) > 1.0e-12) {
                 broadcast("Fatal: ",
                           "Eulerian canonical face descriptor is invalid.");
-                std::exit(1);
+                throw std::runtime_error("Invalid canonical face exchange contract.");
             }
-            const size_t index = static_cast<size_t>(
-                face.direction * field.TotalSize()
-                + field.getIdx(face.i, face.j, face.k));
-            const double value = values[index];
+            const double value = view.read(field.getIdx(face.i,face.j,face.k),face.direction);
             if (!std::isfinite(value)) {
                 broadcast("Fatal: ",
                           "Eulerian canonical face flux is non-finite.");
-                std::exit(1);
+                throw std::runtime_error("Invalid canonical face exchange contract.");
             }
             sendBuffer.push_back(value);
         }
@@ -1260,7 +1356,7 @@ void HaloExchange::synchronizeCanonicalFaceFlux(
     if ((int)sendBuffer.size() != counts[(size_t)mpiRank_]) {
         broadcast("Fatal: ",
                   "Eulerian canonical face-flux pack count mismatch.");
-        std::exit(1);
+        throw std::runtime_error("Invalid canonical face exchange contract.");
     }
     std::vector<double> allData((size_t)totalCount, 0.0);
     exchangeNeighbourPayload(
@@ -1273,7 +1369,7 @@ void HaloExchange::synchronizeCanonicalFaceFlux(
             || group.canonicalOwner >= (int)group.faces.size()) {
             broadcast("Fatal: ",
                       "Eulerian canonical face owner is invalid.");
-            std::exit(1);
+            throw std::runtime_error("Invalid canonical face exchange contract.");
         }
         const HaloInterfaceFace& canonical =
             group.faces[(size_t)group.canonicalOwner];
@@ -1285,21 +1381,19 @@ void HaloExchange::synchronizeCanonicalFaceFlux(
         if (!std::isfinite(canonicalValue)) {
             broadcast("Fatal: ",
                       "Eulerian synchronized face flux is non-finite.");
-            std::exit(1);
+            throw std::runtime_error("Invalid canonical face exchange contract.");
         }
         for (const HaloInterfaceFace& face : group.faces) {
-            if (face.blockId == localBlockId_) {
-                const size_t index=Numerics::CanonicalFace::index(
-                    field,face.direction,face.i,face.j,face.k);
-                values[index]=Numerics::CanonicalFace::orient(
-                    canonicalValue,face.orientation);
+            if (ownerRank(face.blockId)==mpiRank_) {
+                auto& view=viewFor(face.blockId);
+                view.write(view.geometry->getIdx(face.i,face.j,face.k),face.direction,
+                    Numerics::CanonicalFace::orient(canonicalValue,face.orientation));
             }
         }
         participant += (int)group.faces.size();
     }
 #else
-    (void)field;
-    (void)values;
+    (void)fields;
 #endif
 }
 
@@ -1320,6 +1414,56 @@ void HaloExchange::assembleCanonicalInterfaceFluxes(
     }
     const int nVar = blocks.front().field.NVar();
     const int participantPackSize = nVar;
+    std::string localError;
+    for (const MeshBlockField& block:blocks) {
+        if (block.field.NVar()!=nVar) {
+            localError="canonical interface blocks use different FluidStateModels";
+            break;
+        }
+    }
+    if (localError.empty()) {
+        for (const HaloInterfaceFluxSyncGroup& group:plan_->interfaceFluxSyncGroups) {
+            if (group.faces.empty() || group.canonicalOwner<0
+                || group.canonicalOwner>=(int)group.faces.size()) {
+                localError="canonical interface flux owner is invalid";
+                break;
+            }
+            for (const HaloInterfaceFace& face:group.faces) {
+                if (face.blockId<0 || face.blockId>=nBlocks
+                    || ownerRank(face.blockId)<0
+                    || ownerRank(face.blockId)>=mpiSize_) {
+                    localError="canonical interface face has an invalid block/owner rank";
+                    break;
+                }
+            }
+            if (!localError.empty()) break;
+            const HaloInterfaceFace& face=group.faces[(size_t)group.canonicalOwner];
+            if (ownerRank(face.blockId)!=mpiRank_) continue;
+            const Field& field=blocks[(size_t)face.blockId].field;
+            const FluxField* fluxField=fluxes[(size_t)face.blockId];
+            if (!fluxField || !validInterfaceFluxFace(field,face)
+                || !std::isfinite(face.orientation)
+                || std::abs(std::abs(face.orientation)-1.0)>1.0e-12) {
+                localError="canonical face workspace/index/orientation is invalid";
+                break;
+            }
+            for (int v=0;v<nVar;++v) {
+                const double flux=(*fluxField)(
+                    (size_t)face.direction*field.TotalSize()
+                    +field.getIdx(face.i,face.j,face.k),v);
+                if (!std::isfinite(flux)) {
+                    localError="canonical owner produced a non-finite face flux";
+                    break;
+                }
+            }
+            if (!localError.empty()) break;
+        }
+    }
+    if (!backend_->allRanksAgree(localError.empty())) {
+        throw std::runtime_error("canonical face preflight on rank "
+            +std::to_string(mpiRank_)+": "
+            +(localError.empty() ? "peer rank rejected its face view" : localError));
+    }
     for (const MeshBlockField& block : blocks) {
         if (block.field.NVar() != nVar) {
             broadcast("Fatal: ", "canonical interface blocks use different FluidStateModels.");
@@ -1411,10 +1555,9 @@ void HaloExchange::assembleCanonicalInterfaceFluxes(
     }
     const int sendCount = (int)sendBuffer.size();
     if (sendCount != counts[(size_t)mpiRank_]) {
-        broadcast("Fatal: ",
-                  "shared-interface flux pack count mismatch for rank "
-                  + std::to_string(mpiRank_));
-        std::exit(1);
+        throw std::runtime_error(
+            "shared-interface flux pack count mismatch for rank "
+            +std::to_string(mpiRank_));
     }
 
     std::vector<double> allData((size_t)totalCount, 0.0);
@@ -1452,9 +1595,9 @@ void HaloExchange::assembleCanonicalInterfaceFluxes(
             group.faces[(size_t)group.canonicalOwner];
         const size_t canonicalOffset = (size_t)groupOffsets[groupId];
         if (canonicalOffset + participantPackSize > allData.size()) {
-            broadcast("Fatal: ",
-                      "canonical interface flux offset is invalid.");
-            std::exit(1);
+            throw std::runtime_error(
+                "canonical interface flux offset is invalid on rank "
+                +std::to_string(mpiRank_));
         }
         for (int v = 0; v < nVar; ++v) {
             const double ownerFlux =

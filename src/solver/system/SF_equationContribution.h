@@ -17,21 +17,28 @@ public:
     SystemCompositionBuilder(
         RawEquationSystem& system,
         std::vector<TransformationDescriptor>& transformations,
-        std::vector<ExecutionPolicy>& policies,
+        std::vector<LegacyExecutionPolicy>& policies,
         Provenance origin);
 
     void recordContribution(std::string id, std::string name);
-    void addUnknown(UnknownDescriptor unknown);
+    void addState(StateSymbol unknown);
+    /// A request activates catalog metadata at freeze; it adds no equations/storage.
+    void requireState(std::string id) { requiredStates.push_back(std::move(id)); }
+    std::vector<std::string> requiredStates;
     void addEquation(
-        EquationDescriptor descriptor, Equation::Definition definition);
-    void extendEquation(const std::string& equationId, Equation::Term term);
+        EquationDescriptor descriptor, SF::Equation::Definition definition);
+    void addEquation(
+        EquationDescriptor descriptor, SF::Equation::Definition definition,
+        Equation formula);
+    void addEquation(Equation equation);
+    void extendEquation(const std::string& equationId, SF::Equation::Term term);
     void addConstraint(ConstraintDescriptor constraint);
     void addClosure(std::string closure);
     void addDependency(std::string dependency);
     void requestTransformation(TransformationDescriptor descriptor);
     /// @brief 该 transformation 是否已被 composition 请求（用于避免重复请求）。
     bool requestsTransformation(std::string_view id) const;
-    void addExecutionPolicy(ExecutionPolicy policy);
+    void addExecutionPolicy(LegacyExecutionPolicy policy);
     void extendExecutionPolicy(
         const std::string& policyId,
         const std::string& equation,
@@ -39,12 +46,18 @@ public:
     void applyModification(SystemModification modification);
     void applyContribution(SystemContribution contribution);
 
+    void addExecution(ExecutionScope value) { execution.push_back(std::move(value)); }
+    void bindNumerics(NumericalBinding value) { numerics.push_back(std::move(value)); }
+    std::vector<ExecutionScope> execution;
+    std::vector<ExecutionScope> legacyExecution;
+    std::vector<NumericalBinding> numerics;
+
     const RawEquationSystem& rawSystem() const { return system_; }
 
 private:
     RawEquationSystem& system_;
     std::vector<TransformationDescriptor>& transformations_;
-    std::vector<ExecutionPolicy>& policies_;
+    std::vector<LegacyExecutionPolicy>& policies_;
     Provenance origin_;
 };
 

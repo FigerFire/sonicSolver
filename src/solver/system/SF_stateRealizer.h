@@ -1,38 +1,50 @@
 #pragma once
 
 /// @file SF_stateRealizer.h
-/// @brief Resolved unknowns 到 StateBundle 已有 storage 的启动阶段绑定。
-
-#include "core/system/SF_equationIR.h"
+/// @brief STATE runtime: bind physical authorities and realize requested views.
+#include "core/system/SF_stateRegistry.h"
+#include "core/system/SF_stateViews.h"
 #include "SF_runtimeRequirements.h"
 #include "core/state/SF_stateBundle.h"
-
+#include <memory>
 #include <vector>
 
 namespace SF::System {
-
-/// @brief 一个已解析未知量的稳定 runtime handle。
+/// @brief A stable non-owning handle to a base variable.
 struct RealizedUnknown {
-    const UnknownDescriptor* descriptor = nullptr;
+    const StateSymbol* descriptor=nullptr;
     std::vector<State::DistributedFieldView*> fields;
 };
-
-/// @brief 已完成验证的非拥有 state contract。
+/// @brief A compiler-requested view, independent of equation identity or order.
+struct RealizedStateView {
+    CompiledStateView descriptor;
+    std::vector<State::DistributedFieldView*> fields;
+};
+/// @brief Solver execution owns temporary storage; StateBundle remains the physical authority.
 class StateRealization {
 public:
     const RealizedUnknown& at(std::string_view id) const;
+    const RealizedStateView& view(std::string_view symbol,StateViewKind kind,
+        int stage=-1) const;
+    bool requestsView(std::string_view symbol,StateViewKind kind,int stage=-1) const;
+    /// @brief Bind a numerical provider's existing array, without allocating a second copy.
+    void bindView(std::string_view symbol,StateViewKind kind,
+        State::DistributedFieldView& field,int stage=-1);
     std::size_t size() const { return unknowns_.size(); }
-
 private:
-    friend StateRealization realizeState(
-        const ExecutableEquationSystem&, const RuntimeRequirements&,
-        State::StateBundle&);
+    friend StateRealization realizeState(const StateRegistry&,const RuntimeRequirements&,
+        State::StateBundle&,const std::vector<CompiledStateView>&);
+    struct ViewStorage {
+        std::vector<double> values;
+        State::DistributedFieldView field;
+    };
     std::vector<RealizedUnknown> unknowns_;
+    std::vector<RealizedStateView> views_;
+    std::vector<std::unique_ptr<ViewStorage>> owned_;
 };
 
-/// @brief 一次性解析并验证 unknown storage；不分配或复制数值数组。
-StateRealization realizeState(
-    const ExecutableEquationSystem& equations,
-    const RuntimeRequirements& requirements, State::StateBundle& state);
-
+/// @brief Startup-only allocation: absent Working/Correction demands allocate nothing.
+StateRealization realizeState(const StateRegistry& symbols,
+    const RuntimeRequirements& requirements,State::StateBundle& state,
+    const std::vector<CompiledStateView>& views={});
 } // namespace SF::System

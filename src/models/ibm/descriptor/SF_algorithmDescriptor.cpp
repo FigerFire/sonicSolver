@@ -16,10 +16,10 @@ using FDM::ImmersedAlgorithmDescriptor;
 using FDM::ImmersedConstraintDescriptor;
 using FDM::ImmersedOwnershipKind;
 using FDM::ImmersedSolveBlockDescriptor;
-using FDM::ImmersedUnknownDescriptor;
+using FDM::ImmersedStateSymbol;
 using FDM::ImmersedVariableLocation;
 
-ImmersedUnknownDescriptor multiplier(
+ImmersedStateSymbol multiplier(
         const FDM::IBMForcingConfig& config) {
     const bool surface = config.constraintSupport
         == FDM::IBMConstraintSupport::Surface;

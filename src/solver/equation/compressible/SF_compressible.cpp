@@ -11,20 +11,6 @@
 
 namespace SF::Equation::Compressible {
 
-System::System(const Equation::System& definition)
-    : definition_(&definition),
-      assemblyPlan_(Equation::makeAssemblyPlan(
-          definition,{"E_MASS","E_MOMENTUM","E_ENERGY"})) {
-}
-
-bool System::contains(TermKind kind) const {
-    return std::any_of(
-        assemblyPlan_.begin(),assemblyPlan_.end(),
-        [kind](const Equation::AssemblyPlan& plan) {
-            return plan.contains(kind);
-        });
-}
-
 void System::begin(FluxField& fluxField, Residual& residual) const {
     fluxField.clear();
     residual.clear();
@@ -33,7 +19,7 @@ void System::begin(FluxField& fluxField, Residual& residual) const {
 void System::convection(
         Field& field, FluxField& fluxField, Residual& residual,
         const AssemblyContext& context) const {
-    if (!contains(TermKind::Divergence)) return;
+    if (!context.convection) return;
     if (!context.convection
         || context.convection->role() != FDM::TermRole::Convection) {
         throw std::runtime_error(
@@ -62,7 +48,7 @@ void System::convection(
 
 void System::diffusionAndSources(
         Field& field, Residual& residual, const AssemblyContext& context) const {
-    if (contains(TermKind::Diffusion)) {
+    if (context.diffusion) {
         if (!context.diffusion
             || context.diffusion->role() != FDM::TermRole::Diffusion) {
             throw std::runtime_error(
@@ -77,13 +63,8 @@ void System::diffusionAndSources(
             context.idealGasConstant,
             context.transport);
     }
-    if (contains(TermKind::Source)) {
-        if (!context.sources || !context.sourceParameters) {
-            throw std::runtime_error(
-                "Compressible sources have no compiled source bindings.");
-        }
-        SourceTerm::Sp(
-            field,residual,*context.sourceParameters,*context.sources);
+    if (context.sources && !context.sources->empty()) {
+        SourceTerm::Sp(field,residual,*context.sources);
     }
 }
 

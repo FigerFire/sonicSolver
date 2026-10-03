@@ -8,12 +8,13 @@
 
 namespace SF::System::Preset {
 
-/// @brief Install rho/rhoU/rhoE and their physical equations.
+/// @brief Install selected physical balances against explicitly selected solution targets.
 ///
-/// This function selects WHAT is solved. It does not select a time recipe,
-/// reconstruction, flux, diffusion stencil, or execution order.
+/// WHAT selects balances; STATE supplies writable metadata and default targets.
+/// Default HOW occurrences remain separate from the equation AST and its catalog.
 void installSingleFluid(
     SystemCompositionBuilder& system,
-    const SingleFluidPresetSpec& spec);
+    const SingleFluidPresetSpec& spec,
+    const EquationCompositionConfig& composition);
 
 } // namespace SF::System::Preset

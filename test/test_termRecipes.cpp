@@ -2,6 +2,8 @@
 #include "solver/system/SF_numericalCompiler.h"
 #include "solver/system/SF_systemBuilder.h"
 #include "solver/system/SF_systemPrinter.h"
+#include "models/physics/SF_sourceContribution.h"
+#include "models/physics/mrf/SF_frameProvider.h"
 
 #include <algorithm>
 #include <cstdlib>
@@ -26,30 +28,20 @@ void require(bool condition, const std::string& message) {
 
 std::string rawSignature(const System::RawEquationSystem& raw) {
     std::ostringstream output;
-    for (const auto& equation : raw.equations) {
-        output << equation.id << '\n';
-        const auto& definition = raw.equationDefinitions.at(equation.id);
-        for (const auto* expression : {&definition.left,&definition.right}) {
-            for (const auto& term : expression->terms) {
-                output << static_cast<int>(term.kind) << ':'
-                       << term.primary.name << ':' << term.secondary.name << '\n';
-            }
-            output << "|\n";
-        }
-    }
+    for (const auto& equation:raw.registry.entries()) output << System::formulaText(equation) << '\n';
     return output.str();
 }
 
 bool hasTerm(const System::RawEquationSystem& raw,
              const std::string& equationId,
-             Equation::TermKind kind) {
-    const auto& definition = raw.equationDefinitions.at(equationId);
-    return std::any_of(
-        definition.left.terms.begin(),definition.left.terms.end(),
-        [kind](const Equation::Term& term) { return term.kind == kind; })
-        || std::any_of(
-            definition.right.terms.begin(),definition.right.terms.end(),
-            [kind](const Equation::Term& term) { return term.kind == kind; });
+             SF::Equation::TermKind kind) {
+    const auto& equation=raw.registry.at(equationId);
+    const auto visit=[&](const auto& self,const System::FormulaExpr& expression)->bool {
+        if (kind==SF::Equation::TermKind::Diffusion && expression.kind==System::FormulaExpr::Kind::Operator
+            && expression.name=="diffusion") return true;
+        return std::any_of(expression.arguments.begin(),expression.arguments.end(),[&](const auto& child) { return self(self,child); });
+    };
+    return visit(visit,equation.lhs) || visit(visit,equation.rhs);
 }
 
 FDM::SolverConfig explicitConfig(FDM::TermRecipe convection) {
@@ -68,7 +60,9 @@ bool throwsContaining(Callable&& callable, const std::string& expected) {
     try {
         callable();
     } catch (const std::exception& error) {
-        return std::string(error.what()).find(expected) != std::string::npos;
+        const bool matched=std::string(error.what()).find(expected)!=std::string::npos;
+        if (!matched) std::cerr << "Expected error: " << expected << "; actual: " << error.what() << '\n';
+        return matched;
     }
     return false;
 }
@@ -77,6 +71,8 @@ bool throwsContaining(Callable&& callable, const std::string& expected) {
 
 int main() {
     System::BuildRequest inviscid;
+    inviscid.composition.stateDeclared = true;
+    inviscid.composition.solutionVariables = {"rho","rhoU","rhoE"};
     inviscid.templateOrigin = System::PhysicsTemplateKind::SingleFluid;
     inviscid.singleFluidPreset = System::SingleFluidPresetSpec{false};
 
@@ -86,6 +82,57 @@ int main() {
         FDM::resolveConvectionTermRecipe("weno7Steger");
     const auto rusanov = System::build(
         explicitConfig(rusanovRecipe),inviscid);
+    auto overrideRequest=inviscid;
+    overrideRequest.operatorBindings={{"","div","convection.conservativeFlux"},
+        {"momentum","","convection.conservativeFlux"},
+        {"momentum","momentum.convection","convection.conservativeFlux"}};
+    const auto overridden=System::build(explicitConfig(rusanovRecipe),overrideRequest);
+    require(overridden.numericalSystem.operators.size()
+                ==rusanov.numericalSystem.operators.size(),
+            "Equation override changed the physical operator collection.");
+    overrideRequest.operatorBindings.back().provider="missing.provider";
+    require(throwsContaining([&] {
+        (void)System::build(explicitConfig(rusanovRecipe),overrideRequest);
+    },"missing.provider"),"Explicit provider selection silently fell back.");
+    overrideRequest.operatorBindings={{"momentum","absent.occurrence",
+                                       "convection.conservativeFlux"}};
+    require(throwsContaining([&] {
+        (void)System::build(explicitConfig(rusanovRecipe),overrideRequest);
+    },"addresses no selected Equation occurrence"),
+        "Unused Equation occurrence binding was silently ignored.");
+    auto signedSystem=rusanov.executableSystem;
+    auto signedFormula=signedSystem.registry.at("momentum");
+    signedFormula.lhs=System::FormulaExpr::negate(signedFormula.lhs);
+    signedSystem.registry.replace(signedFormula);
+    require(throwsContaining([&] {
+        (void)System::NumericalCompiler::compile(signedSystem,
+            rusanov.solvePlan.compiledProgram,
+            explicitConfig(rusanovRecipe).numerics.recipes,
+            System::TermProviderCatalog::builtIn(),rusanov.numericalSystem.time.recipe);
+    },"unsupported signed/coefficient"),
+        "Fused backend silently ignored a Equation sign.");
+    auto unknownFluxSystem=rusanov.executableSystem;
+    auto unknownFlux=unknownFluxSystem.registry.at("continuity");
+    unknownFlux.lhs.arguments.back().arguments.front()=
+        System::FormulaExpr::symbol("userFluxWithoutProvider");
+    unknownFluxSystem.registry.replace(unknownFlux);
+    require(throwsContaining([&] {
+        (void)System::NumericalCompiler::compile(unknownFluxSystem,
+            rusanov.solvePlan.compiledProgram,
+            explicitConfig(rusanovRecipe).numerics.recipes,
+            System::TermProviderCatalog::builtIn(),rusanov.numericalSystem.time.recipe);
+    },"Unsupported"),"Fused provider executed an unknown mathematical flux.");
+    auto duplicateTimeSystem=rusanov.executableSystem;
+    auto duplicateTime=duplicateTimeSystem.registry.at("continuity");
+    duplicateTime.lhs=System::FormulaExpr::add(duplicateTime.lhs,
+        System::FormulaExpr::op("ddt",{System::FormulaExpr::symbol("rho")}));
+    duplicateTimeSystem.registry.replace(duplicateTime);
+    require(throwsContaining([&] {
+        (void)System::NumericalCompiler::compile(duplicateTimeSystem,
+            rusanov.solvePlan.compiledProgram,
+            explicitConfig(rusanovRecipe).numerics.recipes,
+            System::TermProviderCatalog::builtIn(),rusanov.numericalSystem.time.recipe);
+    },"ddt"),"Fused transport silently ignored a duplicate time derivative.");
     const auto steger = System::build(
         explicitConfig(stegerRecipe),inviscid);
 
@@ -98,10 +145,10 @@ int main() {
                     return contribution.id == "builtin.singleFluidNavierStokes";
                 }),
             "density core equations were not installed by the single-fluid preset");
-    require(!hasTerm(rusanov.rawSystem,"E_MOMENTUM",
-                     Equation::TermKind::Diffusion)
-                && !hasTerm(rusanov.rawSystem,"E_ENERGY",
-                            Equation::TermKind::Diffusion),
+    require(!hasTerm(rusanov.rawSystem,"momentum",
+                     SF::Equation::TermKind::Diffusion)
+                && !hasTerm(rusanov.rawSystem,"energy",
+                            SF::Equation::TermKind::Diffusion),
             "inviscid preset contains a physical diffusion term");
     require(rusanov.timeRecipe.id() == steger.timeRecipe.id()
                 && rusanov.timeRecipe.stageCount()
@@ -117,10 +164,10 @@ int main() {
                 steger.numericalSystem,FDM::TermRole::Convection).id()
                 == FDM::TermRecipeId::Weno7Steger,
             "Steger recipe was not bound into CompiledNumericalSystem");
-    require(rusanov.numericalSystem.terms.size() == 3,
+    require(rusanov.numericalSystem.operators.size() == 3,
             "core mass/momentum/energy convection terms were not all bound");
     require(System::describe(rusanov).find(
-                "E_MOMENTUM[1] divergence(momentumFlux) -> weno7Rusanov")
+                "momentum@momentum.convection -> rhoU div(momentumFlux) -> weno7Rusanov")
                 != std::string::npos,
             "explain output does not expose compiled term binding");
 
@@ -136,7 +183,7 @@ int main() {
         FDM::builtInDiffusionRecipe(FDM::ViscousScheme::Central2);
     require(throwsContaining(
                 [&] { (void)System::build(unusedDiffusion,inviscid); },
-                "contains no diffusion term"),
+                "without a consuming Equation occurrence"),
             "unused diffusion recipe was silently accepted");
 
     auto viscousRequest = inviscid;
@@ -174,7 +221,9 @@ int main() {
     operationRecipes.diffusion =
         FDM::builtInDiffusionRecipe(FDM::ViscousScheme::Central2);
     const auto operationNumerics = System::NumericalCompiler::compile(
-        operationSystem,operationRecipes);
+        operationSystem,rusanov.solvePlan.compiledProgram,operationRecipes,
+        System::TermProviderCatalog::builtIn(),
+        rusanov.numericalSystem.time.recipe);
     require(std::any_of(operationNumerics.recipeBindings.begin(),
                         operationNumerics.recipeBindings.end(),
                         [](const System::CompiledRecipeBinding& binding) {
@@ -189,18 +238,26 @@ int main() {
     constraintRequest.pressureConstraint = System::PressureConstraintSpec{false};
     require(throwsContaining(
                 [&] { (void)System::build(unusedDiffusion,constraintRequest); },
-                "contains no diffusion term or consuming operation"),
+                "without a consuming Equation occurrence"),
             "a constraint incorrectly exempted an unused diffusion recipe");
-    require(hasTerm(viscous.rawSystem,"E_MOMENTUM",
-                    Equation::TermKind::Diffusion)
-                && hasTerm(viscous.rawSystem,"E_ENERGY",
-                           Equation::TermKind::Diffusion),
+    require(hasTerm(viscous.rawSystem,"momentum",
+                    SF::Equation::TermKind::Diffusion)
+                && hasTerm(viscous.rawSystem,"energy",
+                           SF::Equation::TermKind::Diffusion),
             "viscous preset did not author both physical diffusion terms");
 
     auto sourceConfig = explicitConfig(rusanovRecipe);
     sourceConfig.sources.enabled = {FDM::SourceKind::MRF};
     sourceConfig.sources.rotating.push_back({});
-    const auto sourced = System::build(sourceConfig,inviscid);
+    auto sourceRequest=inviscid;
+    System::SystemContribution sourceContribution;
+    Physics::SourceContribution::contribute(
+        sourceContribution,sourceConfig.sources);
+    sourceRequest.modelContributions.push_back(std::move(sourceContribution));
+    for (auto descriptor:Physics::MRF::termProviders(
+             sourceConfig.sources.rotating))
+        sourceRequest.termProviders.push_back(std::move(descriptor));
+    const auto sourced = System::build(sourceConfig,sourceRequest);
     const auto sources =
         System::NumericalCompiler::sourceKinds(sourced.numericalSystem);
     require(sources == std::vector<FDM::SourceKind>{FDM::SourceKind::MRF},

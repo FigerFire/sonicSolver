@@ -5,6 +5,7 @@
 
 #include "core/system/SF_planFragment.h"
 #include "SF_resolvedSimulationSystem.h"
+#include "SF_compiledTimeRecipe.h"
 
 namespace SF::System {
 
@@ -17,9 +18,10 @@ public:
     /// 重复次数，stage -> OpId 由 executable operation authority 解析。
     static CompiledSolvePlan compile(
         const ExecutableEquationSystem& system,
-        const std::vector<ExecutionPolicy>& policies,
-        const FDM::TimeRecipe& timeRecipe,
-        const std::vector<PlanFragment>& fragments = {});
+        const std::vector<LegacyExecutionPolicy>& policies,
+        const CompiledTimeRecipe& timeRecipe,
+        const std::vector<LegacyPlanFragment>& fragments = {},
+        const CompiledExecutionProgram& compiledExecution = {});
 };
 
 } // namespace SF::System

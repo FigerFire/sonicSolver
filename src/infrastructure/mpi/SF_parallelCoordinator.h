@@ -31,6 +31,9 @@ public:
     void markModified(const std::string& name) override;
     void synchronizeTransient(
         const std::vector<State::DistributedFieldView>& fields) override;
+    void synchronizeIdentifiers(
+        const Field& geometry, int blockId,
+        std::vector<std::int64_t>& values) override;
     void assembleCanonicalInterfaceFluxes(const std::vector<Field*>& fields,
                                           const std::vector<FluxField*>& fluxes,
                                           const std::vector<Residual*>& residuals) override;
@@ -38,6 +41,7 @@ public:
         const std::vector<Field*>& fields,
         const std::vector<Residual*>& residuals) override;
     double reduce(double localValue, Reduction operation) override;
+    std::int64_t reduce(std::int64_t localValue, Reduction operation) override;
     void reduceSum(std::vector<double>& values) override;
     void copyCanonicalEntities(
         const std::vector<std::int64_t>& entityIds,

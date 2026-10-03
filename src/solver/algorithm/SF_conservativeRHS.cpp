@@ -40,7 +40,7 @@ void validateTimestepState(
         const State::StateBundle& state,
         const FDM::SolverConfig& config,
         const System::CompiledNumericalSystem& numericalSystem) {
-    state.validateDensityEquationBinding();
+    state.validateThermodynamicBinding();
     const auto& convection = System::NumericalCompiler::requireUniqueRecipe(
         numericalSystem,FDM::TermRole::Convection);
     const auto gamma = state.stateModel->perfectGasGamma();
@@ -106,7 +106,7 @@ void assembleAllPatches(
         std::vector<PatchWorkspace>& workspaces,
         const FDM::SolverConfig& config,
         const System::CompiledNumericalSystem& numericalSystem,
-        Equation::Compressible::System& equations,
+        SF::Equation::Compressible::System& equations,
         State::StateBundle& state,
         FDM::SolverServices& services,
         Boundary::Applicator& boundaryApplicator,
@@ -149,10 +149,17 @@ void assembleAllPatches(
     const auto* diffusionRecipe =
         System::NumericalCompiler::findUniqueRecipe(
             numericalSystem,FDM::TermRole::Diffusion);
-    const auto boundSources =
-        System::NumericalCompiler::sourceKinds(numericalSystem);
-    const Equation::Compressible::AssemblyContext assembly{
-        &convectionRecipe,diffusionRecipe,&boundSources,&config.sources,
+    std::vector<System::ConservativeSourceKernel> boundSources;
+    for (const auto& term:numericalSystem.operators) {
+        if (term.operatorName!="source") continue;
+        if (!term.conservativeSource)
+            throw std::runtime_error(
+                "Conservative source term '"+term.primary
+                +"' has no compiled execution kernel.");
+        boundSources.push_back(term.conservativeSource);
+    }
+    const SF::Equation::Compressible::AssemblyContext assembly{
+        &convectionRecipe,diffusionRecipe,&boundSources,
         state.dt,config.numerics.ibmBoundary,config.numerics.ilwOrder,
         config.numerics.dynamicViscosity,config.numerics.prandtl,
         config.numerics.idealGasGamma,config.numerics.idealGasConstant,

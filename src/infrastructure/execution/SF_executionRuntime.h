@@ -39,6 +39,9 @@ public:
     double globalMinimum(double localValue) override;
     double globalMaximum(double localValue) override;
     double globalSum(double localValue) override;
+    std::int64_t globalMinimum(std::int64_t localValue) override;
+    std::int64_t globalMaximum(std::int64_t localValue) override;
+    std::int64_t globalSum(std::int64_t localValue) override;
     void globalSum(std::vector<double>& values) override;
     bool ownsCanonicalEntity(std::int64_t entityId) const override;
     bool distributed() const override;
@@ -49,6 +52,9 @@ public:
         std::int64_t localCount) override;
     void synchronizeTransient(
         const std::vector<State::DistributedFieldView>& fields) override;
+    void synchronizeIdentifiers(
+        const Field& geometry, int blockId,
+        std::vector<std::int64_t>& values) override;
     std::vector<int> canonicalOwnerCells(
         Field& geometry,
         const std::vector<int>& candidates) override;

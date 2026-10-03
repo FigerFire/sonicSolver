@@ -144,6 +144,15 @@ bool build(ExecutionEnvironment& env,
         // ConstraintGlobalDof ownership；多 patch forcing 仍明确拒绝而非伪装。
         const bool singleFieldLayout =
             resolveSingleFieldLayout(env.parallelMesh, *env.parallel);
+        if (System::requiresProvider(requirements,"flow.pressure-operators")) {
+            const int source=env.parallelMesh.blocks().front().sourceZoneId;
+            const bool singleZone=std::all_of(env.parallelMesh.blocks().begin(),
+                env.parallelMesh.blocks().end(),[&](const MeshBlockField& block) {
+                    return block.sourceZoneId==source;
+                });
+            if (!singleZone || !singleFieldLayout)
+                throw std::runtime_error("Unsupported pressure execution layout: requires one orthogonal source zone decomposed into one local patch per rank; physical multiblock and multiple local patches are not implemented.");
+        }
         const bool forcingIBM = ibmConfig.enabled
             && ibmConfig.method == FDM::IBMMethod::VariationalForcing;
         if (forcingIBM && !singleFieldLayout) {
@@ -204,7 +213,7 @@ bool build(ExecutionEnvironment& env,
         *env.activeField,
         solverConfig.boundaries.density,
         solverConfig.boundaries.velocity,
-        solverConfig.boundaries.energyFromPressure,
+        solverConfig.boundaries.pressure,
         solverConfig.boundaries.thermal,
         solverConfig.turbulence.scalars.kBoundary,
         solverConfig.turbulence.scalars.epsilonBoundary,

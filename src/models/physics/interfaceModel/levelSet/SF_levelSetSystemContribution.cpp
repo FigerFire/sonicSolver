@@ -12,22 +12,24 @@ namespace SF::Physics::InterfaceModels::LevelSetContribution {
 void contribute(
         System::SystemContribution& system, const Spec& spec) {
     system.recordContribution("model.levelSet","level-set equations");
-    System::UnknownDescriptor phi;
+    system.requireProvider("equation.level-set",
+                           "bind interface state, transport, jump, and curvature");
+    System::StateSymbol phi;
     phi.id = "phi";
     phi.name = "level-set geometry";
     phi.components = 1;
     phi.shape = System::ValueShape::Scalar;
-    phi.role = System::UnknownRole::Transported;
+    phi.role = System::StateRole::Transported;
     phi.storageBinding = System::StorageBinding::NamedDistributed;
     phi.storageKey = "phi";
     phi.nameSpace = "interface";
-    system.addUnknown(std::move(phi));
+    system.addState(std::move(phi));
     system.addEquation(
         {"E_LEVEL_SET","level-set advection/reinitialization",
          "geometry transport",{"phi"}},
-        Equation::named("E_LEVEL_SET",
-            Equation::ddt({"phi"}) + Equation::div({"levelSetFlux"})
-                == Equation::Symbol{"reinitialization"}));
+        SF::Equation::named("E_LEVEL_SET",
+            SF::Equation::ddt({"phi"}) + SF::Equation::div({"levelSetFlux"})
+                == SF::Equation::Symbol{"reinitialization"}));
     system.addClosure("surface normal and curvature from phi");
     if (spec.ghostFluid) system.addClosure("ghost-fluid interface closure");
 }

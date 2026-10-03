@@ -34,6 +34,7 @@
 #include <algorithm>
 #include <exception>
 #include <optional>
+#include <iostream>
 #include <string>
 
 namespace SF::Application {
@@ -42,7 +43,7 @@ namespace {
 /// @brief Phase-1 fail-fast：只验证数学/算法 program 的可执行能力。
 /// @return true 表示可进入环境构建；false 时已输出 Fatal 原因。
 bool validateProgram(const System::ResolvedSimulationSystem& system) {
-    if (system.runtime.report.status == System::RuntimeStatus::Unsupported) {
+    if (system.runtime.report.status != System::RuntimeStatus::Runnable) {
         SF::broadcast(
             "Fatal execution capability: ",
             system.runtime.report.reason.empty()
@@ -95,18 +96,26 @@ int run(const RunRequest& request) {
     }
 
     ExecutionEnvironment env;
-    if (!Environment::build(env, caseConfig, *inspection,
-                            inspection->system.runtime,
-                            runtimeArgc, runtimeArgv,
-                            resultWriter)) {
-        return -1;
-    }
-    if (!Environment::validate(env)) {
-        return -1;
-    }
+    try {
+        if (!Environment::build(env, caseConfig, *inspection,
+                                inspection->system.runtime,
+                                runtimeArgc, runtimeArgv,
+                                resultWriter)) {
+            return -1;
+        }
+        if (!Environment::validate(env)) {
+            return -1;
+        }
 
-    return Execution::execute(inspection->system, inspection->system.solvePlan,
-                              caseConfig, env, request);
+        return Execution::execute(inspection->system, inspection->system.solvePlan,
+                                  caseConfig, env, request);
+    } catch (const std::exception& error) {
+        // Report before env unwinds: distributed fail-stop must not hide the cause.
+        std::cerr << "Execution failure on rank "
+                  << (env.parallel ? env.parallel->rank() : 0)
+                  << ": " << error.what() << std::endl;
+        throw;
+    }
 }
 
 } // namespace SF::Application

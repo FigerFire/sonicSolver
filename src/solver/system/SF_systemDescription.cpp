@@ -20,6 +20,8 @@ const ExecutableOperation* findExecutableOperation(
 const char* toString(OperationStage stage) {
     switch (stage) {
         case OperationStage::Prepare: return "prepare";
+        case OperationStage::FixedTimeStepBegin: return "fixed-time-step-begin";
+        case OperationStage::IterationBegin: return "iteration-begin";
         case OperationStage::MomentumAssemble: return "momentum-assemble";
         case OperationStage::MomentumSolve: return "momentum-solve";
         case OperationStage::PressureBoundaryPrepare:
@@ -31,6 +33,11 @@ const char* toString(OperationStage stage) {
         case OperationStage::VelocityCorrect: return "velocity-correct";
         case OperationStage::FluxCorrect: return "flux-correct";
         case OperationStage::CorrectionCommit: return "correction-commit";
+        case OperationStage::RelaxationApply: return "relaxation-apply";
+        case OperationStage::FluxConsistencyRestore:
+            return "flux-consistency-restore";
+        case OperationStage::ConvergenceEvaluate: return "convergence-evaluate";
+        case OperationStage::IterationEnd: return "iteration-end";
         case OperationStage::StepCommit: return "step-commit";
     }
     return "unknown-operation-stage";
@@ -39,7 +46,10 @@ const char* toString(OperationStage stage) {
 const char* toString(OperationCapability capability) {
     switch (capability) {
         case OperationCapability::ConservativeExplicit: return "conservative.explicit";
+        case OperationCapability::SingleFluidTurbulenceClosure: return "singleFluid.turbulence.algebraicClosure";
+        case OperationCapability::SingleFluidTurbulenceTransport: return "singleFluid.turbulence.physicalStepExplicit";
         case OperationCapability::PressureSchedule: return "pressure.schedule";
+        case OperationCapability::FixedTimeIteration: return "pressure.fixedTimeIteration";
         case OperationCapability::MomentumPredictor: return "momentum.predictor";
         case OperationCapability::PressureCorrection: return "pressure.correction";
         case OperationCapability::PressureLinearSolve: return "pressure.linearSystem";

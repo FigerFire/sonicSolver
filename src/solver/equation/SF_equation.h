@@ -5,4 +5,3 @@
 
 #include "core/system/SF_expression.h"
 #include "solver/equation/compressible/SF_compressible.h"
-#include "solver/equation/eulerian/SF_eulerian.h"

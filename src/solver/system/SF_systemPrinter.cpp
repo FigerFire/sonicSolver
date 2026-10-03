@@ -15,13 +15,13 @@
 namespace SF::System {
 namespace {
 
-const char* roleName(UnknownRole role) {
+const char* roleName(StateRole role) {
     switch (role) {
-        case UnknownRole::Primary: return "primary";
-        case UnknownRole::Transported: return "transported";
-        case UnknownRole::Algebraic: return "algebraic";
-        case UnknownRole::Multiplier: return "multiplier";
-        case UnknownRole::Derived: return "derived";
+        case StateRole::Primary: return "primary";
+        case StateRole::Transported: return "transported";
+        case StateRole::Algebraic: return "algebraic";
+        case StateRole::Multiplier: return "multiplier";
+        case StateRole::Derived: return "derived";
     }
     return "unknown";
 }
@@ -30,6 +30,7 @@ const char* storageName(StorageBinding binding) {
     switch (binding) {
         case StorageBinding::PackedDistributed: return "packed-distributed";
         case StorageBinding::NamedDistributed: return "named-distributed";
+        case StorageBinding::ProviderDistributed: return "provider-distributed";
         case StorageBinding::TransientWorkspace: return "transient-workspace";
         case StorageBinding::SpecializedExecutor: return "specialized-executor";
     }
@@ -37,29 +38,29 @@ const char* storageName(StorageBinding binding) {
 }
 
 bool isPressureConstraint(const std::string& id) {
-    return id == "E_PRESSURE" || id == "E_SHARED_PRESSURE";
+    return id == "pSimple" || id == "E_SHARED_PRESSURE";
 }
 
 bool isAlgebraicEquation(const EquationDescriptor& equation) {
     return equation.category != EquationCategory::PhysicalEquation;
 }
 
-bool isAuxiliaryUnknown(const UnknownDescriptor& unknown) {
+bool isAuxiliaryUnknown(const StateSymbol& unknown) {
     return unknown.id == "p" || unknown.id == "pPrime"
         || (unknown.id.size() >= 3
             && unknown.id.compare(unknown.id.size() - 3, 3, "Aux") == 0);
 }
 
-bool isConstraintUnknown(const UnknownDescriptor& unknown) {
+bool isConstraintUnknown(const StateSymbol& unknown) {
     return unknown.location == VariableLocation::BodyConstraint
         || unknown.location == VariableLocation::SurfaceConstraint;
 }
 
-bool isSolidUnknown(const UnknownDescriptor& unknown) {
+bool isSolidUnknown(const StateSymbol& unknown) {
     return unknown.location == VariableLocation::SolidGlobal;
 }
 
-std::string unknownDescription(const UnknownDescriptor& unknown) {
+std::string unknownDescription(const StateSymbol& unknown) {
     std::ostringstream output;
     output << "  " << unknown.id << "  " << unknown.name
            << "  [" << toString(unknown.location) << ", "
@@ -81,10 +82,10 @@ void printUnknownSection(
         std::ostringstream& output,
         const char* title,
         const ResolvedSimulationSystem& system,
-        bool (*predicate)(const UnknownDescriptor&)) {
+        bool (*predicate)(const StateSymbol&)) {
     output << "\n" << title << "\n";
     bool printed = false;
-    for (const auto& unknown : system.executableSystem.unknowns) {
+    for (const auto& unknown : system.executableSystem.state.symbols()) {
         if (predicate(unknown)) {
             output << unknownDescription(unknown);
             printed = true;
@@ -93,7 +94,7 @@ void printUnknownSection(
     if (!printed) output << "  (none)\n";
 }
 
-bool isStateUnknown(const UnknownDescriptor& unknown) {
+bool isStateUnknown(const StateSymbol& unknown) {
     return !isAuxiliaryUnknown(unknown) && !isConstraintUnknown(unknown)
         && !isSolidUnknown(unknown);
 }
@@ -108,27 +109,27 @@ std::string constraintName(const EquationDescriptor& equation) {
     return equation.name;
 }
 
-std::string termText(const Equation::Term& term) {
+std::string termText(const SF::Equation::Term& term) {
     switch (term.kind) {
-        case Equation::TermKind::Transient:
+        case SF::Equation::TermKind::Transient:
             return "ddt("+term.primary.name+")";
-        case Equation::TermKind::Divergence:
+        case SF::Equation::TermKind::Divergence:
             return "div("+term.primary.name+")";
-        case Equation::TermKind::Gradient:
+        case SF::Equation::TermKind::Gradient:
             return "grad("+term.primary.name+")";
-        case Equation::TermKind::Diffusion:
+        case SF::Equation::TermKind::Diffusion:
             return "diffusion("+term.secondary.name+","+term.primary.name+")";
-        case Equation::TermKind::Source:
+        case SF::Equation::TermKind::Source:
             return "source("+term.primary.name+")";
-        case Equation::TermKind::Constraint:
+        case SF::Equation::TermKind::Constraint:
             return "constraint("+term.primary.name+")";
-        case Equation::TermKind::AlgebraicRelation:
+        case SF::Equation::TermKind::AlgebraicRelation:
             return "algebraic("+term.primary.name+")";
     }
     return "unknownTerm";
 }
 
-std::string expressionText(const Equation::Expression& expression) {
+std::string expressionText(const SF::Equation::Expression& expression) {
     std::string result;
     for (const auto& term : expression.terms) {
         if (!result.empty()) result += " + ";
@@ -137,15 +138,15 @@ std::string expressionText(const Equation::Expression& expression) {
     return result.empty() ? "0" : result;
 }
 
-const char* termKindName(Equation::TermKind kind) {
+const char* termKindName(SF::Equation::TermKind kind) {
     switch (kind) {
-        case Equation::TermKind::Transient: return "transient";
-        case Equation::TermKind::Divergence: return "divergence";
-        case Equation::TermKind::Gradient: return "gradient";
-        case Equation::TermKind::Diffusion: return "diffusion";
-        case Equation::TermKind::Source: return "source";
-        case Equation::TermKind::Constraint: return "constraint";
-        case Equation::TermKind::AlgebraicRelation: return "algebraic";
+        case SF::Equation::TermKind::Transient: return "transient";
+        case SF::Equation::TermKind::Divergence: return "divergence";
+        case SF::Equation::TermKind::Gradient: return "gradient";
+        case SF::Equation::TermKind::Diffusion: return "diffusion";
+        case SF::Equation::TermKind::Source: return "source";
+        case SF::Equation::TermKind::Constraint: return "constraint";
+        case SF::Equation::TermKind::AlgebraicRelation: return "algebraic";
     }
     return "unknown";
 }
@@ -157,17 +158,38 @@ void printNumericalSystem(
            << "  required halo width : " << numerical.requiredHaloWidth << "\n";
     if (numerical.pressureFaceCoupling != PressureFaceCoupling::None)
         output << "  pressure face coupling : RhieChow\n";
-    if (numerical.terms.empty()) {
-        output << "  bound terms         : (none)\n";
+    if (numerical.pressureOperator) {
+        output << "  pressure temporal treatment : one physical step; first predictor R(U_n); "
+               << "repeated outer predictors use U_n + dt R(U_k) (Legacy fixed-time iteration, "
+               << "not strict forwardEuler or a generic implicit recipe)\n";
+        output << "  pressure outer convergence : relativeDelta <= "
+               << numerical.pressureOperator->relativeTolerance
+               << " AND max|div(F_final)| <= "
+               << numerical.pressureOperator->absoluteTolerance << "\n";
+    }
+    if (numerical.operators.empty()) {
+        output << "  bound Equation occurrences : (none)\n";
     } else {
-        output << "  bound terms\n";
-        for (const auto& term : numerical.terms) {
-            output << "    " << term.equationId << "[" << term.ordinal << "] "
-                   << termKindName(term.kind) << "(" << term.primary;
+        output << "  bound Equation occurrences\n";
+        for (const auto& term : numerical.operators) {
+            output << "    " << term.formulaId << "@" << term.occurrence
+                   << " -> " << term.output << " " << term.operatorName
+                   << "(" << term.primary;
             if (!term.secondary.empty()) output << "," << term.secondary;
-            output << ") -> " << FDM::toString(term.recipe.id())
-                   << " [" << FDM::toString(term.recipe.temporalRole())
-                   << ", halo=" << term.recipe.haloWidth() << "]\n";
+            output << ") -> " << (term.recipe
+                ? FDM::toString(term.recipe->id()) : "provider-defined")
+                   << " provider=" << term.provider
+                   << " owner=" << term.providerOwner
+                   << " compiledData="
+                   << (term.compiledDataAvailable ? "available" : "none")
+                   << " side="
+                   << (term.side==CompiledSpatialBinding::Side::Right ? "right" : "left");
+            if (term.executionEquationId!=term.formulaId)
+                output << " execution=" << term.executionEquationId;
+            if (term.recipe)
+                output << " [" << FDM::toString(term.recipe->temporalRole())
+                       << ", halo=" << term.recipe->haloWidth() << "]";
+            output << "\n";
         }
     }
     output << "  workspace requirements\n";
@@ -187,13 +209,12 @@ void printPhysicalEquations(
         const ResolvedSimulationSystem& system) {
     output << "\nPHYSICAL EQUATIONS\n";
     bool printed = false;
-    for (const auto& equation : system.executableSystem.equations) {
+    for (const auto& equation : system.executableSystem.legacyEquations) {
         if (isAlgebraicEquation(equation)) continue;
         output << "  " << equation.id << "  " << equation.name;
         if (!equation.kind.empty()) output << "  {" << equation.kind << "}";
-        const auto& definition = equationDefinition(system,equation.id);
-        output << "\n    " << expressionText(definition.left)
-               << " = " << expressionText(definition.right) << "\n";
+        const auto& formula=system.executableSystem.registry.at(equation.id);
+        output << "\n    " << formulaText(formula) << "\n";
         printed = true;
     }
     if (!printed) output << "  (none)\n";
@@ -213,7 +234,7 @@ void printAlgebraicConstraints(
         output << "  " << displayId << "  " << name << "\n";
         printed = true;
     };
-    for (const auto& equation : system.executableSystem.equations) {
+    for (const auto& equation : system.executableSystem.legacyEquations) {
         if (equation.kind == "constraint" || isPressureConstraint(equation.id)) {
             emit(equation.id, constraintName(equation));
         }
@@ -234,10 +255,10 @@ bool hasAlgebraicContent(
     for (const auto& id : block.equations) {
         if (id == "E_IBM_STATIONARITY" || isPressureConstraint(id)) return true;
         const auto equation = std::find_if(
-            system.executableSystem.equations.begin(),
-            system.executableSystem.equations.end(),
+            system.executableSystem.legacyEquations.begin(),
+            system.executableSystem.legacyEquations.end(),
             [&](const EquationDescriptor& value) { return value.id == id; });
-        if (equation != system.executableSystem.equations.end()
+        if (equation != system.executableSystem.legacyEquations.end()
             && equation->category != EquationCategory::AlgorithmicDerivedEquation
             && isAlgebraicEquation(*equation)) {
             return true;
@@ -261,7 +282,7 @@ std::string algebraicRowLabel(
     for (const auto& constraint : system.executableSystem.constraints) {
         if (constraint.id == id) return constraint.name;
     }
-    for (const auto& equation : system.executableSystem.equations) {
+    for (const auto& equation : system.executableSystem.legacyEquations) {
         if (equation.id == id) return equation.name;
     }
     return id;
@@ -294,7 +315,7 @@ void printAlgebraicSystems(
         for (const auto& id : block->equations) {
             // The monolithic descriptor also carries the predictor momentum
             // id for ownership; stationarity is its actual KKT row.
-            if (hasStationarity && id == "E_MOMENTUM") continue;
+            if (hasStationarity && id == "momentum") continue;
             appendRow(id);
         }
         for (const auto& id : block->constraints) {
@@ -332,9 +353,9 @@ void printSolveBlocks(
 
 bool hasConstraintVariables(const ResolvedSimulationSystem& system) {
     return std::any_of(
-        system.executableSystem.unknowns.begin(),
-        system.executableSystem.unknowns.end(),
-        [](const UnknownDescriptor& unknown) {
+        system.executableSystem.state.symbols().begin(),
+        system.executableSystem.state.symbols().end(),
+        [](const StateSymbol& unknown) {
             return unknown.location == VariableLocation::BodyConstraint
                 || unknown.location == VariableLocation::SurfaceConstraint;
         });
@@ -374,8 +395,8 @@ void printRawSystem(
         std::ostringstream& output,
         const ResolvedSimulationSystem& system) {
     output << "\nRAW EQUATION SYSTEM\n";
-    if (system.rawSystem.equations.empty()) output << "  (none)\n";
-    for (const auto& equation : system.rawSystem.equations) {
+    if (system.rawSystem.legacyEquations.empty()) output << "  (none)\n";
+    for (const auto& equation : system.rawSystem.legacyEquations) {
         output << "  " << equation.id << "  " << equation.name
                << "  category=" << toString(equation.category)
                << "  origin=" << toString(equation.origin.kind) << "\n";
@@ -447,10 +468,20 @@ void printPlanNode(
            << toString(node.kind) << "  " << node.id;
     if (!node.name.empty()) output << "  " << node.name;
     if (node.repetitions != 1) output << "  repeat=" << node.repetitions;
+    if (!node.terminationSignal.empty()) {
+        output << "  maxIterations=" << node.repetitions
+               << "  termination=" << node.terminationSignal;
+    }
     if (!node.operation.empty()) {
-        output << "  operation=" << node.operation;
+        output << "  operation=" << node.operation << " provider=" << node.provider;
+        output << " legacyAdapter=" << (node.legacyAdapter ? "true" : "false");
+        if (node.legacyAdapter) output << " [Legacy adapter]";
     }
     output << "\n";
+    for (const CompiledMathRef& call:node.equationCalls) {
+        output << std::string(static_cast<std::size_t>((depth+1)*2),' ')
+               << call.equation << " -> " << call.target << "\n";
+    }
     for (const auto& child : node.children) {
         printPlanNode(output,child,depth+1);
     }
@@ -463,7 +494,8 @@ void printCompiledPlan(
     printPlanNode(output,system.solvePlan.root,1);
     output << "\nRUNTIME STATUS\n"
            << "  " << (system.runtime.report.status == RuntimeStatus::Runnable
-                ? "runnable" : "unsupported") << "\n";
+                ? "runnable" : system.runtime.report.status == RuntimeStatus::Invalid
+                    ? "invalid" : "unsupported") << "\n";
     output << "\nREQUIRED OPERATIONS\n";
     if (system.runtime.report.requiredOperations.empty()) output << "  (none)\n";
     for (const auto& operation : system.runtime.report.requiredOperations) {
@@ -487,7 +519,160 @@ std::string describe(const ResolvedSimulationSystem& system) {
     output << "\n============================================================\n"
            << "sonicSolver - Resolved Mathematical System\n"
            << "============================================================\n"
-           << "FLOW (WHAT)\n"
+           ;
+    output << "\nWHAT / EQUATIONS\n";
+    for (const Equation& formula:system.executableSystem.registry.entries()) {
+        output << "  " << formula.id << ": " << formulaText(formula) << "\n";
+    }
+    output << "\nSTATE — selected solution variables\n  origin : "
+           << system.executableSystem.state.selectionOrigin() << "\n  use :";
+    for (const auto& id:system.executableSystem.state.solutionVariables()) output << " " << id;
+    output << "\nSTATE — model contributed transported variables\n  use :";
+    for (const auto& symbol:system.executableSystem.state.symbols())
+        if (symbol.role==StateRole::Transported
+            && !system.executableSystem.state.isSolution(symbol.id)) output << " " << symbol.id;
+    output << "\nSTATE — active dependencies\n  require :";
+    for (const auto& symbol:system.executableSystem.state.symbols())
+        if (!system.executableSystem.state.isSolution(symbol.id)) output << " " << symbol.id;
+    output << "\n";
+    output << "\nSTATE / BASE VARIABLES (active case symbols only)\n";
+    for (const auto& symbol:system.executableSystem.state.symbols())
+        output << unknownDescription(symbol);
+    output << "\nSTATE VIEWS / COMPILED DEMANDS\n"
+           << "  requested views (storage authority; no execution order):\n";
+    for (const auto& view:system.solvePlan.compiledProgram.stateViews) {
+        output << "    " << toString(view.kind) << "(" << view.symbol;
+        if (view.stage>=0) output << "," << view.stage;
+        output << ") -> " << view.storage << " [" << view.components << "] "
+               << (view.owner==StateViewOwner::PhysicalState ? "physical-state"
+                   : view.owner==StateViewOwner::CompilerWorkspace ? "compiler-workspace" : "numerical-provider")
+               << "\n";
+    }
+    output << "\nHOW / EXECUTION\n";
+    const auto printHow=[&](const auto& self,const ExecutionScope& node,int depth)->void {
+        output << std::string(static_cast<std::size_t>(depth)*2,' ')
+               << node.order << " " << toString(node.kind);
+        if (node.kind==ExecutionKind::EquationCall) {
+            output << " " << node.step.equation;
+            if (!node.step.occurrence.empty()) output << "@" << node.step.occurrence;
+            output << " -> " << targetText(node.step.target);
+        } else if (!node.id.empty()) {
+            output << " " << node.id;
+        }
+        if (node.kind==ExecutionKind::Loop)
+            output << " limit=" << node.repetitions;
+        if (!node.terminationSignal.empty())
+            output << " until=" << node.terminationSignal;
+        output << " [" << node.origin.source << "]\n";
+        for (const auto& child:node.children) self(self,child,depth+1);
+    };
+    printHow(printHow,system.solvePlan.sourceProgram.root,1);
+    if (system.solvePlan.compiledProgram.steps.empty())
+        output << "  Legacy numerical backend / migration pending\n";
+    if (!system.solvePlan.sourceProgram.legacyEntries.empty()) {
+        output << "  Legacy execution authority (pending entries are not scheduled twice):\n";
+        for (const auto& entry:system.solvePlan.sourceProgram.legacyEntries)
+            printHow(printHow,entry,2);
+    }
+    output << "\nWHICH / NUMERICS\n";
+    output << "  time: " << FDM::toString(system.numericalSelection.recipes.time.id()) << "\n";
+    for (const auto& binding:system.numericalSelection.bindings) {
+        output << "  " << binding.equation;
+        if (!binding.occurrence.empty()) output << "@" << binding.occurrence;
+        output << " -> " << binding.method << "\n";
+    }
+    if (system.numericalSelection.pressureOperator) {
+        output << "  linear: HYPRE (selected pressure linear configuration)\n"
+               << "  face coupling: RhieChow\n";
+    }
+    if (!system.numericalSelection.legacySpatialInputs.empty())
+        output << "  Legacy numerical backend: explicit spatial input adapter\n";
+    output << "  frozen method -> runtime provider bindings:\n";
+    for (const auto& call:system.solvePlan.compiledProgram.steps)
+        output << "    " << call.source.equation << "@" << call.source.occurrence
+               << " method=" << call.equationMethod << " provider=" << call.backendProvider << "\n";
+    output << "  explicit provider fusion contracts:\n";
+    std::vector<std::string> shownFusion;
+    for (const auto& call:system.solvePlan.compiledProgram.steps) {
+        if (call.fusionKey.empty() || std::find(shownFusion.begin(),shownFusion.end(),call.fusionKey)!=shownFusion.end()) continue;
+        shownFusion.push_back(call.fusionKey);
+        output << "    " << call.fusionKey << " {";
+        for (const auto& member:call.fusionMembers) output << " " << member.equation << "->" << member.target;
+        output << " } -> " << call.backendOperation << " provider=" << call.backendProvider
+               << " temporal=" << call.temporalMethod << "\n";
+    }
+    output << "\nCOMPILED OCCURRENCES / STORAGE / PROVIDERS\n";
+    for (const auto& step:system.solvePlan.compiledProgram.steps) {
+        output << "  " << step.source.equation << " -> "
+               << targetText(step.source.target) << "\n"
+               << "    equation method: " << step.equationMethod << "\n"
+               << "    selected runtime provider: " << step.backendProvider << "\n";
+        if (!step.fragment.children.empty()) {
+            output << "    compiled method fragment:\n";
+            const auto printMethod=[&](const auto& self,
+                const SolvePlanNode& node,int depth)->void {
+                output << std::string(static_cast<std::size_t>(depth)*2,' ')
+                       << toString(node.kind);
+                if (!node.operation.empty()) output << " -> " << node.operation << " provider=" << node.provider;
+                output << "\n";
+                for (const auto& child:node.children) self(self,child,depth+1);
+            };
+            printMethod(printMethod,step.fragment,3);
+        } else {
+            output << "    compiled backend: " << step.backendOperation << "\n";
+        }
+        if (!step.temporalMethod.empty())
+            output << "    temporal method: " << step.temporalMethod << "\n";
+        if (!step.operatorBindings.empty()) {
+            output << "    spatial/source providers:";
+            for (const auto& provider:step.operatorBindings)
+                output << " " << provider;
+            output << "\n";
+        }
+        output
+               << "    output symbols:";
+        for (const auto& symbol:step.writes)
+            output << " " << symbol;
+        output << "\n";
+        if (!step.target.workspace.empty())
+            output << "    output workspace: "
+                   << step.target.workspace << "\n";
+        if (!step.workspaceRequires.empty()) {
+            output << "    requires workspace:";
+            for (const auto& id:step.workspaceRequires) output << " " << id;
+            output << "\n";
+        }
+        if (!step.workspaceProvides.empty()) {
+            output << "    provides workspace:";
+            for (const auto& id:step.workspaceProvides) output << " " << id;
+            output << "\n";
+        }
+        if (!step.sourceMathInputs.empty()) {
+            output << "    source mathematics (Equation):";
+            for (const auto& id:step.sourceMathInputs) output << " " << id;
+            output << "\n";
+        }
+        for (const auto& requirement:step.requirements)
+            output << "    requires: " << requirement << "\n";
+        if (!step.fragment.children.empty())
+            output << "    execution: selected provider [Implemented numerical backend]"
+                      " (method owns operation order)\n";
+        else if (step.equationMethod=="DirectEvaluation")
+            output << "    execution: generic direct Equation method\n";
+        else if (step.temporalResidual)
+            output << "    execution: fused conservative stage provider\n";
+        else
+            output << "    execution: registered relation provider\n";
+    }
+    if (std::any_of(system.solvePlan.compiledProgram.steps.begin(),
+            system.solvePlan.compiledProgram.steps.end(),
+            [](const CompiledEquationCall& step) {
+                return step.equationMethod=="PressureMomentum";
+            }))
+        output << "  execution authority: ordered ExecutionProgram.root\n";
+
+    output << "SYSTEM / STATE / BACKEND DETAILS\n"
+
            << "  template origin : "
            << toString(system.classification.templateOrigin)
            << "\n"
@@ -529,7 +714,7 @@ std::string describe(const ResolvedSimulationSystem& system) {
         }
     }
 
-    // STATE REALIZATION：由 executable equations 的 role 导出。
+    // STATE role summary is independent of HOW order.
     output << "\nSTATE REALIZATION\n"
            << "  conservative transported mass : "
            << (system.realization.conservativeTransportedMass ? "yes" : "no")
@@ -562,12 +747,25 @@ std::string describe(const ResolvedSimulationSystem& system) {
     printRoleGroup("derived",system.realization.derived);
     printRoleGroup("multipliers",system.realization.multipliers);
 
+    const auto& time=system.numericalSystem.time.recipe;
     output << "\nTIME RECIPE\n"
-           << "  id       : " << FDM::toString(system.timeRecipe.id()) << "\n"
-           << "  family   : " << FDM::toString(system.timeRecipe.family()) << "\n"
-           << "  order    : " << system.timeRecipe.order() << "\n"
-           << "  topology : " << FDM::toString(system.timeRecipe.topology()) << "\n"
-           << "  stages   : " << system.timeRecipe.stageCount() << "\n";
+           << "  id       : " << FDM::toString(time.id()) << "\n"
+           << "  family   : " << FDM::toString(time.family()) << "\n"
+           << "  order    : " << time.order() << "\n"
+           << "  topology : " << FDM::toString(time.topology()) << "\n"
+           << "  stages   : " << time.stageCount() << "\n";
+    for (int index=0;index<time.stageCount();++index) {
+        const auto& stage=time.stage(index);
+        output << "    stage " << index+1 << ": c=" << stage.abscissa
+               << " base=" << stage.baseWeight
+               << " increment=" << stage.incrementWeight << "\n";
+    }
+    if (time.id()==FDM::TimeRecipeId::ClassicalRK4) {
+        const auto weights=time.finalWeights();
+        output << "    final weights: " << weights[0] << "," << weights[1]
+               << "," << weights[2] << "," << weights[3]
+               << " / " << time.finalDivisor() << "\n";
+    }
 
     printNumericalSystem(output,system.numericalSystem);
 
@@ -594,7 +792,8 @@ std::string describe(const ResolvedSimulationSystem& system) {
                << (binding.provider.empty() ? "none" : binding.provider) << "\n"
                << "    status   : "
                << (binding.status == BindingStatus::Resolved
-                   ? "Resolved" : "Unsupported") << "\n";
+                   ? "Resolved" : binding.status == BindingStatus::Invalid
+                       ? "Invalid" : "Unsupported") << "\n";
         if (!binding.reason.empty()) {
             output << "    reason   : " << binding.reason << "\n";
         }
@@ -612,6 +811,25 @@ std::string describe(const ResolvedSimulationSystem& system) {
 
     printSolveBlocks(output, system);
     printCompiledPlan(output,system);
+    output << "\nFORMULA CALL EXECUTION\n";
+    bool hasFormulaCalls=false;
+    const auto printCallBindings=[&](const auto& self,const SolvePlanNode& node)
+        -> void {
+        for (const CompiledMathRef& call:node.equationCalls) {
+            hasFormulaCalls=true;
+            output << "  " << call.equation << " -> " << node.operation
+                   << " provider="
+                   << (node.provider.empty() ? "unbound" : node.provider) << "\n";
+        }
+        for (const auto& child:node.children) self(self,child);
+    };
+    printCallBindings(printCallBindings,system.solvePlan.root);
+    if (hasFormulaCalls) {
+        output << "  lowering: operation-bound production numerical provider; "
+                  "generic FormulaCompiler is not yet this path\n";
+    } else {
+        output << "  (none)\n";
+    }
     output << "\nEXECUTION REQUIREMENTS\n";
     for (const auto& requirement : system.runtime.requirements) {
         output << "  " << requirement.name << "  "

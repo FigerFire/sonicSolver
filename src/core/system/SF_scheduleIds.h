@@ -2,5 +2,6 @@
 
 namespace SF::System {
 inline constexpr const char* kPressureScheduleId = "S_PRESSURE";
-inline constexpr const char* kSharedPressureScheduleId = "S_EE_PIMPLE";
+inline constexpr const char* kPressureOuterConvergedSignal =
+    "pressure.outer.converged";
 } // namespace SF::System

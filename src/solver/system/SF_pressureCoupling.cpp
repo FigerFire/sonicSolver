@@ -1,9 +1,11 @@
+#include "core/system/SF_operationIds.h"
 /// @file SF_pressureCoupling.cpp
 /// @brief pressure-constraint coupling preset 的匹配与贡献实现。
 
 #include "SF_pressureCoupling.h"
 
 #include <algorithm>
+#include <stdexcept>
 
 namespace SF::System {
 namespace {
@@ -31,28 +33,52 @@ const ConstraintDescriptor* pressureConstraintOf(
 
 bool rawHasUnknown(const RawEquationSystem& raw, const std::string& id) {
     return std::any_of(
-        raw.unknowns.begin(),raw.unknowns.end(),
-        [&](const UnknownDescriptor& unknown) { return unknown.id == id; });
+        raw.state.symbols().begin(),raw.state.symbols().end(),
+        [&](const StateSymbol& unknown) { return unknown.id == id; });
 }
 
-bool rawHasEquation(const RawEquationSystem& raw, const std::string& id) {
-    return std::any_of(
-        raw.equations.begin(),raw.equations.end(),
-        [&](const EquationDescriptor& equation) {
-            return equation.id == id;
-        });
+bool rawHasEquation(const RawEquationSystem& raw,const std::string& id) {
+    return raw.registry.contains(id);
 }
 
-/// @brief 是否存在动量方程（单流体 E_MOMENTUM 或逐相 E_MOMENTUM.<phase>）。
 bool hasMomentumEquation(const RawEquationSystem& raw) {
-    return std::any_of(
-        raw.equations.begin(),raw.equations.end(),
-        [](const EquationDescriptor& equation) {
-            return equation.id.compare(0,10,"E_MOMENTUM") == 0;
-        });
+    return std::any_of(raw.registry.entries().begin(),raw.registry.entries().end(),
+        [](const Equation& equation) { return equation.id.rfind("momentum",0)==0; });
 }
 
 } // namespace
+
+std::vector<Equation> conservativePressureRelations() {
+    using Expr=FormulaExpr;
+    const auto symbol=[](const char* id) { return Expr::symbol(id); };
+    const Provenance origin{OriginKind::Generated,"conservative pressure correction"};
+    // Corrector::assemble uses reaction + face-averaged inverse-density diffusion.
+    const auto compliance=Expr::multiply(symbol("rho"),Expr::multiply(
+        Expr::multiply(symbol("soundSpeed"),symbol("soundSpeed")),
+        Expr::multiply(symbol("dt"),symbol("dt"))));
+    std::vector<Equation> equations{
+        {"pSimple",Expr::subtract(Expr::divide(symbol("pPrime"),compliance),
+            Expr::op("div",{Expr::multiply(
+                Expr::op("faceAverage",{Expr::divide(Expr::constantValue(1.0),symbol("rho"))}),
+                Expr::op("grad",{symbol("pPrime")}))})),
+            Expr::negate(Expr::divide(Expr::op("div",{symbol("U")}),symbol("dt"))),origin},
+        {"correctU",symbol("rhoU"),Expr::subtract(symbol("rhoU"),
+            Expr::multiply(Expr::multiply(symbol("momentumRelaxation"),symbol("dt")),
+                Expr::op("grad",{symbol("pPrime")}))),origin},
+        {"correctP",symbol("p"),Expr::add(symbol("p"),
+            Expr::multiply(symbol("pressureRelaxation"),symbol("pPrime"))),origin},
+        {"correctFluxp",symbol("fluxValidity"),
+            Expr::op("invalidateDerivedFlux",{symbol("rhoU")}),origin},
+        {"publishPressure",symbol("rhoE"),Expr::op("totalEnergyFromPressure",
+            {symbol("rho"),symbol("rhoU"),symbol("p")}),origin},
+        {"relaxIterate",symbol("iterate"),Expr::op("relax",
+            {symbol("iterate"),symbol("laggedIterate")}),origin},
+        {"restoreFlux",symbol("fluxValidity"),Expr::op("consistentFlux",
+            {symbol("rhoU"),symbol("p")}),origin},
+        {"checkConvergence",symbol("converged"),Expr::op("residualConvergence",
+            {symbol("iterate"),symbol("laggedIterate")}),origin}};
+    return equations;
+}
 
 const char* toString(CouplingStatus status) {
     switch (status) {
@@ -78,250 +104,140 @@ CouplingPresetRequest couplingRequestFrom(
     return request;
 }
 
+void applyPressureExecution(ExecutionProgram& program,
+                            const CouplingPresetRequest& request,
+                            std::string_view momentumTarget) {
+    const bool conservative=momentumTarget=="rhoU";
+    auto& entries=program.root.children;
+    const auto found=std::find_if(entries.begin(),entries.end(),
+        [&](const ExecutionScope& node) {
+            return node.kind==ExecutionKind::EquationCall
+                && node.step.equation=="momentum"
+                && node.step.target.symbol==momentumTarget && node.step.target.kind==TargetKind::Physical
+                && (node.id=="momentum.default" || node.step.occurrence.empty());
+        });
+    if (found==entries.end())
+        throw std::runtime_error("Pressure HOW transformation requires a default momentum occurrence.");
+    ExecutionScope predictor=*found;
+    entries.erase(found);
+    predictor.step.target.kind=conservative ? TargetKind::Physical : TargetKind::Working;
+    predictor.step.occurrence="predictor";
+    predictor.order=10;
+    predictor.origin={OriginKind::Generated,request.preset+" transforms default momentum -> "+std::string(momentumTarget)+" @ 10"};
+    if (conservative) {
+        entries.erase(std::remove_if(entries.begin(),entries.end(),[](const auto& node) {
+            return node.origin.kind==OriginKind::BuiltinPreset && node.origin.source=="NavierStokes"
+                && (node.kind==ExecutionKind::Commit
+                    || (node.kind==ExecutionKind::EquationCall && node.step.occurrence.empty()
+                        && (node.step.equation=="continuity" || node.step.equation=="energy")));
+        }),entries.end());
+    }
+    const auto call=[&](const char* equation,const char* symbol,Order order,TargetKind kind) {
+        ExecutionScope node;
+        node.kind=ExecutionKind::EquationCall;
+        node.order=order;
+        node.step={equation,{symbol,kind}};
+        node.origin={OriginKind::BuiltinPreset,request.preset};
+        return node;
+    };
+    const auto loop=[&](std::string id,int count,Order order) {
+        ExecutionScope node;
+        node.kind=ExecutionKind::Loop;
+        node.id=std::move(id);
+        node.repetitions=count;
+        node.order=order;
+        node.origin={OriginKind::BuiltinPreset,request.preset};
+        return node;
+    };
+    const auto correction=[&] {
+        ExecutionScope body;
+        body.id="pressureCorrection";
+        auto nonOrthogonal=loop("nonOrthogonal",request.nonOrthogonalCorrectors+1,10);
+        nonOrthogonal.children.push_back(call("pSimple","p",10,
+            TargetKind::Correction));
+        body.children.push_back(std::move(nonOrthogonal));
+        body.children.push_back(call("correctU",conservative ? "rhoU" : "U",20,TargetKind::Physical));
+        body.children.push_back(call("correctP","p",30,conservative ? TargetKind::Working : TargetKind::Physical));
+        body.children.push_back(call("correctFluxp",conservative ? "fluxValidity" : "phi",40,
+            conservative ? TargetKind::Workspace : TargetKind::Physical));
+        if (conservative)
+            body.children.push_back(call("publishPressure","rhoE",50,TargetKind::Physical));
+        body.origin={OriginKind::BuiltinPreset,request.preset};
+        return body;
+    };
+    if (request.presetKind==FDM::PressureCouplingPreset::PISO) {
+        entries.push_back(std::move(predictor));
+        auto pressure=loop("pressure",request.pressureCorrectors,20);
+        pressure.children.push_back(correction());
+        entries.push_back(std::move(pressure));
+    } else {
+        auto outer=loop("outer",request.outerCorrectors,20);
+        outer.terminationSignal=kPressureOuterConvergedSignal;
+        outer.children.push_back(std::move(predictor));
+        if (request.presetKind==FDM::PressureCouplingPreset::SIMPLE) {
+            auto body=correction();body.order=20;
+            outer.children.push_back(std::move(body));
+        } else {
+            auto pressure=loop("pressure",request.pressureCorrectors,20);
+            pressure.children.push_back(correction());
+            outer.children.push_back(std::move(pressure));
+        }
+        outer.children.push_back(call("relaxIterate","iterate",30,
+            TargetKind::Workspace));
+        outer.children.push_back(call("restoreFlux",conservative ? "fluxValidity" : "phi",40,
+            TargetKind::Workspace));
+        outer.children.push_back(call("checkConvergence","converged",50,
+            TargetKind::Workspace));
+        entries.push_back(std::move(outer));
+    }
+    ExecutionScope commit;
+    commit.kind=ExecutionKind::Commit;
+    commit.id="physicalStep.commit";
+    commit.order=1000000;
+    commit.origin={OriginKind::BuiltinPreset,request.preset};
+    entries.push_back(std::move(commit));
+
+}
+
+std::vector<NumericalBinding> pressureNumerics(const CouplingPresetRequest& request,
+        std::string_view momentumTarget) {
+    if (momentumTarget=="rhoU") {
+        std::vector<NumericalBinding> bindings{
+            {"momentum","ConservativePressureMomentum",{"continuity","energy"},"predictor"},
+            {"pSimple","ConservativePressureCorrection"},
+            {"correctU","ConservativeVelocityCorrection"},
+            {"correctP","ConservativePressureUpdate"},
+            {"correctFluxp","ConservativeFluxCorrection"},
+            {"publishPressure","ConservativePressurePublication"}};
+        if (request.presetKind!=FDM::PressureCouplingPreset::PISO) {
+            bindings.insert(bindings.end(),{{"relaxIterate","ConservativeFixedTimeRelaxation"},
+                {"restoreFlux","ConservativeFluxConsistency"},
+                {"checkConvergence","ConservativeResidualConvergence"}});
+        }
+        return bindings;
+    }
+    std::vector<NumericalBinding> bindings{
+        {"momentum","PressureMomentum",{},"predictor"},
+        {"pSimple","PressureCorrection"},{"correctU","VelocityCorrection"},
+        {"correctP","PressureUpdate"},{"correctFluxp","FluxCorrection"}};
+    if (request.presetKind!=FDM::PressureCouplingPreset::PISO) {
+        bindings.insert(bindings.end(),{{"relaxIterate","FixedTimeRelaxation"},
+            {"restoreFlux","FluxConsistency"},{"checkConvergence","ResidualConvergence"}});
+    }
+    return bindings;
+}
+
 /// @brief PISO/分离式压力修正的执行片段。
 ///
 /// 片段只表达顺序与重复；每个 Leaf 引用 formulation 的 OperationStage。
 /// 具体 OpId 由 executable operation authority 解析，因此这里不再维护任何
 /// operation/provider 名单。
-PlanFragment couplingPlanFragment(const CouplingPresetRequest& request) {
-    const auto leaf = [](PlanNodeKind kind, std::string id, std::string name,
-                         OperationStage stage, std::string equation = {}) {
-        PlanFragmentNode node;
-        node.kind = PlanFragmentNode::Kind::Leaf;
-        node.id = std::move(id);
-        node.name = std::move(name);
-        node.leafKind = kind;
-        node.stage = stage;
-        node.equation = std::move(equation);
-        return node;
-    };
-    const auto loop = [](std::string id, std::string name, int repetitions) {
-        PlanFragmentNode node;
-        node.kind = PlanFragmentNode::Kind::Loop;
-        node.id = std::move(id);
-        node.name = std::move(name);
-        node.nodeKind = PlanNodeKind::Loop;
-        node.repetitions = repetitions;
-        return node;
-    };
-    const auto sequence = [](std::string id, std::string name) {
-        PlanFragmentNode node;
-        node.kind = PlanFragmentNode::Kind::Sequence;
-        node.id = std::move(id);
-        node.name = std::move(name);
-        node.nodeKind = PlanNodeKind::Sequence;
-        return node;
-    };
 
-    PlanFragment fragment;
-    fragment.id = request.preset+" pressure schedule";
-    fragment.consumedPolicies = {kPressureScheduleId};
-    fragment.priority = 20;
-    if (request.presetKind != FDM::PressureCouplingPreset::PISO) {
-        // SIMPLE/PIMPLE fixed point 需要 dedicated predictor provider；当前
-        // 没有实现，因此片段引用一个具名缺失 operation，planner 保留真实的
-        // control flow，provider resolver 报告 Unsupported。
-        const auto missing = [&](PlanNodeKind kind, std::string id,
-                                 std::string name) {
-            PlanFragmentNode node = leaf(kind,std::move(id),std::move(name),
-                                        OperationStage::Prepare);
-            node.missingOperation = "pressure.schedule."+node.id;
-            node.unsupportedReason =
-                "The selected SIMPLE/PIMPLE fixed-point schedule has no "
-                "dedicated predictor provider. The existing momentum.solve "
-                "operation advances physical state with the full dt and "
-                "cannot be repeated as an outer corrector.";
-            node.id = "PressureSchedule."+node.id;
-            return node;
-        };
-        fragment.name = "single-fluid pressure schedule without a provider";
-        fragment.nodes.push_back(missing(
-            PlanNodeKind::Update,"prepare","prepare pressure schedule"));
-        PlanFragmentNode outer = loop(
-            "PressureSchedule.outerCorrectors",
-            "pressure-velocity outer correctors",request.outerCorrectors);
-        outer.children.push_back(missing(
-            PlanNodeKind::Assemble,"predictor.assemble",
-            "assemble dedicated fixed-point predictor"));
-        outer.children.push_back(missing(
-            PlanNodeKind::Solve,"predictor.solve",
-            "solve dedicated fixed-point predictor"));
-        PlanFragmentNode corrections = loop(
-            "PressureSchedule.pressureCorrectors","pressure correctors",
-            request.pressureCorrectors);
-        corrections.children.push_back(missing(
-            PlanNodeKind::Update,"boundary.prepare",
-            "prepare pressure boundary state"));
-        PlanFragmentNode nonOrthogonal = loop(
-            "PressureSchedule.nonOrthogonalCorrectors",
-            "non-orthogonal passes",request.nonOrthogonalCorrectors+1);
-        nonOrthogonal.children.push_back(missing(
-            PlanNodeKind::Assemble,"assemble",
-            "assemble pressure correction"));
-        nonOrthogonal.children.push_back(missing(
-            PlanNodeKind::Solve,"solve","solve pressure correction"));
-        corrections.children.push_back(std::move(nonOrthogonal));
-        corrections.children.push_back(missing(
-            PlanNodeKind::Correct,"update.prepare",
-            "prepare pressure update"));
-        corrections.children.push_back(missing(
-            PlanNodeKind::Correct,"velocity","correct velocity"));
-        corrections.children.push_back(missing(
-            PlanNodeKind::Correct,"flux","correct face flux"));
-        corrections.children.push_back(missing(
-            PlanNodeKind::Update,"correction.commit",
-            "commit pressure correction"));
-        outer.children.push_back(std::move(corrections));
-        outer.children.push_back(missing(
-            PlanNodeKind::ConvergenceCheck,"convergence.check",
-            "check pressure-velocity convergence"));
-        fragment.nodes.push_back(std::move(outer));
-        fragment.nodes.push_back(missing(
-            PlanNodeKind::Commit,"step.commit","commit pressure step"));
-        return fragment;
-    }
 
-    fragment.name = "generic PISO time-step sequence";
-    fragment.nodes.push_back(leaf(
-        PlanNodeKind::Update,"PISO.prepare","prepare boundary and closure",
-        OperationStage::Prepare));
-    PlanFragmentNode outer = loop("PISO.outerCorrectors","PISO outer schedule",
-                                  request.outerCorrectors);
-    outer.children.push_back(leaf(
-        PlanNodeKind::Assemble,"PISO.momentum.assemble",
-        "assemble momentum predictor",OperationStage::MomentumAssemble,
-        "E_MOMENTUM_PREDICTOR"));
-    outer.children.push_back(leaf(
-        PlanNodeKind::Solve,"PISO.momentum.solve","advance momentum predictor",
-        OperationStage::MomentumSolve,"E_MOMENTUM_PREDICTOR"));
-    PlanFragmentNode correctorLoop = loop(
-        "PISO.pressureCorrectors","PISO pressure correctors",
-        request.pressureCorrectors);
-    PlanFragmentNode correction = sequence(
-        "PISO.pressureCorrection","pressure correction sequence");
-    correction.children.push_back(leaf(
-        PlanNodeKind::Update,"PISO.pressure.prepare",
-        "prepare pressure boundary state",
-        OperationStage::PressureBoundaryPrepare));
-    PlanFragmentNode nonOrthogonal = loop(
-        "PISO.nonOrthogonalCorrectors","PISO non-orthogonal passes",
-        request.nonOrthogonalCorrectors+1);
-    nonOrthogonal.children.push_back(leaf(
-        PlanNodeKind::Assemble,"PISO.pressure.assemble",
-        "assemble pressure correction",OperationStage::PressureAssemble,
-        "E_PRESSURE"));
-    nonOrthogonal.children.push_back(leaf(
-        PlanNodeKind::Solve,"PISO.pressure.solve","solve pressure correction",
-        OperationStage::PressureSolve,"E_PRESSURE"));
-    correction.children.push_back(std::move(nonOrthogonal));
-    correction.children.push_back(leaf(
-        PlanNodeKind::Correct,"PISO.velocity.correct","velocity correction",
-        OperationStage::VelocityCorrect));
-    correction.children.push_back(leaf(
-        PlanNodeKind::Correct,"PISO.pressure.update","prepare pressure update",
-        OperationStage::PressureUpdatePrepare));
-    correction.children.push_back(leaf(
-        PlanNodeKind::Correct,"PISO.flux.correct",
-        "refresh derived face-flux state",OperationStage::FluxCorrect));
-    correction.children.push_back(leaf(
-        PlanNodeKind::Update,"PISO.pressure.commit",
-        "commit pressure-corrected state",OperationStage::CorrectionCommit));
-    correctorLoop.children.push_back(std::move(correction));
-    outer.children.push_back(std::move(correctorLoop));
-    fragment.nodes.push_back(std::move(outer));
-    fragment.nodes.push_back(leaf(
-        PlanNodeKind::Commit,"PISO.commit","commit corrected state",
-        OperationStage::StepCommit));
-    return fragment;
-}
+namespace Legacy {
 
-PlanFragment sharedPressurePlanFragment(
-        const ExecutionPolicy& policy,
-        const ExecutableEquationSystem& executable) {
-    const auto leaf = [](const char* operation, const char* name) {
-        PlanFragmentNode node;
-        node.kind = PlanFragmentNode::Kind::Leaf;
-        node.leafKind = PlanNodeKind::Update;
-        node.operation = operation;
-        node.id = std::string("EE.") + std::string(operation).substr(3);
-        node.name = name;
-        return node;
-    };
-    const auto loop = [](const char* id, const char* name, int count) {
-        PlanFragmentNode node;
-        node.kind = PlanFragmentNode::Kind::Loop;
-        node.nodeKind = PlanNodeKind::Loop;
-        node.id = id;
-        node.name = name;
-        node.repetitions = count;
-        return node;
-    };
-    const auto declared = [&](const char* id) {
-        return std::any_of(executable.operations.begin(),executable.operations.end(),
-            [id](const ExecutableOperation& item) {
-                return item.operation == id;
-            });
-    };
-    PlanFragment fragment;
-    fragment.id = "sharedPressure";
-    fragment.rootId = "EE.step";
-    fragment.consumedPolicies = {kSharedPressureScheduleId};
-    fragment.includeTimePolicy = false;
-    fragment.name = "Eulerian PIMPLE time step";
-    fragment.nodes.push_back(leaf("ee.dt.compute","compute stable time step"));
-    auto begin = leaf("ee.step.begin","reset diagnostics and prepare state");
-    begin.id = "EE.begin";
-    fragment.nodes.push_back(std::move(begin));
-    auto outer = loop("EE.outer","Eulerian outer corrector",policy.repeatCount);
-    outer.children.push_back(leaf("ee.interphase.compute","interphase coupling"));
-    outer.children.push_back(leaf("ee.sources.assemble","phase sources"));
-    if (declared("ee.turbulence.prepare")) {
-        outer.children.push_back(leaf("ee.turbulence.prepare","turbulence closure preparation"));
-    }
-    outer.children.push_back(leaf("ee.sources.validate","validate source time step"));
-    for (const auto& item : std::vector<std::pair<const char*,const char*>>{
-            {"ee.momentum.diagonal","momentum diagonal"},
-            {"ee.momentum.flux","interpolated momentum flux"},
-            {"ee.faceFlux.canonical","canonical phase flux"},
-            {"ee.continuity.assemble","phase continuity"},
-            {"ee.boundary.prepare","boundary and halo"},
-            {"ee.momentum.solve","momentum predictors"},
-            {"ee.interphase.correct","semi-implicit interphase"},
-            {"ee.boundary.afterMomentum","boundary and halo after momentum"},
-            {"ee.diagonal.sync","momentum diagonal synchronization"},
-            {"ee.momentum.flux.after","interpolated momentum flux"},
-            {"ee.faceFlux.canonical.after","canonical phase flux"}}) {
-        outer.children.push_back(leaf(item.first,item.second));
-    }
-    auto pressure = loop("EE.pressure","Eulerian pressure corrector",
-                         policy.nestedRepeatCount);
-    auto nonOrth = loop("EE.nonOrthogonal","Eulerian non-orthogonal correction",
-                        policy.innerRepeatCount);
-    for (const auto& item : std::vector<std::pair<const char*,const char*>>{
-            {"ee.pressure.solve","pressure correction solve"},
-            {"ee.pressure.publish","publish pressure correction"},
-            {"ee.pressure.sync","pressure correction synchronization"},
-            {"ee.phase.correct","phase correction"},
-            {"ee.faceFlux.correct","canonical face-flux correction"},
-            {"ee.boundary.afterPressure","boundary and halo after pressure"},
-            {"ee.faceFlux.canonical.pressure","canonical phase flux"}}) {
-        nonOrth.children.push_back(leaf(item.first,item.second));
-    }
-    pressure.children.push_back(std::move(nonOrth));
-    outer.children.push_back(std::move(pressure));
-    outer.children.push_back(leaf("ee.energy.solve","phase energy"));
-    if (declared("ee.turbulence.solve")) {
-        outer.children.push_back(leaf("ee.turbulence.solve","turbulence equations"));
-    }
-    outer.children.push_back(leaf("ee.boundary.final","boundary and halo"));
-    outer.children.push_back(leaf("ee.outer.validate","outer-state validation"));
-    fragment.nodes.push_back(std::move(outer));
-    auto commit = leaf("ee.step.commit","commit time level and diagnostics");
-    commit.id = "EE.commit";
-    fragment.nodes.push_back(std::move(commit));
-    fragment.nodes.push_back(leaf("ee.time.commit","commit dt, physical time and step"));
-    return fragment;
-}
+
+} // namespace Legacy
 
 namespace {
 
@@ -329,6 +245,8 @@ void collectMissingStages(const PlanFragmentNode& node,
                           const ExecutableEquationSystem& executable,
                           std::vector<std::string>* missing) {
     if (node.kind == PlanFragmentNode::Kind::Leaf) {
+        // Exact EquationCall resolution happens after EquationMethod compilation.
+        if (!node.step.empty()) return;
         if (!node.operation.empty()) {
             if (std::any_of(executable.operations.begin(),executable.operations.end(),
                 [&](const ExecutableOperation& item) {
@@ -358,7 +276,7 @@ void collectMissingStages(const PlanFragmentNode& node,
 
 } // namespace
 
-bool couplingPlanResolved(const PlanFragment& fragment,
+bool couplingPlanResolved(const LegacyPlanFragment& fragment,
                           const ExecutableEquationSystem& executable,
                           std::vector<std::string>* missing) {
     std::vector<std::string> found;
@@ -369,27 +287,7 @@ bool couplingPlanResolved(const PlanFragment& fragment,
     return found.empty();
 }
 
-std::vector<std::string> couplingReportOperations(
-        const CouplingPresetRequest& request) {
-    std::vector<std::string> result;
-    const PlanFragment fragment = couplingPlanFragment(request);
-    const auto collect = [&](const auto& self,
-                             const PlanFragmentNode& node) -> void {
-        if (node.kind == PlanFragmentNode::Kind::Leaf) {
-            const std::string id = node.missingOperation.empty()
-                ? node.id : node.missingOperation;
-            if (std::find(result.begin(),result.end(),id) == result.end()) {
-                result.push_back(id);
-            }
-            return;
-        }
-        for (const PlanFragmentNode& child : node.children) {
-            self(self,child);
-        }
-    };
-    for (const PlanFragmentNode& node : fragment.nodes) collect(collect,node);
-    return result;
-}
+
 
 CouplingReport matchPressureCoupling(
         const CouplingPresetRequest& request,
@@ -403,7 +301,8 @@ CouplingReport matchPressureCoupling(
         "pressure multiplier unknown"};
 
     if (!hasMomentumEquation(raw)) {
-        report.status = CouplingStatus::Inactive;
+        report.status = request.explicitlyRegistered
+            ? CouplingStatus::Invalid : CouplingStatus::Inactive;
         report.reason =
             "momentum equation not present in the resolved equation system";
         return report;
@@ -411,7 +310,8 @@ CouplingReport matchPressureCoupling(
     const ConstraintDescriptor* pressureConstraint =
         pressureConstraintOf(raw);
     if (!pressureConstraint) {
-        report.status = CouplingStatus::Inactive;
+        report.status = request.explicitlyRegistered
+            ? CouplingStatus::Invalid : CouplingStatus::Inactive;
         report.reason =
             "incompressibility / pressure-multiplier constraint not present";
         return report;
@@ -421,21 +321,22 @@ CouplingReport matchPressureCoupling(
         ? rawHasUnknown(raw,"p")
         : rawHasUnknown(raw,multiplier);
     if (!pressureBound) {
-        report.status = CouplingStatus::Inactive;
+        report.status = request.explicitlyRegistered
+            ? CouplingStatus::Invalid : CouplingStatus::Inactive;
         report.reason =
             "the pressure constraint is not bound to a declared pressure "
             "unknown";
         return report;
     }
     // pressure-constraint formulation 需要生成算法压力方程；它由 transformer
-    // 产生（E_PRESSURE / E_SHARED_PRESSURE），不是用户输入。
+    // 产生（pSimple / E_SHARED_PRESSURE），不是用户输入。
     const bool shared =
         pressureConstraint->id == "C_SHARED_PRESSURE";
     const bool hasPressureEquation =
-        rawHasEquation(raw,"E_PRESSURE") || rawHasEquation(raw,"E_SHARED_PRESSURE");
+        rawHasEquation(raw,"pSimple") || rawHasEquation(raw,"E_SHARED_PRESSURE");
     if (!hasPressureEquation) {
         report.derivedEquations = {
-            shared ? "E_SHARED_PRESSURE" : "E_PRESSURE"};
+            shared ? "E_SHARED_PRESSURE" : "pSimple"};
     }
     if (request.outerCorrectors <= 0 || request.pressureCorrectors <= 0
         || request.nonOrthogonalCorrectors < 0) {
@@ -444,28 +345,21 @@ CouplingReport matchPressureCoupling(
             "registered coupling preset has invalid corrector counts";
         return report;
     }
-    // derived operations 由 formulation 声明；这里只报告片段引用的 stage，
-    // 具体 OpId 在 fragment 解析阶段从 executable operation authority 得到。
-    const PlanFragment fragment = couplingPlanFragment(request);
-    for (const PlanFragmentNode& node : fragment.nodes) {
-        const auto collect = [&](const auto& self,
-                                 const PlanFragmentNode& item) -> void {
-            if (item.kind == PlanFragmentNode::Kind::Leaf) {
-                const std::string id = item.missingOperation.empty()
-                    ? item.id : item.missingOperation;
-                if (std::find(report.derivedOperations.begin(),
-                              report.derivedOperations.end(),id)
-                    == report.derivedOperations.end()) {
-                    report.derivedOperations.push_back(id);
-                }
-                return;
-            }
-            for (const PlanFragmentNode& child : item.children) {
-                self(self,child);
-            }
-        };
-        collect(collect,node);
+    if (request.presetKind == FDM::PressureCouplingPreset::PISO
+        && request.outerCorrectors != 1) {
+        report.status = CouplingStatus::Invalid;
+        report.reason = "PISO does not define an outer fixed-point iteration; "
+            "use PIMPLE for outerCorrectors > 1.";
+        return report;
     }
+    if (request.presetKind == FDM::PressureCouplingPreset::SIMPLE
+        && request.pressureCorrectors != 1) {
+        report.status = CouplingStatus::Invalid;
+        report.reason = "SIMPLE uses one pressure correction per outer "
+            "iteration; use PIMPLE for multiple inner pressure corrections.";
+        return report;
+    }
+    // Final operations are reported from the compiled owned plan.
     report.status = CouplingStatus::Active;
     report.reason = "resolved equation/constraint system satisfies the "
                     "pressure-coupling requirements";
@@ -500,54 +394,7 @@ CouplingReport contributePressureCoupling(
             100,true,request.origin});
     }
 
-    // 2. solve-plan fragment（外层/压力/非正交重复次数）
-    ExecutionPolicy correction;
-    correction.id = shared ? kSharedPressureScheduleId : kPressureScheduleId;
-    correction.name = shared
-        ? request.preset+" phase pressure coupling"
-        : request.preset+" pressure-velocity coupling";
-    const bool fixedPoint = request.presetKind != FDM::PressureCouplingPreset::PISO;
-    correction.kind = fixedPoint
-        ? ExecutionPolicyKind::PressureVelocityFixedPoint
-        : ExecutionPolicyKind::SegregatedPressureCorrection;
-    correction.strategyName = shared
-        ? request.preset+" phase predictor/corrector"
-        : request.preset;
-    correction.strategyKind = fixedPoint
-        ? FDM::SolveStrategyKind::PressureVelocityCoupling
-        : FDM::SolveStrategyKind::PressureCorrection;
-    if (shared) {
-        // 共享压力 schedule 拥有全部相方程；缺一个都会让该方程没有 owning
-        // solve block（validation 会拒绝）。
-        correction.unknowns = {"p"};
-        for (const EquationDescriptor& equation : raw.equations) {
-            correction.equations.push_back(equation.id);
-            for (const std::string& unknown : equation.solvedUnknowns) {
-                if (unknown == "p") continue;
-                if (std::find(correction.unknowns.begin(),
-                              correction.unknowns.end(),unknown)
-                    == correction.unknowns.end()) {
-                    correction.unknowns.push_back(unknown);
-                }
-            }
-        }
-        // Algorithmic pressure equation 由 transformer 在 raw composition
-        // 之后生成。
-        correction.equations.push_back("E_SHARED_PRESSURE");
-        correction.constraints = {"C_SHARED_PRESSURE","C_VOLUME_FRACTION"};
-    } else {
-        correction.equations = report.derivedEquations.empty()
-            ? std::vector<std::string>{"E_PRESSURE"}
-            : report.derivedEquations;
-        correction.constraints = {"C_INCOMPRESSIBILITY"};
-        correction.unknowns = {"pPrime","U"};
-    }
-    correction.priority = 20;
-    correction.repeatCount = request.outerCorrectors;
-    correction.nestedRepeatCount = request.pressureCorrectors;
-    correction.innerRepeatCount = request.nonOrthogonalCorrectors+1;
-    correction.origin = request.origin;
-    system.addExecutionPolicy(std::move(correction));
+    // Coupling counts are authored only in native HOW.
     return report;
 }
 

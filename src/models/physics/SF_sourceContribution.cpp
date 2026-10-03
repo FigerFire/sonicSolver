@@ -37,17 +37,14 @@ void contribute(
             throw std::runtime_error(
                 "No equation contribution is registered for SourceKind.");
         }
-        for (const auto& equation : system.rawSystem().equations) {
-            const bool target = item->energy
-                ? equation.id == "E_ENERGY"
-                    || equation.id.rfind("E_ENTHALPY.",0) == 0
-                : equation.id == "E_MOMENTUM"
-                    || equation.id.rfind("E_MOMENTUM.",0) == 0;
-            if (target) {
-                system.extendEquation(
-                    equation.id,Equation::source({item->symbol}));
-            }
-        }
+        system.recordContribution(
+            std::string("model.")+item->symbol,
+            std::string(item->symbol)+" equation source contribution");
+        auto source=System::FormulaExpr::op("source",
+            {System::FormulaExpr::symbol(item->symbol)},item->symbol);
+        system.extendMathematics(item->energy
+            ? std::vector<std::string>{"energy","enthalpy","E_ENTHALPY"}
+            : std::vector<std::string>{"momentum"},std::move(source));
     }
 }
 

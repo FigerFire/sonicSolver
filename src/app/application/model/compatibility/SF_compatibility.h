@@ -46,6 +46,7 @@ struct NativeCaseSections {
     /// 展开 `default`，因此解码阶段不再做目录名或文件路径推断。
     std::vector<Model::FieldDescriptor> fields;
 
+    std::string nativeAlgorithm;
     bool hasAlgorithm = false;
     bool hasOutput = false;
     bool hasParallel = false;

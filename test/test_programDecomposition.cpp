@@ -2,8 +2,8 @@
 /// @brief §18/§20/§35 回归：Program 是纯视图，且不携带任何运行期状态 authority。
 ///
 /// 断言刻意做在"成员数量 + 成员类型 + 对象布局"这一层，因此无法靠放宽断言绕过：
-///   - `Program` 必须恰好是四成员聚合，成员依次是四类编译产物；
-///   - `Program` 只持有引用，sizeof 等于四个指针，不存在任何 owned state。
+///   - `Program` 必须恰好是五成员聚合，成员是编译产物与 STATE specification 的引用；
+///   - `Program` 只持有引用，sizeof 等于五个指针，不存在任何 owned state。
 
 #include "solver/system/SF_resolvedSimulationSystem.h"
 
@@ -23,13 +23,15 @@ void require(bool condition, const std::string& message) {
     if (!condition) fail(message);
 }
 
-/// 结构化绑定要求成员数量精确匹配：新增第五个成员会直接编译失败，
+/// 结构化绑定要求成员数量精确匹配：STATE 同样只持有只读引用，
 /// 从而阻止 Program 重新变成携带运行期状态的对象。
 void requireFourCompileProducts(const SF::System::Program& program) {
-    const auto& [equations, numerics, solve, runtime] = program;
+    const auto& [equations, numerics, solve, runtime, state] = program;
     using E = std::remove_cv_t<std::remove_reference_t<decltype(equations)>>;
     using N = std::remove_cv_t<std::remove_reference_t<decltype(numerics)>>;
     using S = std::remove_cv_t<std::remove_reference_t<decltype(solve)>>;
+    using V = std::remove_cv_t<std::remove_reference_t<decltype(state)>>;
+    static_assert(std::is_same_v<V,SF::System::StateRegistry>);
     using R = std::remove_cv_t<std::remove_reference_t<decltype(runtime)>>;
     static_assert(std::is_same_v<E,SF::System::ExecutableEquationSystem>,
         "Program member 0 must be the executable equation system");
@@ -47,8 +49,8 @@ int main() {
     using SF::System::Program;
 
     // 纯引用视图：没有任何 owned state，也没有第二份 authority。
-    static_assert(sizeof(Program) == 4 * sizeof(const void*),
-                  "Program owns state: sizeof(Program) != four references");
+    static_assert(sizeof(Program) == 5 * sizeof(const void*),
+                  "Program owns state: sizeof(Program) != five references");
     static_assert(std::is_trivially_copyable_v<Program>,
                   "Program stopped being a cheap view type");
 
@@ -62,6 +64,8 @@ int main() {
             "Program copied the compiled numerical system");
     require(&program.solve == &resolved.solvePlan,
             "Program copied the compiled solve plan");
+    require(&program.state == &resolved.executableSystem.state,
+            "Program copied the STATE specification");
     require(&program.runtime == &resolved.runtime,
             "Program copied the runtime requirements");
 
@@ -74,6 +78,6 @@ int main() {
     require(&compilation.program.equations == &resolved.executableSystem,
             "CompilationResult holds a detached program view");
 
-    std::cout << "Program holds exactly the four compile products by reference\n";
+    std::cout << "Program holds compile products and STATE by reference\n";
     return 0;
 }

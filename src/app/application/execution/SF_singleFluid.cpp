@@ -20,12 +20,12 @@
 #include "SF_IBM.h"
 #include "app/application/output/SF_report.h"
 #include "core/interfaces/SF_log.h"
-#include "solver/equation/coupling/SF_equationCoupling.h"
+#include "models/physics/equationRuntime/SF_mixtureEquationProvider.h"
 #include "SF_equationSystem.h"
 #include "SF_factory.h"
 #include "SF_field.h"
 #include "SF_homogeneousPhaseChange.h"
-#include "solver/equation/coupling/SF_interfaceCoupling.h"
+#include "models/physics/equationRuntime/SF_interfaceCoupling.h"
 #include "SF_interfaceModel.h"
 #include "models/physics/interfaceModel/levelSet/SF_state.h"
 #include "SF_parallelContext.h"
@@ -64,12 +64,12 @@ int executeConservativeEquations(
     using Report::formatRunControl;
     using Report::formatTimeStepStatus;
     using Report::multiPhaseSummary;
-    using Equation::Coupling::CompositeTransportProvider;
-    using Equation::Coupling::HomogeneousPhaseChangeProvider;
-    using Equation::Coupling::InterfaceEquationProvider;
-    using Equation::Coupling::MixtureEquationProvider;
-    using Equation::Coupling::registerInterfaceState;
-    using Equation::Coupling::registerMixtureState;
+    using SF::Equation::Coupling::CompositeTransportProvider;
+    using SF::Equation::Coupling::HomogeneousPhaseChangeProvider;
+    using SF::Equation::Coupling::InterfaceEquationProvider;
+    using SF::Equation::Coupling::MixtureEquationProvider;
+    using SF::Equation::Coupling::registerInterfaceState;
+    using SF::Equation::Coupling::registerMixtureState;
     using Output::multiPhaseVTKScalars;
     using Output::interfaceVTKScalars;
     using Adapters::IBBoundaryAdapter;
@@ -94,7 +94,7 @@ int executeConservativeEquations(
     const bool usesHomogeneousThermodynamics =
         System::requiresProvider(system,"thermodynamics.homogeneous");
     const bool constantDensityState =
-        system.runtime.capabilities.constantDensity;
+        System::requiresProvider(system,"flow.pressure-operators");
     const bool multiPhaseActive = legacyMultiPhaseActive || interfaceActive;
     if (interfaceActive && !solverConfig.numerics.timeRecipeDeclared) {
         throw std::runtime_error(
@@ -183,17 +183,17 @@ int executeConservativeEquations(
     double constantDensityValue=0.0;
     if (constantDensityState) {
         const auto velocity=std::find_if(
-            system.executableSystem.unknowns.begin(),
-            system.executableSystem.unknowns.end(),
-            [](const System::UnknownDescriptor& item) { return item.id=="U"; });
+            system.executableSystem.state.symbols().begin(),
+            system.executableSystem.state.symbols().end(),
+            [](const System::StateSymbol& item) { return item.id=="U"; });
         const auto density=std::find_if(
-            system.executableSystem.unknowns.begin(),
-            system.executableSystem.unknowns.end(),
-            [](const System::UnknownDescriptor& item) { return item.id=="rho"; });
-        if (velocity==system.executableSystem.unknowns.end()
+            system.executableSystem.state.symbols().begin(),
+            system.executableSystem.state.symbols().end(),
+            [](const System::StateSymbol& item) { return item.id=="rho"; });
+        if (velocity==system.executableSystem.state.symbols().end()
             || velocity->components!=3 || velocity->componentOffset!=0
             || velocity->storageKey!="velocity"
-            || density==system.executableSystem.unknowns.end()
+            || density==system.executableSystem.state.symbols().end()
             || !density->constantValue) {
             throw std::runtime_error(
                 "Constant-density state realization lacks U[3]/rhoConst binding.");
@@ -299,18 +299,8 @@ int executeConservativeEquations(
         coupledTransport.setInterfaceModel(interfaceModel.get());
     }
     const bool turbulenceActive = turbulenceManager.initialize(field);
-    const bool transportedTurbulence = turbulenceActive
-        && solverConfig.turbulence.family == FDM::TurbulenceFamily::RAS
-        && (solverConfig.turbulence.model
-                == FDM::TurbulenceModelKind::kEpsilon
-            || solverConfig.turbulence.model
-                == FDM::TurbulenceModelKind::kOmegaSST);
-    if (transportedTurbulence
-        != System::requiresProvider(system,"equation.turbulence-transport")) {
-        throw std::runtime_error(
-            "Resolved turbulence-equation provider does not match the active density "
-            "turbulence equations.");
-    }
+    if (System::requiresProvider(system,"flow.turbulence") && !turbulenceActive)
+        throw std::runtime_error("Compiled flow.turbulence owner requires an initialized turbulence implementation.");
     if (turbulenceActive) {
         coupledTransport.setTurbulence(&turbulenceManager);
         SF::broadcast("Turbulence active : ", turbulenceManager.description());
@@ -471,20 +461,7 @@ int executeConservativeEquations(
                 levelSet->curvatures(), 1));
         }
     }
-    if (turbulenceManager.active()) {
-        auto& turbulence = turbulenceManager.scalarFields();
-        const auto names = turbulenceManager.distributedWriteFields();
-        for (const auto& name : names) {
-            const Turbulence::ScalarSlot slot = name == "k"
-                ? Turbulence::ScalarSlot::K
-                : name == "epsilon" ? Turbulence::ScalarSlot::Epsilon
-                : name == "omega" ? Turbulence::ScalarSlot::Omega
-                : Turbulence::ScalarSlot::EddyMu;
-            stateBundle.distributed.add(State::workspaceView(
-                name, localBlockId, field,
-                turbulence.values(slot), 1));
-        }
-    }
+    turbulenceManager.registerDistributed(stateBundle.distributed,localBlockId,field);
 
     // 初值先由各 rank 独立闭合为物理保守量，再通过 Runtime 声明其 stencil
     // 需求。不能在 application 装配网格后立刻交换，否则 canonical owner

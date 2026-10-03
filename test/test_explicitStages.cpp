@@ -2,6 +2,7 @@
 /// @brief Freezes Euler/SSP-RK3/RK4 stage mathematics after Plan lowering.
 
 #include "solver/algorithm/time/SF_explicit.h"
+#include "solver/system/SF_methodObjects.h"
 #include "SF_config.h"
 
 #include <cmath>
@@ -60,7 +61,8 @@ Outcome runConstantRhs(SF::FDM::TimeRecipeId id) {
     Outcome outcome;
     SF::Time::Explicit::Workspace workspace;
     SF::Time::Explicit::begin(
-        workspace,fields,state,recipe,nullptr);
+        workspace,fields,state,
+        SF::System::builtinTemporalMethods().at(recipe.id()).compile(recipe),nullptr);
     for (int stage = 0; stage < recipe.stageCount();
          ++stage) {
         SF::Time::Explicit::executeStage(
@@ -86,6 +88,40 @@ Outcome runConstantRhs(SF::FDM::TimeRecipeId id) {
 int main() {
     requireUnsupportedRecipe("Euler");
     requireUnsupportedRecipe("RK4");
+
+    using SF::System::CompiledTimeRecipe;
+    using SF::FDM::TimeRecipeId;
+    const auto methods=SF::System::builtinTemporalMethods();
+    const auto compiledEuler=methods.at(TimeRecipeId::ForwardEuler).compile(
+        SF::FDM::builtInTimeRecipe(TimeRecipeId::ForwardEuler));
+    const auto compiledSSP=methods.at(TimeRecipeId::SSPRK3).compile(
+        SF::FDM::builtInTimeRecipe(TimeRecipeId::SSPRK3));
+    const auto compiledRK4=methods.at(TimeRecipeId::ClassicalRK4).compile(
+        SF::FDM::builtInTimeRecipe(TimeRecipeId::ClassicalRK4));
+    require(compiledEuler.order()==1 && compiledEuler.stageCount()==1
+            && compiledEuler.stage(0).abscissa==0.0
+            && compiledEuler.stage(0).incrementWeight==1.0,
+            "compiled Euler metadata differs from provider");
+    require(compiledSSP.order()==3 && compiledSSP.stageCount()==3
+            && compiledSSP.stage(0).baseWeight==0.0
+            && compiledSSP.stage(1).abscissa==1.0
+            && compiledSSP.stage(1).baseWeight==0.75
+            && compiledSSP.stage(1).incrementWeight==0.25
+            && compiledSSP.stage(2).abscissa==0.5
+            && compiledSSP.stage(2).baseWeight==1.0/3.0
+            && compiledSSP.stage(2).incrementWeight==2.0/3.0,
+            "compiled SSPRK3 coefficients differ from provider");
+    require(compiledRK4.order()==4 && compiledRK4.stageCount()==4
+            && compiledRK4.stage(1).abscissa==0.5
+            && compiledRK4.stage(2).incrementWeight==1.0
+            && compiledRK4.stage(3).abscissa==1.0
+            && compiledRK4.finalWeights()==std::array<double,4>{{1.0,2.0,2.0,1.0}}
+            && compiledRK4.finalDivisor()==6.0,
+            "compiled RK4 coefficients differ from provider");
+    bool mismatchRejected=false;
+    try { compiledSSP.requireProviderStages(4); }
+    catch (const std::runtime_error&) { mismatchRejected=true; }
+    require(mismatchRejected,"time/provider stage mismatch was accepted");
 
     const Outcome euler = runConstantRhs(SF::FDM::TimeRecipeId::ForwardEuler);
     require(euler.stageTimes.size() == 1

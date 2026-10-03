@@ -56,17 +56,20 @@ void applyScalarStage(ScalarField& scalar,
 
 void applyScalarFinal(ScalarField& scalar,
                       const ScalarRKStorage& storage,
-                      double dt) {
+                      double dt,
+                      const System::CompiledTimeRecipe& recipe) {
     const size_t size = storage.q0.size();
     if (size != scalar.values().size()
         || storage.k1.size() != size || storage.k2.size() != size
         || storage.k3.size() != size || storage.k4.size() != size) {
         throw std::runtime_error("registered scalar RK4 size mismatch.");
     }
+    const auto weights = recipe.finalWeights();
+    const double divisor = recipe.finalDivisor();
     for (size_t n = 0; n < size; ++n) {
         scalar.values()[n] = storage.q0[n]
-            + dt/6.0*(storage.k1[n]+2.0*storage.k2[n]
-                      +2.0*storage.k3[n]+storage.k4[n]);
+            + dt/divisor*(weights[0]*storage.k1[n]+weights[1]*storage.k2[n]
+                          +weights[2]*storage.k3[n]+weights[3]*storage.k4[n]);
     }
 }
 
@@ -147,14 +150,15 @@ void applyRegisteredStage(State::VariableRegistry& registry,
 
 void applyRegisteredFinal(State::VariableRegistry& registry,
                           const std::vector<ScalarRKStorage>& storage,
-                          double dt) {
+                          double dt,
+                          const System::CompiledTimeRecipe& recipe) {
     for (size_t n = 0; n < registry.size(); ++n) {
         const auto policy =
             registry.variables()[n].descriptor.updatePolicy;
         if (!usesExplicitTableau(policy)) {
             continue;
         }
-        applyScalarFinal(*registry.variables()[n].value, storage[n], dt);
+        applyScalarFinal(*registry.variables()[n].value, storage[n], dt, recipe);
         validateRegistered(registry.variables()[n], "RK4 final");
     }
 }
@@ -201,15 +205,18 @@ void applyStage(Field& field,
 
 void applyFinalRK4(Field& field,
                    const RKStorage& storage,
-                   double dt) {
+                   double dt,
+                   const System::CompiledTimeRecipe& recipe) {
+    const auto weights = recipe.finalWeights();
+    const double divisor = recipe.finalDivisor();
     Math::forFluidInterior(field, [&](int i, int j, int k) {
         for (int v = 0; v < field.NVar(); ++v) {
             const size_t idx = storageIndex(field, i, j, k, v);
             field(i, j, k, v) = storage.q0[idx]
-                - dt / 6.0 * (storage.k1[idx]
-                              + 2.0 * storage.k2[idx]
-                              + 2.0 * storage.k3[idx]
-                              + storage.k4[idx]);
+                - dt / divisor * (weights[0] * storage.k1[idx]
+                                  + weights[1] * storage.k2[idx]
+                                  + weights[2] * storage.k3[idx]
+                                  + weights[3] * storage.k4[idx]);
         }
     });
 }
@@ -280,7 +287,7 @@ void forwardEuler(Field& field, const Residual& residual, double dt) {
 void begin(Workspace& workspace,
            const std::vector<Field*>& fields,
            State::StateBundle& state,
-           const FDM::TimeRecipe& recipe,
+           const System::CompiledTimeRecipe& recipe,
            FDM::IEquationSystemCoupling* equationSystem) {
     if (workspace.active) {
         throw std::runtime_error("Explicit workspace is already active.");
@@ -290,17 +297,16 @@ void begin(Workspace& workspace,
         throw std::runtime_error(
             "Time::Explicit requires an ExplicitStages time recipe.");
     }
-    if (recipe.id() != FDM::TimeRecipeId::ForwardEuler
-        && recipe.id() != FDM::TimeRecipeId::SSPRK3
-        && recipe.id() != FDM::TimeRecipeId::ClassicalRK4) {
-        throw std::runtime_error(
-            "Time::Explicit has no provider for the selected time recipe.");
-    }
+    // Provider stage count is checked before publishing any stage state.
+    const int providerStages=recipe.backend()==System::ExplicitStageBackend::ForwardEuler ? 1
+        : recipe.backend()==System::ExplicitStageBackend::SSPRK3 ? 3
+        : recipe.backend()==System::ExplicitStageBackend::ClassicalRK4 ? 4 : 0;
+    recipe.requireProviderStages(providerStages);
     workspace.recipe = recipe;
     workspace.nextStage = 0;
     workspace.patches.clear();
     workspace.patches.resize(fields.size());
-    if (recipe.id() != FDM::TimeRecipeId::ForwardEuler) {
+    if (recipe.backend() != System::ExplicitStageBackend::ForwardEuler) {
         for (size_t n = 0; n < fields.size(); ++n) {
             if (!fields[n]) continue;
             snapshotField(*fields[n], workspace.patches[n].q0);
@@ -332,7 +338,7 @@ void executeStage(
     }
     auto& storage = workspace.patches;
 
-    if (workspace.recipe.id() == FDM::TimeRecipeId::ForwardEuler) {
+    if (workspace.recipe.backend() == System::ExplicitStageBackend::ForwardEuler) {
         assembleRHS(fields, workspaces, state.time);
         for (size_t index = 0; index < fields.size(); ++index) {
             Field* field = fields[index];
@@ -345,7 +351,7 @@ void executeStage(
                     if (!usesExplicitTableau(variable.descriptor.updatePolicy)) continue;
                     const std::vector<double> old = variable.value->values();
                     applyScalarStage(*variable.value, old, *variable.rhs,
-                                     1.0, state.dt);
+                                     workspace.recipe.stage(0).incrementWeight, state.dt);
                     validateRegistered(variable, "Euler final");
                 }
             }
@@ -353,33 +359,32 @@ void executeStage(
         traceUpdatedConservative("Q after Euler update", fields, state);
         publish(fields);
         validate(fields, "Euler final");
-    } else if (workspace.recipe.id() == FDM::TimeRecipeId::SSPRK3) {
-        static constexpr double stageFraction[] = {0.0, 1.0, 0.5};
-        static constexpr double baseWeight[] = {0.0, 0.75, 1.0 / 3.0};
-        static constexpr double eulerWeight[] = {1.0, 0.25, 2.0 / 3.0};
+    } else if (workspace.recipe.backend() == System::ExplicitStageBackend::SSPRK3) {
+        const auto& stage = workspace.recipe.stage(stageIndex);
         static constexpr const char* labels[] = {
             "SSP-RK3 stage 1", "SSP-RK3 stage 2", "SSP-RK3 final"};
         assembleRHS(fields, workspaces,
-                    state.time + stageFraction[stageIndex] * state.dt);
+                    state.time + stage.abscissa * state.dt);
         for (size_t n = 0; n < fields.size(); ++n) {
             Field* field = fields[n];
             if (!field) continue;
             snapshotRHS(*field, workspaces[n].residual, storage[n].k1);
             applySSPStage(*field, storage[n].q0, storage[n].k1,
-                          baseWeight[stageIndex], eulerWeight[stageIndex], state.dt);
+                          stage.baseWeight, stage.incrementWeight, state.dt);
             field->invalidateThermodynamicCache();
             if (auto* registry = registryFor(*field, fields, state, equationSystem)) {
                 applyRegisteredSSPStage(
-                    *registry, storage[n].registered, baseWeight[stageIndex],
-                    eulerWeight[stageIndex], state.dt, labels[stageIndex]);
+                    *registry, storage[n].registered, stage.baseWeight,
+                    stage.incrementWeight, state.dt, labels[stageIndex]);
             }
         }
         traceUpdatedConservative(labels[stageIndex], fields, state);
         publish(fields);
         validate(fields, labels[stageIndex]);
-    } else if (workspace.recipe.id() == FDM::TimeRecipeId::ClassicalRK4
+    } else if (workspace.recipe.backend() == System::ExplicitStageBackend::ClassicalRK4
                && stageIndex == 0) {
-        assembleRHS(fields, workspaces, state.time);
+        assembleRHS(fields, workspaces,
+                    state.time + workspace.recipe.stage(0).abscissa * state.dt);
         for (size_t n = 0; n < fields.size(); ++n) {
         if (fields[n]) snapshotRHS(*fields[n], workspaces[n].residual, storage[n].k1);
         if (fields[n]) {
@@ -391,20 +396,23 @@ void executeStage(
         validate(fields, "RK4 stage 1");
 
     for (size_t n = 0; n < fields.size(); ++n) {
-        if (fields[n]) applyStage(*fields[n], storage[n].q0, storage[n].k1, 0.5, state.dt);
+        if (fields[n]) applyStage(*fields[n], storage[n].q0, storage[n].k1,
+                                  workspace.recipe.stage(0).incrementWeight, state.dt);
         if (fields[n]) fields[n]->invalidateThermodynamicCache();
         if (fields[n]) {
             if (auto* registry = registryFor(
                     *fields[n], fields, state, equationSystem))
                 applyRegisteredStage(*registry, storage[n].registered,
-                                     1, 0.5, state.dt, "RK4 stage 2");
+                                     1, workspace.recipe.stage(0).incrementWeight,
+                                     state.dt, "RK4 stage 2");
         }
     }
     traceUpdatedConservative("Q after RK4 stage 2 update", fields, state);
     publish(fields);
     validate(fields, "RK4 stage 2");
     } else if (stageIndex == 1) {
-    assembleRHS(fields, workspaces, state.time + 0.5 * state.dt);
+    assembleRHS(fields, workspaces,
+                state.time + workspace.recipe.stage(1).abscissa * state.dt);
     for (size_t n = 0; n < fields.size(); ++n) {
         if (fields[n]) snapshotRHS(*fields[n], workspaces[n].residual, storage[n].k2);
         if (fields[n]) {
@@ -415,20 +423,23 @@ void executeStage(
     }
 
     for (size_t n = 0; n < fields.size(); ++n) {
-        if (fields[n]) applyStage(*fields[n], storage[n].q0, storage[n].k2, 0.5, state.dt);
+        if (fields[n]) applyStage(*fields[n], storage[n].q0, storage[n].k2,
+                                  workspace.recipe.stage(1).incrementWeight, state.dt);
         if (fields[n]) fields[n]->invalidateThermodynamicCache();
         if (fields[n]) {
             if (auto* registry = registryFor(
                     *fields[n], fields, state, equationSystem))
                 applyRegisteredStage(*registry, storage[n].registered,
-                                     2, 0.5, state.dt, "RK4 stage 3");
+                                     2, workspace.recipe.stage(1).incrementWeight,
+                                     state.dt, "RK4 stage 3");
         }
     }
     traceUpdatedConservative("Q after RK4 stage 3 update", fields, state);
     publish(fields);
     validate(fields, "RK4 stage 3");
     } else if (stageIndex == 2) {
-    assembleRHS(fields, workspaces, state.time + 0.5 * state.dt);
+    assembleRHS(fields, workspaces,
+                state.time + workspace.recipe.stage(2).abscissa * state.dt);
     for (size_t n = 0; n < fields.size(); ++n) {
         if (fields[n]) snapshotRHS(*fields[n], workspaces[n].residual, storage[n].k3);
         if (fields[n]) {
@@ -439,20 +450,23 @@ void executeStage(
     }
 
     for (size_t n = 0; n < fields.size(); ++n) {
-        if (fields[n]) applyStage(*fields[n], storage[n].q0, storage[n].k3, 1.0, state.dt);
+        if (fields[n]) applyStage(*fields[n], storage[n].q0, storage[n].k3,
+                                  workspace.recipe.stage(2).incrementWeight, state.dt);
         if (fields[n]) fields[n]->invalidateThermodynamicCache();
         if (fields[n]) {
             if (auto* registry = registryFor(
                     *fields[n], fields, state, equationSystem))
                 applyRegisteredStage(*registry, storage[n].registered,
-                                     3, 1.0, state.dt, "RK4 stage 4");
+                                     3, workspace.recipe.stage(2).incrementWeight,
+                                     state.dt, "RK4 stage 4");
         }
     }
     traceUpdatedConservative("Q after RK4 stage 4 update", fields, state);
     publish(fields);
     validate(fields, "RK4 stage 4");
     } else {
-    assembleRHS(fields, workspaces, state.time + state.dt);
+    assembleRHS(fields, workspaces,
+                state.time + workspace.recipe.stage(3).abscissa * state.dt);
     for (size_t n = 0; n < fields.size(); ++n) {
         if (fields[n]) snapshotRHS(*fields[n], workspaces[n].residual, storage[n].k4);
         if (fields[n]) {
@@ -463,12 +477,13 @@ void executeStage(
     }
 
     for (size_t n = 0; n < fields.size(); ++n) {
-        if (fields[n]) applyFinalRK4(*fields[n], storage[n], state.dt);
+        if (fields[n]) applyFinalRK4(*fields[n], storage[n], state.dt, workspace.recipe);
         if (fields[n]) fields[n]->invalidateThermodynamicCache();
         if (fields[n]) {
             if (auto* registry = registryFor(
                     *fields[n], fields, state, equationSystem))
-                applyRegisteredFinal(*registry, storage[n].registered, state.dt);
+                applyRegisteredFinal(*registry, storage[n].registered,
+                                     state.dt, workspace.recipe);
         }
     }
     traceUpdatedConservative("Q after RK4 final update", fields, state);

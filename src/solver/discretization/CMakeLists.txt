@@ -7,6 +7,8 @@ target_sources(SF_discretization INTERFACE
     convection/SF_div.h
     diffusion/SF_diffusion.h
     diffusion/SF_laplacian.h
+    SF_formulaOperator.h
+    diffusion/SF_formulaCentral2.h
     source/SF_source.h
     source/SF_sourceTerm.h
     structured/SF_structured.h
@@ -26,7 +28,6 @@ target_link_libraries(SF_discretization INTERFACE
     SF_solverConfig
     SF_solverInterfaces
     SF_field
-    SF_physics
     SF_riemann
     SF_flux
     SF_weno3

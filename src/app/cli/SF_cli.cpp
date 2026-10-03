@@ -370,14 +370,27 @@ void writeRecipe(const std::filesystem::path& directory,
           "time:\n  default: forwardEuler\nterms:\n"
           "  convection: teno5Steger\n");
     write(directory / "solvers/algorithm.yaml",
-          "SonicFile:\n  object: solver\n  type: algorithm\ntype: densityBase\n");
+          "SonicFile:\n  object: solver\n  type: algorithm\n");
     write(directory / "solvers/solvers.yaml",
           "SonicFile:\n  object: solver\n  type: registry\n"
           "runtime:\n  type: runtime\n  file: solvers/runtime.yaml\n"
           "numerics:\n  type: numerics\n  file: solvers/numerics.yaml\n"
           "algorithm:\n  type: algorithm\n  file: solvers/algorithm.yaml\n");
+    for (const auto* category:{"state","equations","algorithms"})
+        std::filesystem::create_directories(directory/category);
+    write(directory/"state/state.yaml",
+          "SonicFile:\n  object: state\n  type: registry\nuse: [rho, rhoU, rhoE]\n");
+    write(directory/"equations/equations.yaml",
+          "SonicFile:\n  object: equations\n  type: registry\nuse: [Continuity, Momentum, Energy]\n");
+    write(directory/"algorithms/algorithms.yaml",
+          "SonicFile:\n  object: algorithms\n  type: registry\nExplicit: {}\n");
     write(directory / "models/models.yaml",
-          "SonicFile:\n  object: models\n  type: registry\n");
+          "SonicFile:\n  object: models\n  type: registry\n"
+          "thermoDynamics:\n  type: thermoDynamics\n  file: models/thermoDynamics.yaml\n");
+    write(directory/"models/thermoDynamics.yaml",
+          "SonicFile:\n  object: models\n  type: thermoDynamics\n"
+          "thermoDynamics:\n  equationOfState: perfectGas\n  thermo: hConst\n  transport: const\n"
+          "properties: {}\n");
     write(directory / "mesh/mesh.yaml",
           "SonicFile:\n  object: mesh\n  type: registry\n"
           "files: [mesh/mesh.sfm]\n");
