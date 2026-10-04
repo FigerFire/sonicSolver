@@ -345,6 +345,7 @@ int executeConservativeEquations(
     auto solverVTKScalars = [&]() {
         std::vector<SF::ResultWriter::ScalarField> scalars = turbulenceVTKScalars();
         if (forcingIBMActive) {
+            ibm.publishDiagnostics(field);
             scalars.push_back({"IBMConstraintMask", [&](int i, int j, int k) {
                 return ibm.constraintMask(field, i, j, k);
             }});

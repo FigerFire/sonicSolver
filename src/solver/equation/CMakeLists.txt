@@ -1,6 +1,5 @@
 add_library(SF_equation STATIC
     SF_expression.cpp
-    SF_assemblyPlan.cpp
     compressible/SF_compressible.cpp
 )
 target_include_directories(SF_equation PUBLIC
@@ -17,8 +16,8 @@ target_link_libraries(SF_equation PUBLIC
 )
 set_lib_output(SF_equation equation)
 
-# Transitional Eulerian equation implementation: it consumes concrete phase
-# closures, while the generic SF_equation target stays model-independent.
+# Specialized Eulerian numerical kernels consume concrete phase closures;
+# their supported mathematics are validated by the selected provider at compile time.
 add_library(SF_eulerianEquationAdapter STATIC
     ../algorithm/eulerian/equation/SF_phase.cpp
     ../algorithm/eulerian/equation/SF_pressure.cpp

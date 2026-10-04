@@ -1,4 +1,5 @@
 #include "core/system/SF_operationIds.h"
+#include "solver/system/SF_immersedMethods.h"
 /// @file SF_singleFluidStepper.cpp
 /// @brief 注册 numerical callbacks，由 CompiledSolvePlan 驱动 timestep。
 ///
@@ -769,6 +770,10 @@ FDM::StepResult SingleFluidStepper::advance(FDM::SolverState& state) {
         });
     }
 
+    if (System::requiresProvider(runtime_,"ibm.boundary") && !services_.immersed.boundary)
+        throw std::runtime_error("Compiled Ghost boundary has no bound closure port.");
+    System::validateImmersedBindings(solve_,services_.immersed.system,
+        System::requiresProvider(runtime_,"ibm.boundary"));
     operations_.retain(System::assignedOperations(
         runtime_,{"flow.conservative","flow.pressure-operators",
                   "flow.rhie-chow","flow.turbulence","flow.turbulence-closure",

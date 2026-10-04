@@ -1,5 +1,6 @@
 /// Numerical providers own domain matching, storage realization and local lifecycle.
 #include "SF_methodObjects.h"
+#include "SF_immersedMethods.h"
 #include "SF_eulerianCoupling.h"
 #include "SF_pressureCoupling.h"
 #include "core/system/SF_operationIds.h"
@@ -741,6 +742,7 @@ ProviderRegistry builtinProviders() {
     static const TurbulenceTransportMethod turbulence;
     ProviderRegistry result;
     addEulerianMethods(result);
+    addImmersedMethods(result);
     result.add(turbulence);
     static const TurbulenceClosureMethod turbulenceClosure;
     result.add(turbulenceClosure);

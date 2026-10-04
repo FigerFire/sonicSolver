@@ -1,5 +1,6 @@
 #include "core/system/SF_operationIds.h"
-#include "solver/system/SF_eulerianRelations.h"
+#include "solver/system/SF_eulerianAssembly.h"
+#include "solver/system/SF_eulerianTurbulence.h"
 /// @file SF_eulerianStepper.cpp
 /// @brief 双欧拉运行时状态与数值回调绑定；顺序只来自 CompiledSolvePlan。
 
@@ -20,16 +21,6 @@
 namespace SF::EulerianEulerian {
 
 namespace {
-std::vector<std::string> equationIds(
-        const System::ExecutableEquationSystem& equations) {
-    std::vector<std::string> ids;
-    ids.reserve(equations.legacyEquations.size());
-    for (const auto& equation : equations.legacyEquations) {
-        ids.push_back(equation.id);
-    }
-    return ids;
-}
-
 struct PhaseSourceRegistration {
     FDM::SourceKind kind;
     bool wallHeat;
@@ -85,7 +76,6 @@ EulerianStepper::EulerianStepper(
       solve_(solvePlan),
       runtime_(requirements), config_(std::move(config)),
       turbulence_(config_.turbulence),
-      assemblyPlans_(equations.legacyDefinitions, equationIds(equations)),
       equations_(system_, config_.pressure, workspace_) {
     FDM::validatePressureCorrectionConfig(config_.pressure);
     // compiled HOW 与 raw config 必须一致（runtime 只执行 compiled policy）。
@@ -130,22 +120,13 @@ EulerianStepper::EulerianStepper(
             "Eulerian RPI requires a wallHeatFlux boundary so the unified "
             "wall-boiling ledger can assemble mass, momentum and enthalpy.");
     }
-    for (const auto& phase:system_.phases()) {
-        const auto& actual=equations.registry.at("E_CONTINUITY."+phase.name);
-        const bool reference=phase.name==system_.phases()[system_.referencePhaseIndex()].name;
-        if (System::canonicalFormula(actual)!=System::canonicalFormula(System::eulerianPhaseRelations(phase.name,reference).front()))
-            throw std::runtime_error("Eulerian reference-phase closure differs from frozen WHAT.");
-    }
+    std::vector<std::string> phaseNames;
+    for (const auto& phase:system_.phases()) phaseNames.push_back(phase.name);
+    System::validateEulerianAssemblyBindings(solve_.compiledProgram,phaseNames,system_.referencePhaseIndex());
     workspace_.setupLike(system_);
     turbulence_.initialize(system_);
-    if (turbulence_.hasTransportEquations()
-        != System::hasEquationPrefix(executable_,"E_TURB_")) {
-        throw std::runtime_error(
-            "Resolved turbulence equations do not match the active "
-            "Eulerian turbulence model.");
-    }
+    System::validateEulerianTurbulenceBindings(solve_.compiledProgram,phaseNames,config_.turbulence);
     equations_.attachTurbulence(&turbulence_);
-    equations_.bindAssemblyPlans(assemblyPlans_);
 }
 
 void EulerianStepper::registerState(State::StateBundle& state) {
@@ -220,20 +201,16 @@ void EulerianStepper::registerState(State::StateBundle& state) {
             State::ExchangeKind::CanonicalFaceFlux,
             State::FieldLocation::Face));
 
-        if (phase < turbulence_.states().size()) {
-            auto& turbulence = turbulence_.states()[phase];
-            auto addTurbulence = [&](const std::string& suffix,
-                                     ScalarField& value) {
-                if (value.empty()) return;
-                state.registerAuxiliary(
-                    distributedScalar(prefix + suffix, depth),
-                    0, geometry, value);
-            };
-            addTurbulence("k", turbulence.kineticEnergy.variable);
-            addTurbulence("epsilon", turbulence.dissipation.variable);
-            addTurbulence("omega", turbulence.specificDissipation.variable);
-            addTurbulence("mu_t", turbulence.eddyViscosity);
-        }
+    }
+    for (auto& turbulence:turbulence_.states()) {
+        const auto prefix="phase"+std::to_string(turbulence.phaseIndex)+".";
+        const auto addTurbulence=[&](const std::string& suffix,ScalarField& value) {
+            if (!value.empty()) state.registerAuxiliary(distributedScalar(prefix+suffix,depth),0,geometry,value);
+        };
+        addTurbulence("k",turbulence.kineticEnergy.variable);
+        addTurbulence("epsilon",turbulence.dissipation.variable);
+        addTurbulence("omega",turbulence.specificDissipation.variable);
+        addTurbulence("mu_t",turbulence.eddyViscosity);
     }
     state.registerAuxiliary(
         distributedScalar("pressureCorrection", depth,
@@ -265,7 +242,7 @@ void EulerianStepper::synchronizeTurbulenceState() {
     std::vector<Execution::FieldAccess> reads;
     for (size_t phase = 0; phase < turbulence_.states().size(); ++phase) {
         const auto& state = turbulence_.states()[phase];
-        const std::string prefix = "phase" + std::to_string(phase) + ".";
+        const std::string prefix = "phase" + std::to_string(state.phaseIndex) + ".";
         const std::vector<std::pair<std::string, const ScalarField*>> fields{
             {prefix + "k", &state.kineticEnergy.variable},
             {prefix + "epsilon", &state.dissipation.variable},
@@ -466,7 +443,7 @@ FDM::StepResult EulerianStepper::advance(FDM::SolverState& state) {
     operations_.clear();
     registerOperations(operations_,state,dt);
     operations_.retain(System::assignedOperations(
-        runtime_,{"flow.eulerian-pressure"}));
+        runtime_,{"flow.eulerian-pressure","flow.eulerian-turbulence"}));
     const Run::PlanTraceContext trace{state_->step,state_->time,&dt};
     Run::PlanExecutor::execute(solve_,operations_,&trace);
     return {true,dt,state_->time,state_->step,false,false,{}};
@@ -506,7 +483,7 @@ void EulerianStepper::registerOperations(
     operations.bind(System::OpIds::EeInterphaseCompute,"flow.eulerian-pressure",[&] { system_.computeInterphase(dt,workspace_.previousVelocity); });
     operations.bind(System::OpIds::EeSourcesAssemble,"flow.eulerian-pressure",[&] { sourceRegistry_.assemble(system_,dt); });
     if (turbulence_.active()) {
-        operations.bind(System::OpIds::EeTurbulencePrepare,"flow.eulerian-pressure",[&] {
+        operations.bind(System::OpIds::EeTurbulencePrepare,"flow.eulerian-turbulence",[&] {
             turbulence_.prepare(system_);
             synchronizeTurbulenceState();
         });
@@ -553,7 +530,7 @@ void EulerianStepper::registerOperations(
     operations.bind(System::OpIds::EeFaceFluxCanonicalPressure,"flow.eulerian-pressure",[&] { assembleCanonicalPhaseFlux(); });
     operations.bind(System::OpIds::EeEnergySolve,"flow.eulerian-pressure",[&] { equations_.solvePhaseEnergy(dt); });
     if (turbulence_.hasTransportEquations()) {
-        operations.bind(System::OpIds::EeTurbulenceSolve,"flow.eulerian-pressure",[&] {
+        operations.bind(System::OpIds::EeTurbulenceSolve,"flow.eulerian-turbulence",[&] {
             equations_.solveTurbulence(dt);
         });
     }

@@ -8,6 +8,8 @@
 #include "operations/SF_loads.h"
 #include "operations/SF_validation.h"
 
+#include "operations/SF_constraintCheckpoint.h"
+
 #include <algorithm>
 #include <cmath>
 #include <stdexcept>
@@ -40,6 +42,7 @@ ImmersedForcingSystem::applyDFMFractionalStepPrescribed(
 
     Field& field = *fields.front();
     lastField_ = &field;
+    Checkpoint::state("fractional-predictor",field,targetTime);
     mask_.assign(static_cast<size_t>(field.TotalSize()), 0);
     multiplier_.assign(static_cast<size_t>(field.TotalSize()), Vector3());
     lastResult_ = {};
@@ -54,6 +57,7 @@ ImmersedForcingSystem::applyDFMFractionalStepPrescribed(
 
     const auto& body = bodyOperator_->build(
         field,*geometry_,*bodyModel_,targetTime);
+    Checkpoint::body(field,body,targetTime);
     for (const auto& point : body.points) {
         if (point.localCell < 0 || point.localCell >= field.TotalSize()
             || !std::isfinite(point.dualVolume)
@@ -116,9 +120,12 @@ ImmersedForcingSystem::applyDFMFractionalStepPrescribed(
         ++lastResult_.constrainedCells;
     }
     finalizeDistributedResult(lastResult_);
+    Checkpoint::force("fractional-force",field,multiplier_,targetTime);
+    Checkpoint::result(lastResult_,targetTime);
     Validation::requireConstraintResidual(
         lastResult_.maximumVelocityResidual,
         config_.forcing.constraintTolerance,"fractionalDLM");
+    Checkpoint::state("fractional-corrected",field,targetTime);
     field.invalidateThermodynamicCache();
     lastResult_.performed = true;
     lastResult_.detail = Diagnostics::describe(

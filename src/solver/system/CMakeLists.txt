@@ -2,7 +2,10 @@ add_library(SF_solverSystem STATIC
     SF_systemBuilder.cpp
     SF_eulerianRelations.cpp
     SF_eulerianCoupling.cpp
+    SF_immersedMethods.cpp
     SF_eulerianMethods.cpp
+    SF_eulerianTurbulence.cpp
+    SF_eulerianAssembly.cpp
     SF_presets.cpp
     SF_presets.h
     SF_systemDescription.cpp

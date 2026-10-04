@@ -14,6 +14,8 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
+#include <fstream>
+#include <unistd.h>
 #include <iomanip>
 #include <iostream>
 #include <limits>
@@ -120,6 +122,17 @@ inline void printStatistics(const char* label, int component,
               << " checksum=" << values.checksum << '\n';
 }
 
+inline std::ofstream pointOutput(const char* label) {
+    static std::size_t sequence=0;
+    const std::string path=std::string(std::getenv("SF_HIGH_ORDER_CHECKPOINT_DIR"))+"/flow-"
+        +std::to_string(getpid())+"-"+std::to_string(sequence++)+"-"+label+".csv";
+    std::ofstream out(path);
+    if(!out)throw std::runtime_error("Cannot write flow checkpoint: "+path);
+    out<<std::setprecision(17)<<"step,"<<context().step<<",stage,"<<context().stage<<",time,"<<context().stageTime<<'\n';
+    return out;
+}
+inline bool pointEnabled() {return std::getenv("SF_HIGH_ORDER_CHECKPOINT_DIR")!=nullptr;}
+
 inline void conservative(const char* checkpoint,
                          const std::vector<Field*>& fields,
                          bool includeGhost = false) {
@@ -127,6 +140,20 @@ inline void conservative(const char* checkpoint,
     for (std::size_t patch = 0; patch < fields.size(); ++patch) {
         const Field* field = fields[patch];
         if (!field) continue;
+        if(pointEnabled()) {
+            auto out=pointOutput(checkpoint);out<<"x,y,z,id,owner,flag,boundary,interior,communicationHalo";
+            for(int v=0;v<field->NVar();++v)out<<",Q"<<v;out<<'\n';
+            const int ng=field->NG();
+            const int lower=includeGhost?0:ng;
+            for(int k=lower;k<(includeGhost?field->MZ():ng+field->NZ());++k)
+                for(int j=lower;j<(includeGhost?field->MY():ng+field->NY());++j)
+                    for(int i=lower;i<(includeGhost?field->MX():ng+field->NX());++i) {
+                const bool interior=i>=ng && i<ng+field->NX() && j>=ng && j<ng+field->NY() && k>=ng && k<ng+field->NZ();
+                out<<field->X(i,j,k)<<','<<field->Y(i,j,k)<<','<<field->Z(i,j,k)<<','<<field->globalDofId(i,j,k)<<','
+                   <<field->isGlobalDofOwner(i,j,k)<<','<<field->CellFlag(i,j,k)<<','<<field->isSolverBoundaryPoint(i,j,k)<<','<<interior<<','<<field->isCommunicationHalo(i,j,k);
+                for(int v=0;v<field->NVar();++v)out<<','<<(*field)(i,j,k,v);out<<'\n';
+            }
+        }
         std::vector<Statistics> q(static_cast<std::size_t>(field->NVar()));
         Statistics pressure;
         std::vector<Statistics> ghostQ(static_cast<std::size_t>(field->NVar()));
@@ -197,6 +224,16 @@ inline void flux(const char* checkpoint, const std::vector<Field*>& fields,
         const PatchWorkspace* workspace = workspaces[patch];
         if (!field || !workspace) continue;
         const FluxField& flux = workspace->convectiveFlux;
+        if(pointEnabled()) {
+            auto out=pointOutput(checkpoint);out<<"dir,x,y,z";
+            for(int v=0;v<flux.variableCount();++v)out<<",F"<<v;out<<'\n';
+            const int ng=field->NG();
+            for(int d=0;d<3;++d)for(int k=ng;k<ng+field->NZ();++k)for(int j=ng;j<ng+field->NY();++j)for(int i=ng;i<ng+field->NX();++i) {
+                out<<d<<','<<field->X(i,j,k)<<','<<field->Y(i,j,k)<<','<<field->Z(i,j,k);
+                auto face=static_cast<std::size_t>(d)*field->TotalSize()+field->getIdx(i,j,k);
+                for(int v=0;v<flux.variableCount();++v)out<<','<<flux(face,v);out<<'\n';
+            }
+        }
         printPrefix(std::cout) << checkpoint << " patch=" << patch
                   << " faces=" << flux.faceCount() << " nVar=" << flux.variableCount() << '\n';
         for (int dir = 0; dir < 3; ++dir) {
@@ -236,6 +273,22 @@ inline void residual(const char* checkpoint, const std::vector<Field*>& fields,
         const PatchWorkspace* workspace = workspaces[patch];
         if (!field || !workspace) continue;
         const Residual& residual = workspace->residual;
+        if(pointEnabled()) {
+            auto out=pointOutput(checkpoint);out<<"x,y,z,id,owner,hasGlobal";
+            for(int v=0;v<field->NVar();++v)out<<",RX"<<v<<",RY"<<v<<",RZ"<<v;
+            if(local)for(int v=0;v<field->NVar();++v)out<<",RL"<<v;
+            if(global)for(int v=0;v<field->NVar();++v)out<<",RG"<<v;
+            out<<'\n';
+            Math::forFluidInterior(*field,[&](int i,int j,int k) {
+                const bool hasGlobal=residual.hasGlobal(i,j,k);
+                out<<field->X(i,j,k)<<','<<field->Y(i,j,k)<<','<<field->Z(i,j,k)<<','
+                   <<field->globalDofId(i,j,k)<<','<<field->isGlobalDofOwner(i,j,k)<<','<<hasGlobal;
+                for(int v=0;v<field->NVar();++v)out<<','<<residual.x(i,j,k,v)<<','<<residual.y(i,j,k,v)<<','<<residual.z(i,j,k,v);
+                if(local)for(int v=0;v<field->NVar();++v)out<<','<<residual.local(i,j,k,v);
+                if(global)for(int v=0;v<field->NVar();++v)out<<','<<(hasGlobal?residual.global(i,j,k,v):0.);
+                out<<'\n';
+            });
+        }
         std::vector<Statistics> x(static_cast<std::size_t>(field->NVar()));
         std::vector<Statistics> y(static_cast<std::size_t>(field->NVar()));
         std::vector<Statistics> z(static_cast<std::size_t>(field->NVar()));

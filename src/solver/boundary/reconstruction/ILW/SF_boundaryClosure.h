@@ -98,6 +98,12 @@ int taylorOrder(int accuracyOrder);
 /// @return 法向信息；无法定位时 sign=0。
 BoundaryNormal boundaryNormal(const Field& field, int i, int j, int k);
 
+/// @brief Mapped tangential halo is part of the same physical ILW stencil.
+inline bool readableStencilPoint(const Field& field,int i,int j,int k) {
+    if(i<0 || i>=field.MX() || j<0 || j>=field.MY() || k<0 || k>=field.MZ())return false;
+    return Boundary::isPhysicalCell(field,i,j,k) || field.isCommunicationHalo(i,j,k);
+}
+
 /// @brief 取法向局部网格间距。
 /// @param field 结构网格场。
 /// @param i 边界侧内点 i。
@@ -227,7 +233,7 @@ int collectMultiDimSamples(
         } else {
             nk = baseK + 1;
         }
-        if (!Boundary::isPhysicalCell(field, ni, nj, nk)) return 0.0;
+        if (!readableStencilPoint(field, ni, nj, nk)) return 0.0;
         double dn[3] = {field.X(ni, nj, nk),
                          field.Y(ni, nj, nk),
                          field.Z(ni, nj, nk)};
@@ -275,7 +281,7 @@ int collectMultiDimSamples(
             else if (t1 == 1) aj += na;
             else ak += na;
 
-            if (!Boundary::isPhysicalCell(field, ai, aj, ak)) continue;
+            if (!readableStencilPoint(field, ai, aj, ak)) continue;
 
             if (!useT2) {
                 const double a = na * hT1;
@@ -292,7 +298,7 @@ int collectMultiDimSamples(
                 else if (t2 == 1) bj += nb;
                 else bk += nb;
 
-                if (!Boundary::isPhysicalCell(field, bi, bj, bk)) continue;
+                if (!readableStencilPoint(field, bi, bj, bk)) continue;
 
                 const double a = na * hT1;
                 const double b = nb * hT2;

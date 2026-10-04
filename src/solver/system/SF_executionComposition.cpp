@@ -29,12 +29,6 @@ std::vector<LegacyPlanFragment> composeContributions(ResolvedSimulationSystem& r
         const auto pressure=pressureNumerics(*request.coupling,target);
         numerics.insert(numerics.end(),pressure.begin(),pressure.end());
     }
-    for (const LegacyExecutionPolicy& policy:result.executionPolicies) {
-        const char* id=policy.kind==LegacyExecutionPolicyKind::ConstraintProjection ? OpIds::IbmConstraintProject
-            : policy.kind==LegacyExecutionPolicyKind::MonolithicKKT ? OpIds::IbmKktSolve : nullptr;
-        if (id) result.executableSystem.operations.push_back({id,id,OperationStage::Prepare,
-            {OperationCapability::ImmersedConstraint},policy.origin});
-    }
     if (hasConstraint(result.rawSystem,"C_SHARED_PRESSURE")) {
         if (!request.coupling || !isCouplingActive(result.coupling))
             throw std::runtime_error("Eulerian shared pressure requires an explicit supported native HOW coupling preset.");

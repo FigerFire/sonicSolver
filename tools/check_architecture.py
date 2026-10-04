@@ -204,9 +204,9 @@ def main() -> int:
         authority_errors.append(
             "Generic flowLoop does not realize state before Time::Driver")
     validator = (root / "src/solver/system/SF_systemValidator.cpp").read_text()
-    if "AssemblyPlanRegistry legacyPlans" not in validator:
+    if "executable.legacyDefinitions.at(equation)" not in validator or "!equationIds.empty()" not in validator:
         authority_errors.append(
-            "System validator lacks isolated legacy AssemblyPlan validation")
+            "System validator lacks isolated legacy equation ownership validation")
     state_realizer = root / "src/solver/system/SF_stateRealizer.cpp"
     if not state_realizer.is_file() or "workspaceRequirements" not in state_realizer.read_text():
         authority_errors.append(
@@ -365,9 +365,25 @@ def main() -> int:
         authority_errors.append(
             "Provider resolver does not derive operations from CompiledSolvePlan")
     if "phase-wise IBM fluid-port assembly is unavailable" not in (
-            root / "src/app/application/SF_inspection.cpp").read_text():
+            root / "src/solver/system/SF_immersedMethods.cpp").read_text():
         authority_errors.append(
-            "Application model lowering has no explicit Eulerian IBM unsupported diagnostic")
+            "Compiled IBM capability has no explicit Eulerian fluid-port unsupported diagnostic")
+    immersed_contribution = (root / "src/models/ibm/SF_ibmSystemContribution.cpp").read_text()
+    for token in ["addLegacyExecution", "LegacyExecutionPolicy", "EquationDescriptor",
+                  "Equation::Definition", "C_IBM", "strategy"]:
+        if token in immersed_contribution:
+            authority_errors.append("IBM contribution retains legacy authority: " + token)
+    if "ImmersedConstraintTransformer" in (
+            root / "src/solver/system/SF_transformation.cpp").read_text():
+        authority_errors.append("Empty IBM constraint transformer has returned")
+    for token in ["C_IBM", "E_IBM", "ImmersedSolveBlockDescriptor", "strategy("]:
+        if token in (root / "src/models/ibm/descriptor/SF_algorithmDescriptor.cpp").read_text():
+            authority_errors.append("IBM port recreates a duplicate mathematical/schedule inventory: " + token)
+    for token in ["IBM", "ibm.", "Immersed"]:
+        if token in (root / "src/solver/system/SF_methodObjects.cpp").read_text():
+            authority_errors.append("Generic method compiler dispatches an IBM implementation: " + token)
+    if "native turbulence + IBM requires" not in provider_resolver:
+        authority_errors.append("IBM/turbulence lacks an explicit compiled coupling capability guard")
     single_fluid_preset = (
         root / "src/solver/system/SF_singleFluidPreset.cpp"
     )
@@ -810,7 +826,7 @@ def main() -> int:
         if "sharedPressurePlanFragment" in code or "kSharedPressureScheduleId" in code:
             authority_errors.append("obsolete shared-pressure schedule authority remains: " + path)
     transformer = (root / "src/solver/system/SF_transformation.cpp").read_text(errors="replace")
-    shared = transformer[transformer.index("class SharedPressureTransformer"):transformer.index("class Immersed",transformer.index("class SharedPressureTransformer"))]
+    shared = transformer[transformer.index("class SharedPressureTransformer"):transformer.index("bool hasEquationId",transformer.index("class SharedPressureTransformer"))]
     if "OpIds::Ee" in shared or "addExecutableOperation" in shared:
         authority_errors.append("shared-pressure transformer declares runtime lifecycle")
     system_builder_source = (
@@ -1282,6 +1298,60 @@ def main() -> int:
     methods=(root / "src/solver/system/SF_eulerianMethods.cpp").read_text()
     if not all(token in methods for token in ('"flow.eulerian-pressure"',"fusionMembers=required","StateViewOwner::NumericalProvider","pressureCorrection")):
         authority_errors.append("Eulerian methods lack explicit group/owner/storage contracts")
+
+    # Turbulence has native WHAT/STATE/HOW/WHICH; the flow provider cannot insert its solves.
+    for name in ("src/solver/system/SF_eulerianMethods.cpp",
+                 "src/solver/algorithm/eulerian/SF_eulerianStepper.cpp",
+                 "src/solver/system/SF_legacyNumerics.cpp"):
+        content=(root/name).read_text()
+        if re.search(r"E_TURB_|legacyTurbulence|legacyClosure|eulerianTurbulenceInputs",content):
+            authority_errors.append(name+" retained Eulerian turbulence string/compatibility authority")
+    eulerian_contribution=cpp_body(contribution,"void addEulerian(")
+    if not eulerian_contribution or "addLegacyExecution" in contribution \
+            or not all(token in eulerian_contribution for token in
+                ("eulerianTransportMathematics(","eulerianClosureMathematics(","addExecution(","bindNumerics(")):
+        authority_errors.append("Eulerian turbulence lacks native contribution channels")
+    if "EeTurbulenceSolve" in methods or "EeTurbulencePrepare" in methods:
+        authority_errors.append("flow Eulerian provider still inserts turbulence numerical updates")
+    native_turbulence=(root/"src/solver/system/SF_eulerianTurbulence.cpp").read_text()
+    if "legacyAdapter" in native_turbulence or not all(token in native_turbulence for token in
+        ('"flow.eulerian-turbulence"',"fusionMembers=members","canonicalFormula", "validateEulerianTurbulenceBindings")):
+        authority_errors.append("Eulerian turbulence lacks frozen native mathematical/group/provider binding")
+    for name,content in [("execution compiler",method_source),("numerical compiler",numerical_compiler)]:
+        if re.search(r"EulerianTurbulence|eulerianTurbulence|flow\.eulerian-turbulence",content):
+            authority_errors.append(name+" interprets domain-specific Eulerian turbulence contracts")
+    if not re.search(r'bind\(System::OpIds::EeTurbulenceSolve,\s*"flow.eulerian-turbulence"',eulerian_runtime) \
+            or "std::to_string(state.phaseIndex)" not in eulerian_runtime:
+        authority_errors.append("Eulerian turbulence runtime lost selected owner or actual phase-slot alias")
+
+    # Native Eulerian assembly is AST/provider-owned; flat DSL remains scoped compatibility.
+    native_eulerian=list((root / "src/solver/algorithm/eulerian").rglob("*.h")) \
+        +list((root / "src/solver/algorithm/eulerian").rglob("*.cpp")) \
+        +list((root / "src/solver/system").glob("SF_eulerian*.h")) \
+        +list((root / "src/solver/system").glob("SF_eulerian*.cpp"))
+    for path in native_eulerian:
+        if path.name.startswith("._"): continue
+        code=re.sub(r"/\*.*?\*/|//[^\n]*", "",path.read_text(),flags=re.S)
+        if re.search(r"\b(?:AssemblyPlan|AssemblyPlanRegistry|TermKind|legacyDefinitions|legacyEquations|equationDefinition|formulaFromEquation)\b|SF_assemblyPlan\.h",code):
+            authority_errors.append("native Eulerian depends on the legacy equation DSL: "+str(path.relative_to(root)))
+    for path in (root / "src").rglob("*"):
+        if path.suffix not in (".cpp",".h") or path.name.startswith("._"): continue
+        code=re.sub(r"/\*.*?\*/|//[^\n]*", "",path.read_text(),flags=re.S)
+        if "projectEulerianBackendDefinitions" in code or "eulerianBackendDefinition" in code:
+            authority_errors.append("removed Eulerian mathematical projection remains: "+str(path.relative_to(root)))
+    phase_pack=cpp_body((root / "src/solver/system/SF_presets.cpp").read_text(),"void addPhaseEquationPack(")
+    shared=cpp_body((root / "src/solver/system/SF_transformation.cpp").read_text(),"class SharedPressureTransformer")
+    if "EquationDescriptor" in phase_pack or "legacy" in shared or "EquationDescriptor" in shared:
+        authority_errors.append("native Eulerian composition creates duplicate legacy mathematics")
+    assembly=(root / "src/solver/system/SF_eulerianAssembly.h").read_text()
+    if "CompiledEulerianAssemblyContract" not in methods or "canonicalFormula(lhsA)" not in methods \
+            or "sourceExtensions(actual.rhs" not in methods or "shared_ptr<const" not in assembly:
+        authority_errors.append("Eulerian provider lacks strict AST-derived immutable assembly contracts")
+    if "validateEulerianAssemblyBindings" not in eulerian_runtime \
+            or any(token in eulerian_runtime for token in ("canonicalFormula(","FormulaExpr","eulerianPhaseRelations(")):
+        authority_errors.append("Eulerian runtime interprets mathematical formulas or lacks frozen contract binding")
+    if (root / "src/solver/equation/SF_assemblyPlan.h").exists() or (root / "src/solver/equation/SF_assemblyPlan.cpp").exists():
+        authority_errors.append("dead AssemblyPlan infrastructure was reintroduced")
 
     if not args.quiet:
         print(f"Architecture dependency check: {len(files)} source files")

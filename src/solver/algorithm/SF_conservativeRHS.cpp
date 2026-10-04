@@ -83,15 +83,17 @@ void prepareBoundaryState(
         services.boundaryPipeline->prepare(fields, time, dt);
         return;
     }
+    const Execution::OperatorContract halo{
+        "boundary-state halo",
+        {Execution::readHalo("conservative", conservativeHaloDepth)}};
+    if (boundaryApplicator.readsConservativeHalo() && services.executionRuntime)
+        services.executionRuntime->prepare(halo);
     for (Field* field : fields) {
         if (!field) continue;
         field->invalidateThermodynamicCache();
         boundaryApplicator.apply(*field);
         field->invalidateThermodynamicCache();
     }
-    const Execution::OperatorContract halo{
-        "boundary-state halo",
-        {Execution::readHalo("conservative", conservativeHaloDepth)}};
     if (services.executionRuntime) services.executionRuntime->prepare(halo);
     if (services.immersed.boundary) services.immersed.boundary->apply(fields, time, dt);
     if (services.immersed.boundary && services.executionRuntime) {
@@ -142,6 +144,8 @@ void assembleAllPatches(
         {Execution::readHalo(
             "conservative",numericalSystem.requiredHaloWidth)}};
     if (services.executionRuntime) services.executionRuntime->prepare(convectionContract);
+    if (trace && std::getenv("SF_HIGH_ORDER_CHECKPOINT_DIR"))
+        HighOrderTrace::conservative("stage boundary-ready Q",fields,true);
 
     const auto& convectionRecipe =
         System::NumericalCompiler::requireUniqueRecipe(

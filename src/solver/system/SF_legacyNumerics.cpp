@@ -9,7 +9,6 @@ std::string selectOperationProvider(const ExecutableOperation& operation,
     const auto requires=[&](OperationCapability capability) {
         return std::find(operation.requirements.begin(),operation.requirements.end(),capability)!=operation.requirements.end();
     };
-    if (requires(OperationCapability::ImmersedConstraint)) return "ibm.constraint";
     const auto realization=compileStateRealization(equations.state,equations.constraints);
     const bool pressureOperation=std::any_of(operation.requirements.begin(),operation.requirements.end(),
         [](OperationCapability capability) {

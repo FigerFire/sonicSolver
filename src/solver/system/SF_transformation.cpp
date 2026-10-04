@@ -130,8 +130,8 @@ public:
                     "shared-pressure constraint not present"};
         }
         const bool hasPhaseContinuity = std::any_of(
-            raw.legacyEquations.begin(),raw.legacyEquations.end(),
-            [](const EquationDescriptor& item) {
+            raw.registry.entries().begin(),raw.registry.entries().end(),
+            [](const Equation& item) {
                 return item.id.rfind("E_CONTINUITY.",0) == 0;
             });
         if (!hasUnknown(raw,"p") || !hasPhaseContinuity) {
@@ -150,53 +150,10 @@ public:
         for (auto equation:eulerianPressureRelations()) {
             equation.origin={OriginKind::Generated,"sharedPressureConstraint"};
             equation.authored=true;
-            if (equation.id=="E_SHARED_PRESSURE") {
-                EquationDescriptor descriptor{equation.id,"shared volume-pressure relation","constraint",{"p"}};
-                descriptor.category=EquationCategory::AlgorithmicDerivedEquation;
-                executable.addEquation(std::move(descriptor),eulerianBackendDefinition(equation));
-                executable.replaceEquation(equation);
-            } else executable.addEquation(equation);
+            executable.addEquation(equation);
             record.generatedEquations.push_back(equation.id);
         }
 
-    }
-
-private:
-    TransformationDescriptor descriptor_;
-};
-
-class ImmersedConstraintTransformer final : public IEquationSystemTransformer {
-public:
-    ImmersedConstraintTransformer()
-        : descriptor_{"immersedConstraint","immersed constraint",200,false,
-                      {OriginKind::BuiltinPreset,"immersed boundary"}} {}
-
-    const TransformationDescriptor& descriptor() const override {
-        return descriptor_;
-    }
-
-    TransformationMatch match(const RawEquationSystem& raw) const override {
-        const bool hasImmersedConstraint = std::any_of(
-            raw.constraints.begin(),raw.constraints.end(),
-            [](const ConstraintDescriptor& item) {
-                return item.id.rfind("C_IBM",0) == 0;
-            });
-        if (!hasImmersedConstraint) {
-            return {TransformationState::RegisteredButNotApplicable,
-                    "variational IBM constraint not present"};
-        }
-        return {TransformationState::RegisteredAndActive,
-                "immersed constraint contract matched"};
-    }
-
-    void transform(
-            const RawEquationSystem&,
-            ExecutableEquationSystemBuilder&,
-            std::vector<LegacyExecutionPolicy>&,
-            TransformationRecord&) const override {
-        // Current descriptor already supplies constraint equations. The registry
-        // owns the transformation identity; numerical lowering remains in the
-        // explicitly reported legacy IBM adapter.
     }
 
 private:
@@ -228,6 +185,7 @@ ExecutableEquationSystemBuilder::ExecutableEquationSystemBuilder(
     system_.constraints = raw.constraints;
     system_.closures = raw.closures;
     system_.boundaries = raw.boundaries;
+    system_.boundaryClosures = raw.boundaryClosures;
     system_.dependencies = raw.dependencies;
 }
 
@@ -386,8 +344,6 @@ std::unique_ptr<IEquationSystemTransformer> makeSharedPressureTransformer() {
     return std::make_unique<SharedPressureTransformer>();
 }
 
-std::unique_ptr<IEquationSystemTransformer> makeImmersedConstraintTransformer() {
-    return std::make_unique<ImmersedConstraintTransformer>();
-}
+
 
 } // namespace SF::System

@@ -59,6 +59,19 @@ int main() {
         OpIds::FlowStepBegin,OpIds::ExplicitStageExecute,OpIds::ExplicitStageExecute,
         OpIds::ExplicitStageExecute,OpIds::ExplicitStageExecute,OpIds::FlowStepCommit,OpIds::TimeCommit},
         "Independent physical-step prefix was reordered, dropped or staged.");
+    auto suffix=source;
+    ExecutionScope group;group.kind=ExecutionKind::Sequence;group.id="post-predictor";
+    auto after=source.root.children.front();after.step.occurrence="afterPredictor";
+    group.children.push_back(after);
+    after.step.occurrence="afterProjection";group.children.push_back(after);
+    suffix.root.children.insert(suffix.root.children.end()-1,group);
+    order.clear();plan.root=compile(suffix).temporalRoot;
+    SF::Run::PlanExecutor::execute(plan,callbacks);
+    require(order==std::vector<std::string>{OpIds::FlowStepPrepare,OpIds::FlowDtCompute,"test.once",
+        OpIds::FlowStepBegin,OpIds::ExplicitStageExecute,OpIds::ExplicitStageExecute,
+        OpIds::ExplicitStageExecute,OpIds::ExplicitStageExecute,"test.once","test.once",
+        OpIds::FlowStepCommit,OpIds::TimeCommit},
+        "Authored post-predictor group was staged, reordered or moved past physical commit.");
     auto interleaved=source;
     std::swap(interleaved.root.children[0],interleaved.root.children[1]);
     auto last=interleaved.root.children[0];last.step.occurrence="another";

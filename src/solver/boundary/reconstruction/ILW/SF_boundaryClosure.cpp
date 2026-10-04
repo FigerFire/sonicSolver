@@ -58,6 +58,10 @@ int taylorOrder(int accuracyOrder) {
 BoundaryNormal boundaryNormal(const Field& field, int i, int j, int k) {
     const int ng = field.NG();
     BoundaryNormal normal;
+    auto physicalSide=[&](int ni,int nj,int nk) {
+        return ni<0 || ni>=field.MX() || nj<0 || nj>=field.MY() || nk<0 || nk>=field.MZ()
+            || !field.isCommunicationHalo(ni,nj,nk);
+    };
 
     if (Math::isDirectionActiveIndex(0) &&
         (i < ng || i >= field.NX() + ng)) {
@@ -79,19 +83,22 @@ BoundaryNormal boundaryNormal(const Field& field, int i, int j, int k) {
     }
 
     if (Math::isDirectionActiveIndex(0) &&
-        (i == ng || i == field.NX() + ng - 1)) {
+        ((i == ng && physicalSide(i-1,j,k)) ||
+         (i == field.NX() + ng - 1 && physicalSide(i+1,j,k)))) {
         normal.axis = 0;
         normal.sign = (i == ng) ? -1 : 1;
         return normal;
     }
     if (Math::isDirectionActiveIndex(1) &&
-        (j == ng || j == field.NY() + ng - 1)) {
+        ((j == ng && physicalSide(i,j-1,k)) ||
+         (j == field.NY() + ng - 1 && physicalSide(i,j+1,k)))) {
         normal.axis = 1;
         normal.sign = (j == ng) ? -1 : 1;
         return normal;
     }
     if (Math::isDirectionActiveIndex(2) &&
-        (k == ng || k == field.NZ() + ng - 1)) {
+        ((k == ng && physicalSide(i,j,k-1)) ||
+         (k == field.NZ() + ng - 1 && physicalSide(i,j,k+1)))) {
         normal.axis = 2;
         normal.sign = (k == ng) ? -1 : 1;
         return normal;

@@ -39,6 +39,7 @@ public:
     const FDM::ImmersedMethodCapabilities& capabilities() const override;
     const FDM::ImmersedAlgorithmDescriptor& algorithmDescriptor() const override;
     const std::vector<FDM::ImmersedFluidPort>& fluidPorts() const override;
+    FDM::ImmersedStorageView storageView(FDM::ImmersedStorageKind kind) const override;
 
     /// @brief 在指定物理时刻刷新 ghost 状态。
     /// @param field 待闭合的守恒场。
@@ -56,6 +57,8 @@ public:
         Field& field, double targetTime, double dt,
         const FDM::ImmersedKKTState& state);
 
+    /// @brief 发布 output force/mask 的 canonical replicas，保留原数值存储。
+    void publishDiagnostics(Field& field);
     double constraintMask(const Field& field, int i, int j, int k) const;
     Vector3 multiplier(const Field& field, int i, int j, int k) const;
 

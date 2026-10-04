@@ -70,6 +70,7 @@ inline CompilationResult compilationOf(const ResolvedSimulationSystem& system) {
 
 bool hasUnknown(const ResolvedSimulationSystem& system, std::string_view id);
 bool hasEquation(const ResolvedSimulationSystem& system, std::string_view id);
+/// @brief 仅用于仍未迁移的 Legacy compatibility equations；native provider 不调用。
 const SF::Equation::Definition& equationDefinition(
     const ResolvedSimulationSystem& system, std::string_view id);
 bool hasEquationPrefix(

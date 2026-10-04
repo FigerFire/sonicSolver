@@ -231,6 +231,16 @@ void SystemCompositionBuilder::applyContribution(SystemContribution contribution
         }
     }
     for (auto& constraint : contribution.constraints) addConstraint(std::move(constraint));
+    for (auto& closure : contribution.boundaryClosures) {
+        if (closure.id.empty() || closure.provider.empty() || closure.reads.empty()
+            || closure.writes.empty() || closure.order.empty())
+            throw std::runtime_error("Incomplete boundary closure contract.");
+        if (std::any_of(system_.boundaryClosures.begin(),system_.boundaryClosures.end(),
+            [&](const auto& previous) { return previous.id==closure.id; }))
+            throw std::runtime_error("Duplicate boundary closure contract: "+closure.id);
+        closure.origin=origin_;
+        system_.boundaryClosures.push_back(std::move(closure));
+    }
     for (auto& closure : contribution.closures) addClosure(std::move(closure));
     for (auto& dependency : contribution.dependencies) addDependency(std::move(dependency));
     for (auto& descriptor : contribution.transformations) {

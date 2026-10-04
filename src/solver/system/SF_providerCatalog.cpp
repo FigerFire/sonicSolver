@@ -71,6 +71,7 @@ ProviderCatalog ProviderCatalog::builtIn() {
         OperationCapability::FluxCorrection};
     catalog.add({"flow.pressure-operators",constantPressure});
     catalog.add({"flow.rhie-chow",constantPressure});
+    catalog.add({"flow.eulerian-turbulence",{OperationCapability::EulerianTurbulenceExecution}});
     catalog.add({"flow.eulerian-pressure",{
         OperationCapability::EulerianPhaseExecution,
         OperationCapability::PressureLinearSolve}});

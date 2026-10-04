@@ -39,6 +39,9 @@ public:
     explicit Applicator(FDM::BoundaryConfig config)
         : config_(std::move(config)) {}
 
+    // Physical ILW reads tangential neighbours across partition cuts.
+    bool readsConservativeHalo() const { return config_.ilwEnabled; }
+
     /// @brief Apply all configured physical boundary conditions.
     ///
     /// Density and velocity are applied first. Pressure input is then converted

@@ -58,6 +58,10 @@ public:
     double constraintMask(const Field& field, int i, int j, int k) const;
     /// @brief 查询最近一次校正的乘子/流体力密度，单位 N/m3。
     Vector3 multiplier(const Field& field, int i, int j, int k) const;
+    /// @brief 非 owning STATE alias；不会保存已 resize 的 vector data 指针。
+    FDM::ImmersedStorageView storageView(FDM::ImmersedStorageKind kind) const;
+    /// @brief 在输出边界 COPY 已完成的 owner force/mask；不修改 Q 或 lagged force。
+    void publishDiagnostics(Field& field);
     const FDM::ImmersedConstraintResult& lastResult() const {
         return lastResult_;
     }

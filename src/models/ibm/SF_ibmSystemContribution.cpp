@@ -1,147 +1,76 @@
 /// @file SF_ibmSystemContribution.cpp
-/// @brief IBM mathematical metadata contribution implementation.
-
+/// @brief IBM 模型注册 boundary 或原生 impulse/projection/block 数学，不拥有 lifecycle。
 #include "SF_ibmSystemContribution.h"
-
+#include "SF_immersedMathematics.h"
 #include "SF_immersedSystem.h"
-#include "core/system/SF_systemContribution.h"
-
-#include <stdexcept>
 #include <utility>
 
 namespace SF::IBM::SystemContribution {
 using namespace SF::System;
-namespace {
-
-VariableLocation location(FDM::ImmersedVariableLocation value) {
-    switch (value) {
-        case FDM::ImmersedVariableLocation::EulerianGlobalDof:
-            return VariableLocation::EulerianCell;
-        case FDM::ImmersedVariableLocation::BodyConstraintDof:
-            return VariableLocation::BodyConstraint;
-        case FDM::ImmersedVariableLocation::SurfaceConstraintDof:
-            return VariableLocation::SurfaceConstraint;
-        case FDM::ImmersedVariableLocation::SolidGlobalDof:
-            return VariableLocation::SolidGlobal;
+void contribute(System::SystemContribution& system,
+                const FDM::ImmersedAlgorithmDescriptor& immersed) {
+    system.recordContribution("model.ibm."+immersed.id,"immersed-boundary contribution");
+    if (immersed.enforcement==FDM::IBMEnforcement::GhostCell) {
+        system.requireProvider("ibm.boundary","bind stage-time ghost/ILW stencil closure");
+        system.addBoundaryClosure({"immersed.ghost","ibm.boundary",{"conservative","geometry","classification"},
+            {"conservative.ghost"},true,
+            {"physical boundary","halo COPY","ghost/ILW reconstruction","ghost publication","halo COPY","spatial operator"},{}});
+        return;
     }
-    throw std::runtime_error("Unknown immersed variable location.");
+    system.requireProvider("ibm.constraint","execute compiled immersed impulse/projection/block");
+    const auto state=[&](std::string id,int components,VariableLocation location,
+                         OwnershipKind owner,StorageBinding binding,std::string storage,StateRole role) {
+        StateSymbol value;
+        value.id=id;value.name=id;value.components=components;
+        value.shape=components==1?ValueShape::Scalar:ValueShape::Vector;
+        value.location=location;value.ownership=owner;value.storageBinding=binding;
+        value.storageKey=std::move(storage);value.role=role;value.nameSpace="immersed";
+        value.initializationRequired=false;value.boundaryRequired=false;
+        value.restartEligible=false;value.outputEligible=false;
+        system.addState(std::move(value));
+    };
+    state("ibm.forceDensity",3,VariableLocation::EulerianCell,OwnershipKind::EulerianGlobalDof,
+        StorageBinding::SpecializedExecutor,"ibm.forceDensity",StateRole::Derived);
+    if (immersed.enforcement==FDM::IBMEnforcement::ExplicitIBM)
+        state("ibm.laggedForceDensity",3,VariableLocation::EulerianCell,OwnershipKind::EulerianGlobalDof,
+            StorageBinding::SpecializedExecutor,"ibm.laggedForceDensity",StateRole::Algebraic);
+    const bool surface=immersed.support==FDM::IBMConstraintSupport::Surface;
+    const bool multiplier=immersed.enforcement!=FDM::IBMEnforcement::BrinkmanPenalty;
+    const std::string lambda=surface?"Lambda_s":"lambda_b";
+    if (multiplier) {
+        // Surface lambda is local solver workspace; existing kernels do not retain
+        // a persistent surface array. The body multiplier aliases the force array.
+        state(lambda,3,surface?VariableLocation::SurfaceConstraint:VariableLocation::BodyConstraint,
+            OwnershipKind::ConstraintGlobalDof,
+            surface?StorageBinding::TransientWorkspace:StorageBinding::SpecializedExecutor,
+            surface?"ibm.surfaceMultiplier":"ibm.forceDensity",StateRole::Multiplier);
+    }
+    const bool coupled=immersed.solid==FDM::IBMSolidModel::SelfPropelledRigid
+        || immersed.solid==FDM::IBMSolidModel::CoupledRigid;
+    if (coupled) for (const auto* id:{"U_s","omega_s"})
+        state(id,3,VariableLocation::SolidGlobal,OwnershipKind::SolidGlobalDof,
+            StorageBinding::SpecializedExecutor,std::string("ibm.")+id,StateRole::Algebraic);
+    auto formulas=mathematics(immersed);
+    std::vector<std::string> members;
+    for (const auto& formula:formulas) members.push_back(formula.id);
+    const auto method=std::string("Immersed.")+FDM::toString(immersed.algorithm);
+    ExecutionScope group;
+    group.kind=ExecutionKind::Sequence;group.id="immersed.correction";group.order=70;
+    for (auto formula:formulas) {
+        const std::string target=formula.id=="ibm.momentum"?"rhoU":formula.id=="ibm.energy"?"rhoE"
+            :formula.id=="ibm.translation"?"U_s":formula.id=="ibm.rotation"?"omega_s"
+            :formula.id=="ibm.incompressibility"?"p":lambda;
+        const auto kind=formula.id=="ibm.incompressibility"?TargetKind::Working
+            :surface && target==lambda?TargetKind::Workspace:TargetKind::Physical;
+        ExecutionScope call;call.kind=ExecutionKind::EquationCall;
+        call.step={formula.id,{target,kind}};
+        group.children.push_back(std::move(call));
+        system.bindNumerics({formula.id,method,members});
+        system.addEquation(std::move(formula));
+    }
+    system.addExecution(std::move(group));
+    if (multiplier) system.addConstraint({"immersed.velocity","immersed velocity relation",
+        immersed.enforcement==FDM::IBMEnforcement::ExplicitIBM
+            ?"lagged multiplier response for the next physical step; not exact current-step no-slip":"J U = U_b / rigid affine constraint",lambda});
 }
-
-OwnershipKind ownership(FDM::ImmersedOwnershipKind value) {
-    switch (value) {
-        case FDM::ImmersedOwnershipKind::EulerianOwner:
-            return OwnershipKind::EulerianGlobalDof;
-        case FDM::ImmersedOwnershipKind::ConstraintOwner:
-            return OwnershipKind::ConstraintGlobalDof;
-        case FDM::ImmersedOwnershipKind::SolidOwner:
-            return OwnershipKind::SolidGlobalDof;
-    }
-    throw std::runtime_error("Unknown immersed ownership kind.");
-}
-
-
-} // namespace
-
-void contribute(
-        SF::System::SystemContribution& system,
-        const FDM::ImmersedAlgorithmDescriptor& immersed) {
-    system.recordContribution(
-        "model.ibm."+immersed.id,"immersed-boundary contribution");
-    if (immersed.enforcement == FDM::IBMEnforcement::GhostCell)
-        system.requireProvider("ibm.boundary",
-                               "bind ghost/ILW boundary closure");
-    else
-        system.requireProvider("ibm.constraint",
-                               "bind immersed constraint state and operations");
-    for (const auto& source : immersed.unknowns) {
-        StateSymbol unknown;
-        unknown.id = source.id;
-        unknown.name = source.name;
-        unknown.location = location(source.location);
-        unknown.components = source.components;
-        unknown.ownership = ownership(source.ownership);
-        unknown.shape = source.components == 1
-            ? ValueShape::Scalar : ValueShape::Vector;
-        unknown.role = unknown.location == VariableLocation::BodyConstraint
-                || unknown.location == VariableLocation::SurfaceConstraint
-            ? StateRole::Multiplier : StateRole::Algebraic;
-        unknown.storageBinding = StorageBinding::SpecializedExecutor;
-        unknown.nameSpace = "immersed";
-        system.addState(std::move(unknown));
-    }
-    for (const auto& source : immersed.constraints) {
-        system.addConstraint({
-            source.id,source.name,source.equation,source.multiplierUnknown});
-    }
-    for (const auto& source : immersed.equations) {
-        const std::string unknown = source.solvedUnknowns.empty()
-            ? source.id : source.solvedUnknowns.front();
-        EquationDescriptor descriptor{
-            source.id,source.name,source.form,source.solvedUnknowns};
-        descriptor.category = EquationCategory::ConstraintEquation;
-        system.addEquation(std::move(descriptor),
-            SF::Equation::named(source.id,
-                SF::Equation::constraint({source.form.empty()
-                    ? source.id : source.form})
-                    == SF::Equation::Symbol{unknown}));
-    }
-    for (const auto& equation:immersed.equations) {
-        if (equation.solvedUnknowns.empty()) continue;
-        ExecutionScope call;
-        call.kind=ExecutionKind::EquationCall;
-        call.order=70;
-        call.step={equation.id,{equation.solvedUnknowns.front(),TargetKind::Workspace}};
-        system.addLegacyExecution(std::move(call));
-    }
-    bool hasConstraintTransformation = false;
-    for (const auto& source : immersed.solveBlocks) {
-        LegacyExecutionPolicy policy;
-        policy.id = source.id;
-        policy.name = source.name;
-        policy.strategyName = source.strategy;
-        if (source.strategy == "boundaryStencilClosure") {
-            policy.kind = LegacyExecutionPolicyKind::BoundaryClosure;
-            policy.strategyKind = FDM::SolveStrategyKind::BoundaryClosure;
-        } else if (source.strategy == "monolithicKKT"
-                   || source.strategy == "augmentedLagrangianKKT") {
-            policy.kind = LegacyExecutionPolicyKind::MonolithicKKT;
-            policy.strategyKind = FDM::SolveStrategyKind::MonolithicKKT;
-            policy.leafKind = PlanNodeKind::BlockSolve;
-            policy.leafOperation = "ibm.kkt.solve";
-            hasConstraintTransformation = true;
-        } else if (source.strategy == "explicitLaggedMultiplier"
-                   || source.strategy == "fractionalVariationalProjection"
-                   || source.strategy == "surfaceMassProjection"
-                   || source.strategy == "dissipativePenalty") {
-            policy.kind = LegacyExecutionPolicyKind::ConstraintProjection;
-            policy.strategyKind = FDM::SolveStrategyKind::ConstraintSolve;
-            policy.leafKind = PlanNodeKind::Correct;
-            policy.leafOperation = "ibm.constraint.project";
-            // Brinkman/BP is a direct momentum penalty contribution and has
-            // no multiplier constraint for the transformer to rewrite.
-            hasConstraintTransformation = hasConstraintTransformation
-                || source.strategy != "dissipativePenalty";
-        } else {
-            throw std::runtime_error(
-                "Unknown immersed solve strategy '"+source.strategy+"'.");
-        }
-        policy.equations = source.equations;
-        policy.unknowns = source.unknowns;
-        policy.constraints = source.constraints;
-        policy.priority = 200;
-        if (immersed.monolithic) {
-            policy.unknowns.insert(policy.unknowns.begin(),{"pPrime","U"});
-            policy.equations.insert(
-                policy.equations.begin(),{"momentum","pSimple"});
-        }
-        system.addExecutionPolicy(std::move(policy));
-    }
-    if (hasConstraintTransformation) {
-        system.requestTransformation({
-            "immersedConstraint","immersed constraint transformation",
-            200,true,{}});
-    }
-}
-
-
 } // namespace SF::IBM::SystemContribution

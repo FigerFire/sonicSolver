@@ -111,6 +111,15 @@ if(BUILD_TESTS)
     add_executable(test_nativeEulerian test/test_nativeEulerian.cpp)
     target_link_libraries(test_nativeEulerian PRIVATE SF_solverSystem SF_physics SF_turbulence SF_run)
     add_test(NAME nativeEulerianExecution COMMAND test_nativeEulerian)
+    add_executable(test_eulerianAssembly test/test_eulerianAssembly.cpp)
+    target_link_libraries(test_eulerianAssembly PRIVATE SF_solverSystem)
+    add_test(NAME eulerianAssemblyAuthority COMMAND test_eulerianAssembly)
+    add_executable(test_eulerianTurbulenceKernel test/test_eulerianTurbulenceKernel.cpp)
+    target_link_libraries(test_eulerianTurbulenceKernel PRIVATE SF_solverAlgorithm)
+    add_test(NAME eulerianTurbulenceMatrixKernel COMMAND test_eulerianTurbulenceKernel)
+    add_executable(test_eulerianTurbulence test/test_eulerianTurbulence.cpp)
+    target_link_libraries(test_eulerianTurbulence PRIVATE SF_solverSystem SF_turbulence SF_run)
+    add_test(NAME nativeEulerianTurbulenceContract COMMAND test_eulerianTurbulence)
     add_executable(test_nativeTurbulence test/test_nativeTurbulence.cpp)
     target_link_libraries(test_nativeTurbulence PRIVATE SF_solverSystem SF_turbulence SF_run)
     add_test(NAME nativeTurbulenceExecution COMMAND test_nativeTurbulence)
@@ -153,6 +162,12 @@ if(BUILD_TESTS)
 
     find_package(Python3 QUIET COMPONENTS Interpreter)
     if(TARGET sonicSolver AND Python3_Interpreter_FOUND)
+        foreach(model kOmegaSST kEpsilon)
+            add_test(NAME eulerian${model}NumericalRegression
+                COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/check_eulerian_turbulence.py
+                    --solver $<TARGET_FILE:sonicSolver>
+                    --case ${CMAKE_SOURCE_DIR}/test/turbulence/eulerian${model})
+        endforeach()
         add_test(NAME eulerianNativeNumericalRegression
             COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/check_eulerian_native.py
                 --solver $<TARGET_FILE:sonicSolver>
@@ -217,6 +232,10 @@ if(BUILD_TESTS)
     endif()
 
 
+    add_executable(test_nativeImmersed test/test_nativeImmersed.cpp)
+    target_link_libraries(test_nativeImmersed PRIVATE SF_solverSystem SF_ibm SF_turbulence SF_run)
+    add_test(NAME nativeImmersedContributions COMMAND test_nativeImmersed)
+
     if(EXISTS "${CMAKE_SOURCE_DIR}/test/test_field.cpp")
         add_executable(test_field test/test_field.cpp)
         target_link_libraries(test_field PRIVATE SF_field)
@@ -242,6 +261,13 @@ if(BUILD_TESTS)
         add_test(NAME canonicalFaceContract COMMAND test_canonicalFace)
     endif()
 
+    add_executable(test_nodalQuadrature test/test_nodalQuadrature.cpp)
+    target_link_libraries(test_nodalQuadrature PRIVATE SF_field)
+    add_test(NAME nodalQuadrature COMMAND test_nodalQuadrature)
+    add_executable(test_physicalILWPartition test/test_physicalILWPartition.cpp)
+    target_link_libraries(test_physicalILWPartition PRIVATE SF_boundary)
+    add_test(NAME physicalILWPartition COMMAND test_physicalILWPartition)
+
     if(EXISTS "${CMAKE_SOURCE_DIR}/test/test_surfaceSchurProjection.cpp")
         add_executable(test_surfaceSchurProjection
             test/test_surfaceSchurProjection.cpp)
@@ -254,9 +280,9 @@ if(BUILD_TESTS)
         add_executable(test_distributedConstraintLayout
             test/test_distributedConstraintLayout.cpp)
         target_link_libraries(test_distributedConstraintLayout
-            PRIVATE SF_linearAlgebra)
+            PRIVATE SF_linearAlgebra SF_executionRuntime SF_mpi MPI::MPI_CXX)
         add_test(NAME distributedConstraintLayout
-            COMMAND test_distributedConstraintLayout)
+            COMMAND mpirun -np 4 $<TARGET_FILE:test_distributedConstraintLayout>)
     endif()
 
     if(TARGET SF_mpi AND MPI_CXX_FOUND)
@@ -283,6 +309,13 @@ if(BUILD_TESTS)
         endif()
     endif()
 
+    if(TARGET SF_mpi AND MPI_CXX_FOUND)
+        add_executable(test_peskinPartialRows test/test_peskinPartialRows.cpp)
+        target_link_libraries(test_peskinPartialRows PRIVATE SF_ibm SF_executionRuntime SF_mpi MPI::MPI_CXX)
+        add_test(NAME peskinPartialRows COMMAND mpirun -np 4 $<TARGET_FILE:test_peskinPartialRows>
+            ${CMAKE_SOURCE_DIR}/test/IBM/cylinderFlowPeskin/mesh/geometry/cylinderSurface.stl)
+    endif()
+
     if(TARGET SF_mpi AND MPI_CXX_FOUND
        AND EXISTS "${CMAKE_SOURCE_DIR}/test/test_sparseCanonicalCopy.cpp"
        AND EXISTS "${CMAKE_SOURCE_DIR}/test/test_distributedKKT.cpp"
@@ -290,23 +323,23 @@ if(BUILD_TESTS)
         add_executable(test_sparseCanonicalCopy
             test/test_sparseCanonicalCopy.cpp)
         target_link_libraries(test_sparseCanonicalCopy
-            PRIVATE SF_mpi MPI::MPI_CXX)
+            PRIVATE SF_mpi SF_executionRuntime MPI::MPI_CXX)
         add_test(NAME sparseCanonicalCopy
             COMMAND mpirun -np 4 $<TARGET_FILE:test_sparseCanonicalCopy>)
 
         add_executable(test_distributedKKT
             test/test_distributedKKT.cpp)
         target_link_libraries(test_distributedKKT
-            PRIVATE SF_linearAlgebra SF_mpi MPI::MPI_CXX)
+            PRIVATE SF_linearAlgebra SF_mpi SF_executionRuntime MPI::MPI_CXX)
         add_test(NAME distributedMinimalKKT
             COMMAND mpirun -np 2 $<TARGET_FILE:test_distributedKKT>)
 
         add_executable(test_distributedSurfaceSchur
             test/test_distributedSurfaceSchur.cpp)
         target_link_libraries(test_distributedSurfaceSchur
-            PRIVATE SF_ibm SF_mpi MPI::MPI_CXX)
+            PRIVATE SF_ibm SF_mpi SF_executionRuntime MPI::MPI_CXX)
         add_test(NAME distributedSurfaceSchur
-            COMMAND mpirun -np 2 $<TARGET_FILE:test_distributedSurfaceSchur>)
+            COMMAND mpirun -np 4 $<TARGET_FILE:test_distributedSurfaceSchur>)
     endif()
 
 endif()

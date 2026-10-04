@@ -6,6 +6,8 @@
 #include "SF_fluidStateModel.h"
 #include "SF_field.h"
 
+#include "core/mesh/SF_nodalQuadrature.h"
+
 #include <cmath>
 #include <stdexcept>
 
@@ -43,15 +45,8 @@ inline double density(const Field& field, const Index3& index) {
         : field(index.i,index.j,index.k,RHO);
 }
 
-inline double volume(const Field& field, const Index3& index) {
-    const double inverse = field.Jac(index.i,index.j,index.k);
-    if (!std::isfinite(inverse) || inverse == 0.0) {
-        throw std::runtime_error("IBM method found an invalid cell Jacobian.");
-    }
-    // 强迫/约束路径只对已由 IBM 拓扑筛选的 Eulerian unknown 调用本函数。
-    // 因此它必须和 CouplingGraph 的 canonical 体积一致，不能把本地 patch
-    // 端点当作物理边界再乘半权重；MPI 切分面也是本地端点。
-    return 1.0/std::abs(inverse);
+inline double volume(const Field& field,const Index3& index) {
+    return StructuredMesh::nodalVolume(field,index.i,index.j,index.k);
 }
 
 inline bool interior(const Field& field, const Index3& index) {

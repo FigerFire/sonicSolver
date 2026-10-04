@@ -69,7 +69,7 @@ Builtin 与 C++ user-defined equations 经 `SystemCompositionBuilder::addEquatio
 
 Formula/Expression AST 是 equation mathematical implementation detail，不是顶层 execution authority。`SF_formula.h/.cpp` 实现 AST、Equation 与 registry；保留此文件名不意味着恢复 Formula solver。FormulaGroup/FormulaGroupRegistry 已移除，守恒向量 fusion 属于 numerical provider 优化。
 
-未迁移模块仍有 `SF::Equation::Definition` in `legacyDefinitions`、`EquationDescriptor` in `legacyEquations`、`LegacyEquationRole` 和 `TermKind` 平面 DSL。它们用于 legacy numerical backend 及诊断，不能重新控制已经迁移的 single-fluid 方程或执行顺序。density 与常密度 NS 不再创建平面数学副本。
+未迁移模块仍有 `SF::Equation::Definition` in `legacyDefinitions`、`EquationDescriptor` in `legacyEquations`、`LegacyEquationRole` 和 `TermKind` 平面 DSL。它们用于 legacy numerical backend 及诊断，不能重新控制已经迁移的 single-fluid 方程或执行顺序。density、常密度 NS 和 native Eulerian core 不再创建平面数学副本。AssemblyPlan 已没有数值消费者，相关类及实现已删除。
 
 ## STATE — Base variables and realized views
 
@@ -267,16 +267,16 @@ HOW 是唯一 loop/count/order authority。WHICH 的局部 fragment 提供原 as
 | Navier–Stokes | momentum, continuity；density 另含 energy | ordered default calls | conservative / pressure momentum providers |
 | MRF、gravity、wall heat | extends momentum/energy AST | none | existing compiled source kernels |
 | Single-fluid SST / k-epsilon | separate native k, omega/epsilon AST；provider-owned mu_t closure | order 1/2 generic EquationCalls before flow calls | TurbulenceTransport；explicit pair fusion -> flow.turbulence |
-| Eulerian turbulence | namespaced legacy definitions/state | order 50/51 legacy declarations + shared-pressure policy | Legacy AssemblyPlan/backend / migration pending |
+| Eulerian turbulence | native phase-mass weighted k/epsilon/omega AST、implicit sink 与 mu_t algebraic closure；原数组 ProviderDistributed aliases | 显式 outer closure group → flow groups → transport group，完整 phase/model fusion | EulerianTurbulenceClosure / EulerianTurbulenceTransport → flow.eulerian-turbulence，原矩阵内核 |
 | VOF / level set | alpha/phi transport and closures, current module definitions | contribution interface available | Legacy numerical backend / migration pending |
 | PISO | pSimple, correctU, correctP, correctFluxp；conservative 另有 publishPressure | consumes momentum call; inserts pressure Loop | constant / conservative relation providers |
 | SIMPLE | pressure and fixed-time relations | outer Loop with single correction | constant density: original PressureOperators；conservative fixed-time Unsupported |
 | PIMPLE | pressure and fixed-time relations | nested outer/pressure Loop | constant density: original PressureOperators；conservative fixed-time Unsupported |
-| Eulerian–Eulerian | namespaced phase equations | scope-local declarations | Legacy AssemblyPlan/backend / migration pending |
-| Ghost IBM | boundary closure | minimal existing boundary hook | Ghost/ILW kernel unchanged |
-| forcing / DLM / KKT | source/constraints according to actual method | common contribution interface; explicit legacy declarations | Legacy projection/KKT policy/backend / migration pending |
+| Eulerian–Eulerian | namespaced native Formula equations | native PIMPLE EquationCalls / Loops / Commit | AST-validated compiled contracts / specialized kernels |
+| Ghost IBM | native boundary read/write/stage/order contract；不增加虚假 equation | every spatial evaluation 的原 BC/halo/ILW 链 | explicit ibm.boundary port；原 kernel |
+| forcing / DLM / KKT | native impulse/work、lagged force、projection 或 coupled constraint AST；original STATE aliases | explicit complete post-predictor group / block | immutable native Immersed method contract；原 kernel；KKT production capability 仍有缺口 |
 
-`legacyEntries` 明确记录尚未独立执行的模块 calls，explain 显示 migration pending。不能同时把这些 entries 和已存在的 legacy local backend 执行一次，造成湍流/相方程重复推进。Eulerian 内部 shared-pressure fragment 与部分 AssemblyPlan/TermKind 是 implementation migration debt, not target architecture。
+`legacyEntries` 明确记录尚未独立执行的模块 calls，explain 显示 migration pending。不能同时把这些 entries 和已存在的 legacy local backend 执行一次，造成湍流/相方程重复推进。Eulerian core 的 shared-pressure fragment 和 AssemblyPlan 已删除；Eulerian turbulence 已使用原生 closure/transport occurrences，不再进入 legacyEntries。
 
 ## Compiler and execution
 
@@ -305,7 +305,7 @@ Compiler 通过 const source HOW/WHICH 和 const equation/provider interfaces �
 
 `SolvePlanNode.provider` 是每个 executable leaf 的最终 implementation identity。`RuntimeRequirements.operationBindings` 只是该 frozen leaf ownership 的校验/index 投影；`SystemValidator` 拒绝两者不一致。`OpRegistry::bind(id, provider, callback)` 注册实现的 owner，`PlanExecutor` 在任何 operation 执行之前检查所有 ID 与 owner，然后直接 invoke；它不读取 state/formulation 或 coupling preset。SingleFluidStepper 按 frozen provider ID 构造/绑定资源，不再由 constantDensity flag 选择 backend。
 
-只有显式 `legacyAdapter` plan leaf 允许在编译时调用 `Legacy::selectOperationProvider`。Eulerian shared pressure、IBM constraint 等兼容 provider 选择保留在 `SF_legacyNumerics.cpp`；它们的 flags 没有进入 native provider matching。所有 native single-fluid pressure 不走该 adapter。不存在 compile 后的 provider matching。
+只有显式 `legacyAdapter` plan leaf 允许在编译时调用 `Legacy::selectOperationProvider`。IBM constraint 已由 native Immersed method 冻结 owner/operation，不进入兼容 selector；native Eulerian shared pressure 同样不进入该 selector。Eulerian turbulence 使用独立原生 numerical provider，不进入 compatibility selector。所有 native single-fluid pressure 不走该 adapter。不存在 compile 后的 provider matching。
 
 `CompiledSolvePlan.root` 是冻结后的 executable operations，不再是独立 authored HOW；source program、compiled calls、numerical bindings 与 explain 都来自同一编译链。compiler 不猜 equation target/order，也不选择 coupling preset。
 
@@ -327,7 +327,7 @@ TurbulenceTransport 保留当前一次/物理步的显式原位更新，不采�
 
 DNS 不贡献输运方程；Smagorinsky 仅贡献 mu_t 代数闭合及 TurbulenceClosure refresh，保持原缓存刷新位置，不产生 k/omega/epsilon 输运。全局 term recipes 只由声明 usesSpatialRecipes 的 provider 消费；RAS 的固定局部 Central2 不会误触发 flow diffusion recipe 默认选择。
 
-RAS 当前执行能力仅 single-fluid、serial、single patch、density explicit flow；pressure、MPI/multi-patch、IBM、Eulerian 和 implicit RAS 未放行。旧 pressure service guard、EulerianStepper、AssemblyPlan、TermKind、EeTurbulenceSolve compatibility adapter 保留；Eulerian core scheduler 已原生化。详细审计、诊断对照的基线来源及 18 项自审见 [single-fluid turbulence migration report](../docs/single-fluid-turbulence-migration.md)。
+RAS 当前执行能力仅 single-fluid、serial、single patch、density explicit flow；pressure、MPI/multi-patch、IBM、Eulerian 和 implicit RAS 未放行。旧 single-fluid pressure service guard 保留；Eulerian 的 EeTurbulenceSolve 已是独立原生 provider callback；Eulerian core scheduler 与 assembly authority 均已原生化，AssemblyPlan 已删除。详细审计、诊断对照的基线来源及 18 项自审见 [single-fluid turbulence migration report](../docs/single-fluid-turbulence-migration.md)。
 
 ## State, workspace and parallel invariants
 
@@ -349,7 +349,35 @@ Eulerian PhaseSystem 明确贡献每相 phaseMass/momentum/enthalpy、shared p �
 
 六个 Eulerian methods 显式选择 flow.eulerian-pressure，完整 phase inputs/group targets 按声明的 PhaseSystem storage order 验证。通用 compiler 支持 N-member fragment fusion，保留每相数学 provenance，core leaves legacyAdapter=false。Provider-local prepare/source/BC/halo/canonical-copy lowering 保留原 Ee 微操作顺序。`sharedPressurePlanFragment`、S_EE_PIMPLE policy 与 transformer Ee inventory 已删除；EulerianStepper 不从 policyKind 选择算法，只执行 frozen plan。
 
-最终 AST 冻结后单向投影旧 Definition term inventory，AssemblyPlan/TermKind 仍用于已有专用 assembler capability checks，不选择 schedule/count/provider，也不代表任意 AST 已可装配。Eulerian turbulence 仍为 legacy adapter/显式未支持路径，其原 policy-extension 和 k.phase/E_TURB_* identity 断点留作独立后续阶段。详见 [Eulerian shared-pressure migration report](../docs/eulerian-shared-pressure-migration.md)。
+native Eulerian 数学只在 Formula EquationRegistry 中表示一次。所选 provider 直接校验准确 AST、源项扩展和 STATE/backing，产生不可变的 CompiledEulerianAssemblyContract：方程/输出、实现关系、phase slot/name、method/provider 与支持的扩展。generic compiler 只携带不透明 provider 编译产物，不解释 Eulerian 类型。
+
+```text
+WHAT Formula AST -> selected WHICH provider -> strict AST capability matcher
+    -> immutable compiled provider contract -> HOW lowered CompiledSolvePlan
+    -> PlanExecutor -> flow.eulerian-pressure -> existing numerical kernels
+```
+
+EulerianStepper 启动时只验证冻结相槽与实际 PhaseSystem；不再解析方程名或遍历 AST。PhaseEquationAssembler 是专用数值实现，不是数学 authority 或通用 AST interpreter；不再绑定 Equation、Definition、TermKind 或 AssemblyPlan。旧投影 helpers 和没有真实数值消费者的 AssemblyPlan infrastructure 均已删除。未知数学结构明确 Unsupported。
+
+架构法则：native 数学方程由 Formula-based EquationRegistry 唯一表示。数值 provider 可以从它编译 typed implementation contracts，禁止再创建另一份可编辑数学方程。
+
+Eulerian turbulence 的 identity/HOW/provider 断点已完成原生迁移；其真实数学和执行契约见下一节。core assembly 三阶段门槛、源码保护和数值证据见 [Eulerian assembly authority migration](../docs/eulerian-assembly-authority-migration.md)；调度迁移历史见 [Eulerian shared-pressure migration](../docs/eulerian-shared-pressure-migration.md)。
+
+## Native Eulerian turbulence
+
+模型贡献 `k.phase` 与 `epsilon.phase`/`omega.phase` 方程，以及真实代数闭合 `mu_t.phase`。WHAT 对应原矩阵：ddt(phaseMass*phi) + div(canonicalMassFlux*phi) + implicitSink*phi = diffusion(D,phi) + explicitSource。kEpsilon 与 SST 的相质量、alpha 加权、生产限幅、耗散汇和 SST cross diffusion 保留；closure coefficients 在预测器前计算、输运时滞后使用，求解后刷新。没有把 single-fluid 的显式原位 RAS 内核复用于此矩阵路径。
+
+STATE 继续由 EquationSystem::PhaseEquationState 的原数组持有；model contribution 用完整 PhaseSystem 顺序解析真实 slot，selected phases 可以是 subset 或反序。registerState 与 synchronization 使用 phaseIndex，不用 selected-array ordinal。没有第二份 k/omega/epsilon/mu_t、Field 或 clock；暂不宣称 restart reader 已实现。
+
+source HOW outer 明确包含 closure group → continuity → momentum → pressure/nonOrthogonal corrections → enthalpy → transport group。EulerianTurbulenceClosure/Transport 选择独立 owner flow.eulerian-turbulence、显式 N-phase/model group 与不可变 providerContract；每组融合一次原 prepare/solve。flow provider 不再通过字符串或 legacy identity 插入湍流。closure provider 的局部 prerequisites 实现 interphase → sources → prepare，continuity 不再重复前两项；outer final BC/validate 放在最后一个 authored group 后。source sibling 顺序不重排。
+
+所选 provider 的支持签名只用于严格 AST/backing/phase/model 能力校验，不注册第二份 WHAT；system 不 include concrete model。runtime 只校验冻结实现绑定与实际模型数组，不重新解析方程名。generic compiler 不识别 turbulence，explain 展示每个 occurrence 的模型、slot、group、owner 及数值方法。
+
+保留完整生命周期：initial prepare/commit；dt probe 中 prepare/sourceTimeStep；每 outer 在预测器前 prepare/同步、energy 后 solve、solve 内 BC/validate/reprepare；outer final BC/同步；成功物理 step commit(m*phi)，随后 diagnostics、clock commit。这些 prepare 不可去重。
+
+当前能力为 serial single block、既有 Upwind/diffusion/HYPRE backend；MPI/multi-patch Eulerian turbulence 在 capability validation 明确 Unsupported。实测 2-rank host 输入因缺少分布式 phase transport provider fail-fast，是 implementation capability gap，不是 sandbox launch failure。已有 MPI pressure regressions 保留。
+
+数值基线来源、独立矩阵 harness、输入/输出 hashes、phase subset/reorder、多层迭代与旧内核对照见 [Eulerian turbulence native migration](../docs/eulerian-turbulence-native-migration.md)。原 production turbulence 入口无法运行，报告不把恢复接线后的诊断执行冒称历史 production baseline。全局 compatibility DSL 仍为 level-set/mixture 等 consumer 保留；IBM 的 native contribution 接线见下一节。
 
 ## Current implementation and verification status
 
@@ -362,9 +390,9 @@ Eulerian PhaseSystem 明确贡献每相 phaseMass/momentum/enthalpy、shared p �
 | Active STATE / lazy views | catalog metadata 与 active registry 分离；HOW/WHICH 请求 view，runtime 绑定 storage | inactive symbol、qualified target、storage/owner contract 检查通过；本阶段 CFD 实际覆盖 Working(U)、Correction(p)、Physical(U/p/phi) |
 | Single-fluid conservative/variable-density pressure | native six occurrences + explicit three-equation predictor fusion；bindPressureOps 仅注册已有 kernels | pressureConstraintPiso 1 step，time/dt=1.659315e-06；输入、诊断、操作顺序、字段统计与两个 VTS 均前后完全一致；fixed-time conservative 等 capability 仍 Unsupported |
 | Single-fluid transported RAS | native WHAT/STATE/HOW/WHICH；完整相邻 pair 显式 fusion；CompiledSolvePlan 调用 flow.turbulence，一次/物理步 | 新增 SST 串行覆盖：6 steps / 4 VTS 与旧内核诊断对照逐字节一致；kEpsilon 为结构、存储及更新单元覆盖，未做 CFD baseline |
-| Eulerian turbulence | legacy entries/provider-local adapter；旧 policy extension 删除，启动/identity 断点仍明确 Unsupported | 未运行 Eulerian turbulence CFD |
-| Eulerian shared pressure | native phase/pressure WHAT/STATE/HOW/WHICH；explicit N-member fragment fusion；EulerianStepper 仅绑定/执行；AssemblyPlan/TermKind 为临时 adapter | 现有双相/MRF/PIMPLE：6 steps、7 VTS、168 Ee operations 和诊断前后逐字节一致；33 项完整回归通过 |
-| IBM / distributed execution | Ghost 边界数学保留；forcing/constraint adapters 与 COPY/SUM contracts 保留 | 串行 Ghost 已覆盖；其结果不证明 forcing/DLM/KKT 或 MPI 正确 |
+| Eulerian turbulence | 原生 mass-weighted WHAT、单 registry STATE aliases、显式 closure/transport HOW 和独立 WHICH；无 E_TURB/legacy routing | SST/kEpsilon：每项 6 steps / 7 VTS / 180 operations；subset/reversed phases 及多 PIMPLE passes 严格一致；多 pass 588 operations；Smagorinsky closure-only 174 operations；全部与隔离旧内核接线对照比较，非历史 production baseline |
+| Eulerian shared pressure | native phase/pressure WHAT/STATE/HOW/WHICH；explicit N-member fragment fusion；EulerianStepper 仅绑定/执行；AST -> immutable compiled assembly contract，零 native flat DSL 依赖 | 现有双相/MRF/PIMPLE：6 steps、7 VTS、168 Ee operations 和诊断前后逐字节一致；三阶段 CFD 均完全一致；最终完整回归见本次迁移报告 |
+| IBM / distributed execution | native boundary/impulse/projection/block contracts；原 numerical kernels 和 COPY/SUM semantics | 各方法分别验证；不能用 Ghost 代表 forcing/KKT；本次完整时域结果见 IBM migration report |
 
 ## Next migration sequence
 
@@ -374,6 +402,20 @@ Eulerian PhaseSystem 明确贡献每相 phaseMass/momentum/enthalpy、shared p �
 
 后续顺序仅作为路线，不在本阶段执行：
 
-1. Eulerian Equation/Assembly Authority Migration：从同一 AST/provider term contracts 装配，移除 AssemblyPlan/TermKind/legacy Definition adapter；随后独立处理 Eulerian turbulence。
-2. 按真实数学作用迁移剩余 IBM adapters：boundary closure、source/post-predictor correction、DLM/KKT constraints 各自保护对应 baseline 与 MPI invariants。
+Eulerian turbulence 原生迁移已完成，历史完整 build、host 38/38 CTest 见 [中文迁移报告](../docs/eulerian-turbulence-native-migration.md)。IBM native contribution 的 authority 迁移见下节。
+
+1. 补齐 IBM 组合能力：RAS stage/壁距/边界、pressure predictor/block、Eulerian phase ports 与 distributed KKT；不以开放 enabled 伪装 numerical capability。
+2. level-set、mixture 等剩余 compatibility consumers；之后仅删除无生产消费者的全局 DSL。
 3. 用户自定义四模块 IO：复用同一 compiler、validator、explain。
+
+## Native IBM contributions
+
+IBM 使用现有四契约与同一 compiler。Ghost/ILW 贡献 boundary closure 的 read/write/stage/order contract，physical BC → halo COPY → reconstruction → publication → halo COPY → operator，不伪造 EquationCall。
+
+BP 是 post-predictor momentum penalty 与 midpoint work，没有乘子；Peskin / explicit DFM 消费旧 lagged force 后计算下一层乘子，不宣称当前步精确 no-slip；FTS/fractional DLM 贡献原 mass-norm projection。显式/fractional自推进使用 virtual-fluid generalized mass projection，并区分 active translation/rotation；未改为实体刚体质量时间增量。
+
+原 multiplier/laggedForce/solid velocity 通过 SpecializedExecutor STATE aliases 和 original-storage port 绑定；surface lambda 仍是原数值内核的 transient workspace。native complete mathematical group 经 adjacent fusion lower 一次原 project/KKT callback，所有数学 members 保留 provenance/write-set。compiled immutable contract 校验 AST/backing/target/algorithm/rigid DOFs；native correction 当前只支持完整 implemented predictor 之后、commit 之前，不支持任意 stage treatment。
+
+IBM 的 legacy Definition/HOW/policy/provider routing、空 ImmersedConstraintTransformer、C_IBM 前缀 matching 与独立 descriptor inventory 已删除；descriptor 只保留实际 method options/KKT capability 与 display summary。generic temporal compiler 不按 IBM 字符串选择 execution。
+
+原 ILW/J/Jᵀ、body/surface projection、rigid solve、KKT/HYPRE numerical helpers 保留。三种 KKT 有 structural native contracts，当前 canonical production inputs 新旧均因 recipe/lowering 缺口 fail-fast；不能把它们标为已验证 Runnable。Eulerian＋IBM、RAS/LES＋IBM、pressure/implicit＋IBM 的缺失 mathematical/stage/storage contracts 在编译/capability 阶段明确拒绝。Peskin lagged surface MPI 允许有限非负的 local partial diagonal（包括空支撑的零），Runtime SUM 后严格要求正性；单独验证合法空 rank、canonical lambda COPY 后移除该编译限制。force/mask 是 Eulerian owner 已完成的诊断量，输出 replica 使用 Runtime COPY，不是 SUM 或 average。物理 ILW 的法向和模板遵循 source mesh 的 communication mask；ILW 在重建前声明 conservative halo read，之后保持 physical BC → halo → immersed closure 的相对顺序。IBM 的 mass/spreading/load 使用统一的物理 nodal volume，内部 partition endpoint 不引入半体积，EMPTY 端点共同表示真实厚度。47/47 host CTest 与首差异定位已经完成，7 个串行冻结案例逐字节一致，8 个 MPI 案例全部运行至 endTime=5 且逐帧 output replica 冲突为零；完整时域差异、剩余 kernel 一阶矩/力矩性质与 RAS boundary 缺口见 [IBM parallel consistency validation](../docs/ibm-parallel-consistency-validation.md)。历史迁移 preservation 结果见 [IBM native contributions migration](../docs/ibm-native-contributions-migration.md)。

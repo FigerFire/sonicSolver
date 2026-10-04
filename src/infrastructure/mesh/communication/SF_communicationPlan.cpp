@@ -2062,6 +2062,7 @@ bool buildHaloExchangePlan(std::vector<MeshBlockField>& blocks,
         return false;
     }
     for (size_t b = 0; b < blocks.size(); ++b) {
+        blocks[b].field.clearCommunicationHaloMask();
         if (plan.haloWidth > blocks[b].field.NG()) {
             broadcast(
                 "Fatal: ",
@@ -2211,6 +2212,14 @@ bool buildHaloExchangePlan(std::vector<MeshBlockField>& blocks,
     if (addGlobalDofFaceFluxSync(blocks, conformalGhosts, plan)
         == GlobalFluxSyncResult::Invalid) {
         return false;
+    }
+
+    // Communication classification is mesh topology, including when no Ghost
+    // IBM is active. Nodal quadrature must not halve an internal partition end.
+    for (const auto& blockPlan : plan.blockPlans) {
+        Field& field=blocks[static_cast<std::size_t>(blockPlan.blockId)].field;
+        for (const auto& mapping : blockPlan.cells)
+            field.setCommunicationHalo(mapping.ownerIJK[0],mapping.ownerIJK[1],mapping.ownerIJK[2],true);
     }
 
     std::ostringstream msg;

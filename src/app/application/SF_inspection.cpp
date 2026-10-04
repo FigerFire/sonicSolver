@@ -122,7 +122,8 @@ CaseInspection inspectCase(const CaseConfig& config) {
             turbulenceName(config.solver.turbulence.model),
             config.solver.turbulence.phaseNames,
             systemRequest.templateOrigin
-                == System::PhysicsTemplateKind::EulerianEulerian});
+                == System::PhysicsTemplateKind::EulerianEulerian,
+            systemRequest.phaseNames});
         systemRequest.modelContributions.push_back(std::move(contribution));
     }
     systemRequest.modelRequiresDiffusion =
@@ -158,15 +159,6 @@ CaseInspection inspectCase(const CaseConfig& config) {
         immersedDescriptor = result.ibm.method == FDM::IBMMethod::Ghost
             ? IBM::Descriptor::ghostCell()
             : IBM::Descriptor::variational(result.ibm.forcing);
-        if (systemRequest.templateOrigin
-            == System::PhysicsTemplateKind::EulerianEulerian) {
-            systemRequest.unsupportedCompositionReason =
-                immersedDescriptor.enforcement==FDM::IBMEnforcement::GhostCell
-                    ? "Eulerian multiphase + Ghost IBM is unsupported: "
-                      "phase-wise ghost-state boundary closure is unavailable."
-                    : "Eulerian multiphase IBM constraint exists, but required "
-                      "phase-wise IBM fluid-port assembly is unavailable.";
-        }
         System::SystemContribution contribution;
         IBM::SystemContribution::contribute(contribution,immersedDescriptor);
         systemRequest.modelContributions.push_back(std::move(contribution));

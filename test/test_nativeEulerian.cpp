@@ -94,13 +94,12 @@ int main() {
     try { (void)build(config,unsupported); } catch (const std::runtime_error&) { rejected=true; }
     require(rejected,"Eulerian silently selected PIMPLE for requested PISO.");
     auto legacy=request;SystemContribution turbulence;
-    SF::Turbulence::contribute(turbulence,{"kOmegaSST",request.phaseNames,true});
+    SF::Turbulence::contribute(turbulence,{"kOmegaSST",request.phaseNames,true,request.phaseNames});
     legacy.modelContributions.push_back(turbulence);
     const auto compatibility=build(config,legacy);
-    require(!compatibility.solvePlan.sourceProgram.legacyEntries.empty() && compatibility.executionPolicies.empty()
-        && compatibility.runtime.report.status==RuntimeStatus::Unsupported
-        && compatibility.runtime.report.reason.find("has no compiled HOW execution step")!=std::string::npos,
-        "Unmigrated Eulerian turbulence was silently enabled/disabled or acquired another scheduler.");
+    require(compatibility.solvePlan.sourceProgram.legacyEntries.empty() && compatibility.executionPolicies.empty()
+        && compatibility.runtime.report.status==RuntimeStatus::Runnable,
+        "Native Eulerian turbulence has an unsupported or legacy execution authority.");
     // The real PhaseState arrays and correction scalar remain the sole backing authorities.
     SF::Field field;field.setup(2,2,1,1,5);SF::State::StateBundle bundle;bundle.patches={&field};
     std::vector<SF::Physics::PhaseSystems::PhaseState> phases(3);

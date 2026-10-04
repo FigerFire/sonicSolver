@@ -1,0 +1,9 @@
+# Numerical methods.
+SonicFile:
+  object: solver
+  type: numerics
+transport: {}
+time:
+  default: classicalRK4
+sources:
+  default: MRF

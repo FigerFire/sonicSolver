@@ -11,6 +11,7 @@
 #include "core/system/SF_stateViews.h"
 
 #include <algorithm>
+#include <any>
 #include <string>
 #include <vector>
 #include <initializer_list>
@@ -126,8 +127,6 @@ struct CompiledMathRef {
 enum class LegacyExecutionPolicyKind {
     SegregatedPressureCorrection,
     PressureVelocityFixedPoint,
-    ConstraintProjection,
-    MonolithicKKT,
     BoundaryClosure
 };
 
@@ -239,6 +238,8 @@ struct CompiledEquationCall {
     /// Explicit local fusion contract; a shared backend/provider alone never fuses calls.
     std::string fusionKey;
     std::vector<CompiledMathRef> fusionMembers;
+    /// @brief Provider-owned immutable implementation contract; generic HOW lowering never interprets it.
+    std::any providerContract;
 };
 
 struct CompiledExecutionProgram {
@@ -272,9 +273,6 @@ inline const char* toString(LegacyExecutionPolicyKind value) {
             return "segregated-pressure-correction";
         case LegacyExecutionPolicyKind::PressureVelocityFixedPoint:
             return "pressure-velocity-fixed-point";
-        case LegacyExecutionPolicyKind::ConstraintProjection:
-            return "constraint-projection";
-        case LegacyExecutionPolicyKind::MonolithicKKT: return "monolithic-kkt";
         case LegacyExecutionPolicyKind::BoundaryClosure: return "boundary-closure";
     }
     return "unknown-execution-policy";

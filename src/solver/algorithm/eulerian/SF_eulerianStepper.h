@@ -9,7 +9,6 @@
 #include "SF_phaseSource.h"
 #include "core/interfaces/SF_solverStepper.h"
 #include "solver/system/SF_runtimeRequirements.h"
-#include "solver/equation/SF_assemblyPlan.h"
 #include "solver/system/SF_stateRealizer.h"
 #include "solver/run/SF_planExecutor.h"
 
@@ -55,7 +54,6 @@ private:
     PhaseSolverWorkspace workspace_;
     Physics::PhaseSystems::PhaseBoundaryApplicator boundary_;
     Physics::PhaseSystems::PhaseSourceRegistry sourceRegistry_;
-    SF::Equation::AssemblyPlanRegistry assemblyPlans_;
     PhaseEquationAssembler equations_;
     StepSummary lastSummary_;
     FDM::SolverServices services_;

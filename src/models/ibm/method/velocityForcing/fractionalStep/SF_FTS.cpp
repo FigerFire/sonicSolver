@@ -12,6 +12,8 @@
 
 #include "SF_fluidStateModel.h"
 
+#include "operations/SF_constraintCheckpoint.h"
+
 #include <algorithm>
 #include <cmath>
 #include <limits>
@@ -44,6 +46,7 @@ FDM::ImmersedConstraintResult ImmersedForcingSystem::applyVelocityForcingFTS(
     }
     Field& field = *fields.front();
     lastField_ = &field;
+    Checkpoint::state("fts-predictor",field,targetTime);
     mask_.assign(static_cast<size_t>(field.TotalSize()), 0);
     multiplier_.assign(static_cast<size_t>(field.TotalSize()), Vector3());
     lastResult_ = {};
@@ -107,7 +110,9 @@ FDM::ImmersedConstraintResult ImmersedForcingSystem::applyVelocityForcingFTS(
         }
         schurDiagonal[marker] = dt*point.measure*localDiagonal;
     }
+    Checkpoint::diagonal("local-mass-response",surfaceSystem_,schurDiagonal,targetTime);
     if (runtime_) runtime_->globalSum(schurDiagonal);
+    Checkpoint::diagonal("global-mass-response",surfaceSystem_,schurDiagonal,targetTime);
     double minimumSchurDiagonal=std::numeric_limits<double>::infinity();
     double maximumSchurDiagonal=0.0;
     for (double value:schurDiagonal) {
@@ -134,7 +139,9 @@ FDM::ImmersedConstraintResult ImmersedForcingSystem::applyVelocityForcingFTS(
     }
     // 每个 rank 仅计算它拥有的 Eulerian edge 对 Ju* 的部分贡献；Runtime
     // 显式 SUM 后所有 rank 得到同一 marker 约束误差，而 IBM 数学核不识别 MPI。
+    Checkpoint::markers("fts-local-Ju",surfaceSystem_,interpolated,targetTime);
     reduceSurfaceVectors(interpolated);
+    Checkpoint::markers("fts-global-Ju",surfaceSystem_,interpolated,targetTime);
     // 记录投影前的 Ju* 误差，作为 serial/MPI 分区一致性诊断。它与
     // 投影后的约束残差分开：若二者前者随 partition 改变，问题在流体
     // predictor/halo；若仅后者改变，才应检查 J M^-1 J^T 或 lambda COPY。
@@ -174,6 +181,7 @@ FDM::ImmersedConstraintResult ImmersedForcingSystem::applyVelocityForcingFTS(
     // owner publishes lambda; Runtime performs sparse COPY to each J^T
     // consumer. This is deliberately neither a SUM nor an average.
     copySurfaceMultipliers(projection.multiplier);
+    Checkpoint::markers("fts-lambda",surfaceSystem_,projection.multiplier,targetTime);
 
     std::vector<CellIncrement> increments(
         static_cast<size_t>(field.TotalSize()));
@@ -259,9 +267,12 @@ FDM::ImmersedConstraintResult ImmersedForcingSystem::applyVelocityForcingFTS(
             result.maximumVelocityResidual,norm(corrected[marker]-target));
     }
     finalizeDistributedResult(result);
+    Checkpoint::force("fts-force",field,multiplier_,targetTime);
+    Checkpoint::result(result,targetTime);
     Validation::requireConstraintResidual(
         result.maximumVelocityResidual,
         config_.forcing.constraintTolerance,"velocityForcingFTS");
+    Checkpoint::state("fts-corrected",field,targetTime);
     field.invalidateThermodynamicCache();
     result.performed = true;
     result.detail = Diagnostics::describe(

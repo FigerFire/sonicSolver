@@ -44,15 +44,6 @@ void addState(
     system.addState(std::move(unknown));
 }
 
-void addEquation(
-        SystemCompositionBuilder& system,
-        EquationDescriptor descriptor,
-        SF::Equation::Definition definition,
-        LegacyEquationRole role = LegacyEquationRole::Generic) {
-    descriptor.role=role;
-    system.addEquation(std::move(descriptor),std::move(definition));
-}
-
 } // namespace
 
 void addPressureConstraintFluid(
@@ -123,14 +114,7 @@ void addPhaseEquationPack(
                StateRole::Transported,StorageBinding::ProviderDistributed,
                storage+"enthalpy",0,phase);
     const auto relations=eulerianPhaseRelations(phase,reference);
-    for (std::size_t i=0;i<relations.size();++i) {
-        if (i<3) {
-            EquationDescriptor descriptor{relations[i].id,relations[i].id,"phase transport",
-                {i==0 ? "phaseMass"+suffix : i==1 ? "momentum"+suffix : "enthalpy"+suffix}};
-            descriptor.role=i==0 ? LegacyEquationRole::Mass : i==1 ? LegacyEquationRole::Momentum : LegacyEquationRole::Enthalpy;
-            system.addEquation(std::move(descriptor),eulerianBackendDefinition(relations[i]),relations[i]);
-        } else system.addEquation(relations[i]);
-    }
+    for (const auto& equation:relations) system.addEquation(equation);
     for (const auto& item:std::vector<std::tuple<std::string,std::string,std::string,int>>{
             {"E_CONTINUITY"+suffix,"phaseMass"+suffix,"EulerianPhaseContinuity",10},
             {"momentum"+suffix,"momentum"+suffix,"EulerianPhaseMomentum",20},

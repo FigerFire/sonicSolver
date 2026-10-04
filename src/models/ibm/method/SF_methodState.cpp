@@ -4,6 +4,8 @@
 #include "method/SF_method.h"
 #include "core/interfaces/SF_executionRuntime.h"
 
+#include "operations/SF_constraintCheckpoint.h"
+
 #include <cmath>
 #include <stdexcept>
 
@@ -24,6 +26,7 @@ void ImmersedForcingSystem::buildSurfaceSystem(
     if (runtime_) runtime_->globalSum(surfaceNormalizations_);
     surfaceSystem_=surfaceOperator_->normalizeDistributed(surfaceNormalizations_);
     bodyModel_->prepareEquationView(surfaceSystem_,targetTime,dt);
+    Checkpoint::graph(field,surfaceSystem_,runtime_,targetTime);
 }
 
 void ImmersedForcingSystem::reduceSurfaceVectors(
@@ -124,6 +127,26 @@ bool ImmersedForcingSystem::usesMonolithicKKT() const {
             == FDM::IBMForcingAlgorithm::DFMAugmentedLagrangian;
 }
 
+void ImmersedForcingSystem::publishDiagnostics(Field& field) {
+    if (!runtime_ || !runtime_->distributed() || &field!=lastField_ || mask_.empty()) return;
+    // J^T has already accumulated every marker contribution into each Eulerian
+    // owner. Output replicas COPY that completed force; they are not contributors.
+    State::DistributedFieldView force;
+    force.name="immersedForceDiagnostic";force.blockId=0;force.geometry=&field;
+    force.components=3;force.haloDepth=field.NG();
+    force.read=[this](int cell,int component) {const auto& v=multiplier_.at(cell);return component==0?v.x:component==1?v.y:v.z;};
+    force.write=[this](int cell,int component,double value) {auto& v=multiplier_.at(cell);if(component==0)v.x=value;else if(component==1)v.y=value;else v.z=value;};
+    State::DistributedFieldView mask;
+    mask.name="immersedMaskDiagnostic";mask.blockId=0;mask.geometry=&field;mask.haloDepth=field.NG();
+    mask.read=[this](int cell,int) {return double(mask_.at(cell));};
+    mask.write=[this](int cell,int,double value) {
+        if(value!=0.0 && value!=1.0)throw std::runtime_error("Immersed mask COPY produced a non-binary value.");
+        mask_.at(cell)=static_cast<unsigned char>(value);
+    };
+    runtime_->synchronizeTransient({force});
+    runtime_->synchronizeTransient({mask});
+}
+
 double ImmersedForcingSystem::constraintMask(
         const Field& field, int i, int j, int k) const {
     if (&field != lastField_ || mask_.empty()) return 0.0;
@@ -134,6 +157,18 @@ Vector3 ImmersedForcingSystem::multiplier(
         const Field& field, int i, int j, int k) const {
     if (&field != lastField_ || multiplier_.empty()) return {};
     return multiplier_[static_cast<size_t>(field.getIdx(i, j, k))];
+}
+
+FDM::ImmersedStorageView ImmersedForcingSystem::storageView(FDM::ImmersedStorageKind kind) const {
+    switch (kind) {
+    case FDM::ImmersedStorageKind::ForceDensity: return {&multiplier_,nullptr};
+    case FDM::ImmersedStorageKind::LaggedForceDensity: return {&laggedMultiplier_,nullptr};
+    case FDM::ImmersedStorageKind::SolidTranslation:
+        return {nullptr,bodyModel_?&bodyModel_->linearVelocity():nullptr};
+    case FDM::ImmersedStorageKind::SolidRotation:
+        return {nullptr,bodyModel_?&bodyModel_->angularVelocity():nullptr};
+    }
+    throw std::runtime_error("Unknown immersed original storage kind.");
 }
 
 } // namespace SF::IBM::Forcing

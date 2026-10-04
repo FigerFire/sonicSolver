@@ -21,6 +21,7 @@ void Pipeline::synchronize() {
 void Pipeline::prepare(const std::vector<Field*>& fields,
                        double time, double dt) {
     if (services_.physical) {
+        if (services_.physical->readsConservativeHalo()) synchronize();
         for (Field* field : fields) {
             if (field) services_.physical->apply(*field);
         }

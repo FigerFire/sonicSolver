@@ -5,6 +5,8 @@
 
 #include "immersed/SF_regularizedKernel.h"
 
+#include "core/mesh/SF_nodalQuadrature.h"
+
 #include <cmath>
 #include <stdexcept>
 #include <unordered_set>
@@ -21,18 +23,8 @@ bool interpolationUnknown(const Field& field, int i, int j, int k) {
         && !field.isSolverBoundaryPoint(i,j,k);
 }
 
-double dualVolume(const Field& field, int i, int j, int k) {
-    const double inverseVolume=field.Jac(i,j,k);
-    if (!std::isfinite(inverseVolume) || inverseVolume==0.0) {
-        throw std::runtime_error(
-            "IBM coupling graph found an invalid Eulerian Jacobian.");
-    }
-    // IBM surface support 只允许使用 `interpolationUnknown()` 已筛出的
-    // 流体自由度；真实物理边界点不会进入本图。因此这里的对偶体积必须
-    // 直接采用 source-canonical metric 的完整 `1/|J|`。不能按当前 patch
-    // 的 i/j/k 端点再乘 1/2：MPI 内部分割面同样是本地数组端点，那会把
-    // 分区拓扑误当作物理边界，使 J/S 的权重、力和功随 split 改变。
-    return 1.0/std::abs(inverseVolume);
+double dualVolume(const Field& field,int i,int j,int k) {
+    return StructuredMesh::nodalVolume(field,i,j,k);
 }
 
 std::int64_t canonicalDof(const Field& field, int i, int j, int k) {

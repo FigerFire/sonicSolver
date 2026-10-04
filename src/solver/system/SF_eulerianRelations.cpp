@@ -1,5 +1,4 @@
 #include "SF_eulerianRelations.h"
-#include <stdexcept>
 namespace SF::System {
 namespace {
 using E=FormulaExpr;
@@ -41,35 +40,4 @@ std::vector<Equation> eulerianPressureRelations() {
         {"correctSharedP",s("p"),E::add(s("p"),E::multiply(s("pressureRelaxation"),s("pPrime"))),{}}
     };
 }
-SF::Equation::Definition eulerianBackendDefinition(const Equation& equation) {
-    SF::Equation::Definition result;result.name=equation.id;
-    const auto project=[&](const auto& self,const E& expr,SF::Equation::Expression& side)->void {
-        if (expr.kind==E::Kind::Operator) {
-            using K=SF::Equation::TermKind;
-            const auto kind=expr.name=="ddt" ? K::Transient : expr.name=="div" ? K::Divergence
-                : expr.name=="gradient" ? K::Gradient : expr.name=="diffusion" ? K::Diffusion
-                : expr.name=="source" ? K::Source : K::AlgebraicRelation;
-            side.terms.push_back({kind,{expr.arguments.empty() ? expr.name : expr.arguments.back().name},
-                {expr.name=="diffusion" ? expr.arguments.front().name : ""}});
-            return;
-        }
-        for (const auto& child:expr.arguments) self(self,child,side);
-    };
-    project(project,equation.lhs,result.left);project(project,equation.rhs,result.right);
-    if (result.left.terms.empty()) result.left.terms.push_back(SF::Equation::algebraic({equation.id}));
-    if (result.right.terms.empty()) result.right.terms.push_back(SF::Equation::source({equation.id+".rhs"}));
-    // The old pressure assembler only asks for this constraint capability.
-    if (equation.id=="E_SHARED_PRESSURE") result.left.terms.push_back(SF::Equation::constraint({"volumeClosure"}));
-    result.validate();return result;
-}
-void projectEulerianBackendDefinitions(ExecutableEquationSystem& system) {
-    SF::Equation::System projected;
-    for (const auto& descriptor:system.legacyEquations) {
-        const auto& equation=system.registry.at(descriptor.id);
-        if (equation.authored) projected.add(eulerianBackendDefinition(equation));
-        else projected.add(system.legacyDefinitions.at(descriptor.id));
-    }
-    system.legacyDefinitions=std::move(projected);
-}
-
 }

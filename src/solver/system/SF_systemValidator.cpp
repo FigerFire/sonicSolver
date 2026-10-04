@@ -3,7 +3,6 @@
 
 #include "SF_systemValidator.h"
 #include "SF_solvePlan.h"
-#include "solver/equation/SF_assemblyPlan.h"
 
 #include <map>
 #include <set>
@@ -281,13 +280,11 @@ void validate(const ResolvedSimulationSystem& system) {
             }
         }
     }
-    // Build every plan during initialization.  A resolved equation may not be
-    // explain-only metadata: it needs a stable lowering view and at least one
-    // solve block that owns its execution.
-    if (system.solvePlan.compiledProgram.steps.empty()) {
-        const SF::Equation::AssemblyPlanRegistry legacyPlans(executable.legacyDefinitions,equationIds);
+    // Unmigrated compatibility equations still require explicit execution ownership.
+    // Native occurrences were already validated by their selected provider.
+    if (!equationIds.empty() && system.solvePlan.compiledProgram.steps.empty()) {
         for (const auto& equation:equationIds) {
-            (void)legacyPlans.at(equation);
+            (void)executable.legacyDefinitions.at(equation);
             if (equationBlockReferences[equation]==0 && system.runtime.report.status==RuntimeStatus::Runnable)
                 throw std::runtime_error("Legacy equation lacks execution ownership: "+equation);
         }

@@ -102,6 +102,10 @@ FDM::ImmersedConstraintResult IB::acceptMonolithicSolution(
     return forcing_.acceptMonolithicSolution(field, targetTime, dt, state);
 }
 
+void IB::publishDiagnostics(Field& field) {
+    if(usesForcing()) forcing_.publishDiagnostics(field);
+}
+
 double IB::constraintMask(
         const Field& field, int i, int j, int k) const {
     return usesForcing() ? forcing_.constraintMask(field, i, j, k) : 0.0;
@@ -111,6 +115,10 @@ Vector3 IB::multiplier(
         const Field& field, int i, int j, int k) const {
     return usesForcing()
         ? forcing_.multiplier(field, i, j, k) : Vector3();
+}
+
+FDM::ImmersedStorageView IB::storageView(FDM::ImmersedStorageKind kind) const {
+    return usesForcing()?forcing_.storageView(kind):FDM::ImmersedStorageView{};
 }
 
 } // namespace SF::IBM

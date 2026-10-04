@@ -3,28 +3,16 @@
 
 #include "transfer/body/SF_bodyOperator.h"
 
+#include "core/mesh/SF_nodalQuadrature.h"
+
 #include <cmath>
 #include <stdexcept>
 
 namespace SF::IBM::Forcing {
 namespace {
 
-double nodalWeight(const Field& field, int i, int j, int k) {
-    const int ng = field.NG();
-    double weight = 1.0;
-    if (i == ng || i == ng + field.NX() - 1) weight *= 0.5;
-    if (j == ng || j == ng + field.NY() - 1) weight *= 0.5;
-    if (k == ng || k == ng + field.NZ() - 1) weight *= 0.5;
-    return weight;
-}
-
-double dualVolume(const Field& field, int i, int j, int k) {
-    const double inverseVolume = field.Jac(i,j,k);
-    if (!std::isfinite(inverseVolume) || inverseVolume == 0.0) {
-        throw std::runtime_error(
-            "BodyOperator found an invalid cell Jacobian.");
-    }
-    return nodalWeight(field,i,j,k)/std::abs(inverseVolume);
+double dualVolume(const Field& field,int i,int j,int k) {
+    return StructuredMesh::nodalVolume(field,i,j,k);
 }
 
 bool finiteVector(const Vector3& value) {

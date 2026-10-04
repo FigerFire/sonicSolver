@@ -2,6 +2,9 @@
 /// @brief 打印 case 最终数学身份，不参与求解和状态修改。
 
 #include "SF_systemPrinter.h"
+#include "SF_eulerianAssembly.h"
+#include "SF_eulerianTurbulence.h"
+#include "SF_immersedMethods.h"
 #include "SF_couplingStatus.h"
 
 #include "SF_config.h"
@@ -207,7 +210,7 @@ void printNumericalSystem(
 void printPhysicalEquations(
         std::ostringstream& output,
         const ResolvedSimulationSystem& system) {
-    output << "\nPHYSICAL EQUATIONS\n";
+    output << "\nLEGACY COMPATIBILITY PHYSICAL EQUATIONS\n";
     bool printed = false;
     for (const auto& equation : system.executableSystem.legacyEquations) {
         if (isAlgebraicEquation(equation)) continue;
@@ -253,7 +256,7 @@ bool hasAlgebraicContent(
         const SolveBlock& block,
         const ResolvedSimulationSystem& system) {
     for (const auto& id : block.equations) {
-        if (id == "E_IBM_STATIONARITY" || isPressureConstraint(id)) return true;
+        if (isPressureConstraint(id)) return true;
         const auto equation = std::find_if(
             system.executableSystem.legacyEquations.begin(),
             system.executableSystem.legacyEquations.end(),
@@ -276,9 +279,7 @@ std::string algebraicSystemId(const SolveBlock& block) {
 std::string algebraicRowLabel(
         const std::string& id,
         const ResolvedSimulationSystem& system) {
-    if (id == "E_IBM_STATIONARITY") return "momentum stationarity";
     if (isPressureConstraint(id)) return "pressure/continuity constraint";
-    if (id == "C_IBM_NO_SLIP") return "immersed no-slip constraint";
     for (const auto& constraint : system.executableSystem.constraints) {
         if (constraint.id == id) return constraint.name;
     }
@@ -310,14 +311,7 @@ void printAlgebraicSystems(
                 });
             if (!duplicate) rows.push_back(id);
         };
-        const bool hasStationarity = contains(
-            block->equations, "E_IBM_STATIONARITY");
-        for (const auto& id : block->equations) {
-            // The monolithic descriptor also carries the predictor momentum
-            // id for ownership; stationarity is its actual KKT row.
-            if (hasStationarity && id == "momentum") continue;
-            appendRow(id);
-        }
+        for (const auto& id : block->equations) appendRow(id);
         for (const auto& id : block->constraints) {
             appendRow(id);
         }
@@ -325,9 +319,7 @@ void printAlgebraicSystems(
         std::stable_sort(rows.begin(), rows.end(), [&](const std::string& left,
                                                         const std::string& right) {
             const auto rank = [](const std::string& id) {
-                if (id == "E_IBM_STATIONARITY") return 0;
                 if (isPressureConstraint(id)) return 1;
-                if (id == "C_IBM_NO_SLIP") return 2;
                 return 3;
             };
             return rank(left) < rank(right);
@@ -394,7 +386,7 @@ void printContributions(
 void printRawSystem(
         std::ostringstream& output,
         const ResolvedSimulationSystem& system) {
-    output << "\nRAW EQUATION SYSTEM\n";
+    output << "\nRAW EQUATION SYSTEM\n  Legacy compatibility descriptors:\n";
     if (system.rawSystem.legacyEquations.empty()) output << "  (none)\n";
     for (const auto& equation : system.rawSystem.legacyEquations) {
         output << "  " << equation.id << "  " << equation.name
@@ -524,6 +516,29 @@ std::string describe(const ResolvedSimulationSystem& system) {
     for (const Equation& formula:system.executableSystem.registry.entries()) {
         output << "  " << formula.id << ": " << formulaText(formula) << "\n";
     }
+    output << "\nBOUNDARY / STENCIL CONTRACTS\n";
+    for (const auto& boundary:system.executableSystem.boundaryClosures) {
+        output << "  " << boundary.id << " -> " << boundary.provider
+               << " [spatial stage time; no EquationCall]\n    reads:";
+        for (const auto& read:boundary.reads) output << " " << read;
+        output << "\n    writes:";
+        for (const auto& write:boundary.writes) output << " " << write;
+        output << "\n    order:";
+        for (const auto& step:boundary.order) output << " -> " << step;
+        output << "\n";
+    }
+    output << "\nIMMERSED / COMPILED BLOCK CONTRACTS\n";
+    for (const auto& call:system.solvePlan.compiledProgram.steps) {
+        const auto* contract=std::any_cast<std::shared_ptr<const CompiledImmersedContract>>(&call.providerContract);
+        if (!contract || !*contract) continue;
+        const auto& c=**contract;
+        output << "  " << call.source.occurrence << ": " << FDM::toString(c.algorithm)
+               << " / " << FDM::toString(c.enforcement) << " -> " << c.equation << " / " << c.target
+               << " [" << call.backendProvider << "; complete predictor -> correction -> commit; targetTime=time+dt]\n";
+        if (c.solid==FDM::IBMSolidModel::SelfPropelledRigid && c.enforcement!=FDM::IBMEnforcement::MonolithicKKT)
+            output << "    virtual-fluid generalized mass; active rigid DOFs: "
+                   << (c.rigidMotionMode==FDM::IBMRigidMotionMode::Rotate?"rotation":"translation") << "\n";
+    }
     output << "\nSTATE — selected solution variables\n  origin : "
            << system.executableSystem.state.selectionOrigin() << "\n  use :";
     for (const auto& id:system.executableSystem.state.solutionVariables()) output << " " << id;
@@ -607,6 +622,19 @@ std::string describe(const ResolvedSimulationSystem& system) {
                << targetText(step.source.target) << "\n"
                << "    equation method: " << step.equationMethod << "\n"
                << "    selected runtime provider: " << step.backendProvider << "\n";
+        if (const auto* contract=eulerianAssemblyContract(step)) {
+            output << "    compiled assembly contract: " << toString(contract->relation);
+            if (contract->phaseSlot) output << " phaseSlot=" << *contract->phaseSlot << " phase=" << contract->phaseName;
+            output << "\n    supported source extensions:";
+            for (auto extension:contract->extensions) output << " " << toString(extension);
+            output << "\n";
+        }
+        if (const auto* contract=eulerianTurbulenceContract(step)) {
+            output<<"    compiled turbulence contract: "<<FDM::toString(contract->model)
+                <<(contract->transport ? " phase-mass weighted transport" : " algebraic closure")<<"\n    selected phases:";
+            for (const auto& phase:contract->phases) output<<" "<<phase.name<<"(slot="<<phase.slot<<")";
+            output<<"\n";
+        }
         if (!step.fragment.children.empty()) {
             output << "    compiled method fragment:\n";
             const auto printMethod=[&](const auto& self,

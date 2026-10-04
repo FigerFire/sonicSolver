@@ -72,6 +72,7 @@ public:
         equationExtensions.push_back({{},first,second,std::move(term)});
     }
     void addConstraint(ConstraintDescriptor value) { constraints.push_back(std::move(value)); }
+    void addBoundaryClosure(BoundaryClosureContract value) { boundaryClosures.push_back(std::move(value)); }
     void addClosure(std::string value) { closures.push_back(std::move(value)); }
     void requireProvider(std::string id,std::string responsibility) {
         providerRequirements.push_back({std::move(id),std::move(responsibility)});
@@ -104,6 +105,7 @@ public:
     std::vector<EquationExtension> equationExtensions;
     std::vector<MathematicalExtension> mathematicalExtensions;
     std::vector<ConstraintDescriptor> constraints;
+    std::vector<BoundaryClosureContract> boundaryClosures;
     std::vector<std::string> closures;
     std::vector<ContributionProviderRequirement> providerRequirements;
     std::vector<std::string> dependencies;

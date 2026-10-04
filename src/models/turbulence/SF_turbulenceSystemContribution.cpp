@@ -3,6 +3,8 @@
 
 #include "SF_turbulenceSystemContribution.h"
 #include "SF_transportMathematics.h"
+#include "SF_eulerianTransportMathematics.h"
+#include <algorithm>
 #include "core/system/SF_scheduleIds.h"
 
 #include "core/system/SF_systemContribution.h"
@@ -13,22 +15,47 @@
 namespace SF::Turbulence {
 namespace {
 
-void addScalar(
-        System::SystemContribution& system,
-        const std::string& id,
-        const std::string& name,
-        const std::string& storage,
-        const std::string& nameSpace) {
-    System::StateSymbol unknown;
-    unknown.id = id;
-    unknown.name = name;
-    unknown.components = 1;
-    unknown.shape = System::ValueShape::Scalar;
-    unknown.role = System::StateRole::Transported;
-    unknown.storageBinding = System::StorageBinding::NamedDistributed;
-    unknown.storageKey = storage;
-    unknown.nameSpace = nameSpace;
-    system.addState(std::move(unknown));
+void addEulerianState(System::SystemContribution& system,const std::string& id,
+        const std::string& storage,const std::string& phase,bool closure) {
+    System::StateSymbol symbol;
+    symbol.id=symbol.name=id;symbol.storageKey=storage;symbol.nameSpace=phase;
+    symbol.role=closure ? System::StateRole::Derived : System::StateRole::Transported;
+    symbol.storageBinding=System::StorageBinding::ProviderDistributed;
+    symbol.initializationRequired=symbol.boundaryRequired=!closure;
+    symbol.restartEligible=false;
+    system.addState(std::move(symbol));
+}
+void addEulerian(System::SystemContribution& system,const SystemContributionSpec& spec,bool transport) {
+    if (spec.phases.empty() || spec.phaseOrder.empty())
+        throw std::runtime_error("Eulerian turbulence requires selected phases and complete phase storage order.");
+    std::vector<std::string> inputs,closures;
+    const auto second=spec.model=="kEpsilon" ? "epsilon" : "omega";
+    for (std::size_t i=0;i<spec.phases.size();++i) {
+        const auto& phase=spec.phases[i];
+        const auto at=std::find(spec.phaseOrder.begin(),spec.phaseOrder.end(),phase);
+        if (phase.empty() || at==spec.phaseOrder.end()
+            || std::find(spec.phases.begin(),spec.phases.begin()+i,phase)!=spec.phases.begin()+i)
+            throw std::runtime_error("Invalid/duplicate selected Eulerian turbulence phase: "+phase);
+        const auto prefix="phase"+std::to_string(at-spec.phaseOrder.begin())+".";
+        const auto closure="mu_t."+phase;closures.push_back(closure);
+        addEulerianState(system,closure,prefix+"mu_t",phase,true);
+        system.addEquation(eulerianClosureMathematics(spec.model,phase));
+        if (transport) for (const auto& variable:std::vector<std::string>{"k",second}) {
+            const auto id=variable+"."+phase;inputs.push_back(id);
+            addEulerianState(system,id,prefix+variable,phase,false);
+            system.addEquation(eulerianTransportMathematics(second,phase,variable));
+        }
+    }
+    const auto contributeCalls=[&](const auto& members,const char* method,int order) {
+        for (const auto& id:members) {
+            System::ExecutionScope call;call.kind=System::ExecutionKind::EquationCall;
+            call.order=order;call.step={id,{id}};system.addExecution(std::move(call));
+            system.bindNumerics({id,method,members});
+        }
+    };
+    contributeCalls(closures,"EulerianTurbulenceClosure",40);
+    if (transport) contributeCalls(inputs,"EulerianTurbulenceTransport",50);
+    system.addClosure("mu_t from "+spec.model);
 }
 
 } // namespace
@@ -45,7 +72,9 @@ void contribute(
     if (!kEpsilon && !kOmega) {
         system.addClosure(
             spec.model.empty() ? "turbulence closure" : "turbulence: "+spec.model);
-        if (!spec.eulerian && spec.model=="Smagorinsky") {
+        if (spec.eulerian && spec.model=="Smagorinsky") {
+            addEulerian(system,spec,false);
+        } else if (!spec.eulerian && spec.model=="Smagorinsky") {
             system.requireState("rho");system.requireState("U");
             System::StateSymbol closure;
             closure.id=closure.name=closure.storageKey="mu_t";
@@ -92,58 +121,7 @@ void contribute(
         system.addClosure("mu_t from "+spec.model);
         return;
     }
-    // Legacy Eulerian compatibility: its assembly and shared-pressure policy remain unchanged.
-    system.requireProvider("equation.turbulence-transport",
-                           "bind Eulerian transported turbulence state and equations");
-
-    std::vector<std::string> phases = spec.phases;
-    if (!spec.eulerian) phases = {""};
-    else if (phases.empty()) {
-        throw std::runtime_error(
-            "Eulerian transported turbulence equations require explicit phases.");
-    }
-    for (std::size_t phaseIndex = 0; phaseIndex < phases.size(); ++phaseIndex) {
-        const std::string& phase = phases[phaseIndex];
-        const std::string suffix = phase.empty() ? "" : "."+phase;
-        const std::string k = "k"+suffix;
-        const std::string second = (kEpsilon ? "epsilon" : "omega")+suffix;
-        const std::string kEquation = "k"+suffix;
-        const std::string secondEquation =
-            (kEpsilon ? "epsilon" : "omega")+suffix;
-        const std::string storage = phase.empty()
-            ? "" : "phase"+std::to_string(phaseIndex)+".";
-        addScalar(system,k,"turbulent kinetic energy"+
-            (phase.empty() ? "" : " "+phase),storage+"k",
-            phase.empty() ? "turbulence" : phase);
-        addScalar(system,second,
-            std::string(kEpsilon ? "turbulence dissipation "
-                                 : "specific dissipation ")+phase,
-            storage+(kEpsilon ? "epsilon" : "omega"),
-            phase.empty() ? "turbulence" : phase);
-        system.addEquation(
-            {kEquation,"turbulent kinetic energy transport","conservation",{k}},
-            SF::Equation::named(kEquation,
-                SF::Equation::ddt({k}) + SF::Equation::div({"flux."+k})
-                    + SF::Equation::diffusion({"diffusivity."+k},{k})
-                    == SF::Equation::Symbol{"source."+k}));
-        system.addEquation(
-            {secondEquation,kEpsilon ? "epsilon transport" : "omega transport",
-             "conservation",{second}},
-            SF::Equation::named(secondEquation,
-                SF::Equation::ddt({second}) + SF::Equation::div({"flux."+second})
-                    + SF::Equation::diffusion(
-                        {"diffusivity."+second},{second})
-                    == SF::Equation::Symbol{"source."+second}));
-        for (const auto& item:std::vector<std::pair<std::string,int>>{{kEquation,50},{secondEquation,51}}) {
-            System::ExecutionScope call;
-            call.kind=System::ExecutionKind::EquationCall;
-            call.order=item.second;
-            call.step={item.first,{item.first}};
-            system.addLegacyExecution(std::move(call));
-        }
-
-    }
-    system.addClosure("mu_t from "+spec.model);
+    addEulerian(system,spec,true);
 }
 
 } // namespace SF::Turbulence

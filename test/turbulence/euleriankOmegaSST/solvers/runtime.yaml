@@ -1,0 +1,15 @@
+# Runtime configuration.
+SonicFile:
+  object: solver
+  type: runtime
+startTime: 0
+endTime: 0.0002
+CFL: 0.5
+maxDeltaT: 0.0001
+writeInitial: true
+writeControl: timeStep
+writeInterval: 1
+output:
+  outputDir: result
+  jobName: EulerianEulerian
+parallel: {}

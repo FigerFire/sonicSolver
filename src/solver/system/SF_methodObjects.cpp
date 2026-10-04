@@ -123,7 +123,7 @@ CompiledExecutionProgram compileExecutionProgram(
                 ==compiled.temporalCapabilities.end())
             throw std::runtime_error("Unsupported: provider "+found->method+" cannot compile occurrence "
                 +step->occurrence+" with selected temporal method "+FDM::toString(time->id()));
-        if (!compiled.fragment.children.empty()) {
+        if (!compiled.fragment.children.empty() || !compiled.fragment.operation.empty()) {
             if (!compiled.backendOperation.empty())
                 throw std::runtime_error("EquationMethod has both fragment and backend operation authorities.");
             const auto validate=[&](const auto& self,const SolvePlanNode& node)
@@ -225,41 +225,61 @@ CompiledExecutionProgram compileExecutionProgram(
             fused.calls.insert(fused.calls.end(),call->calls.begin(),call->calls.end());
             call->temporalMethod=FDM::toString(time->id());
         }
-        std::vector<SolvePlanNode> prefix;
+        std::vector<SolvePlanNode> prefix,suffix;
         const bool mixed=transient.size()!=result.steps.size();
         if (mixed) {
-            // Smallest supported mixed topology: independent prefix, one contiguous
-            // temporal group, terminal Commit. No source calls are reordered.
-            bool seenTemporal=false;
-            std::size_t prefixCount=0;
-            std::vector<std::string> countedGroups;
+            // Ordered prefix -> contiguous temporal group -> ordered suffix -> Commit.
+            // No domain identity enters the compiler and no authored call is moved.
+            bool seenTemporal=false,seenSuffix=false;
+            std::size_t prefixCount=0,suffixCount=0;
             for (const auto& call:result.steps) {
-                if (call.temporalResidual) { seenTemporal=true;continue; }
-                if (seenTemporal)
-                    throw std::runtime_error("Unsupported mixed temporal topology: independent calls must precede one contiguous fused temporal group.");
-                if (call.fusionKey.empty() || std::find(countedGroups.begin(),countedGroups.end(),call.fusionKey)==countedGroups.end()) {
-                    ++prefixCount;
-                    if (!call.fusionKey.empty()) countedGroups.push_back(call.fusionKey);
+                if (call.temporalResidual) {
+                    if (seenSuffix) throw std::runtime_error("Unsupported mixed temporal topology: temporal calls must be contiguous.");
+                    seenTemporal=true;continue;
                 }
+                if (seenTemporal) seenSuffix=true;
+
             }
+            const auto flatCalls=[](const ExecutionScope& node) {
+                return node.kind==ExecutionKind::EquationCall || (node.kind==ExecutionKind::Sequence
+                    && !node.children.empty() && std::all_of(node.children.begin(),node.children.end(),[](const auto& c) {
+                        return c.kind==ExecutionKind::EquationCall;
+                    }));
+            };
             if (result.root.kind!=ExecutionKind::Sequence || result.root.children.empty()
                 || result.root.children.back().kind!=ExecutionKind::Commit
-                || std::any_of(result.root.children.begin(),result.root.children.end()-1,[](const auto& node) {
-                    return node.kind!=ExecutionKind::EquationCall;
+                || std::any_of(result.root.children.begin(),result.root.children.end()-1,[&](const auto& node) {
+                    return !flatCalls(node);
                 }))
-                throw std::runtime_error("Unsupported mixed temporal topology: requires flat ordered calls and terminal Commit.");
-            std::size_t expectedChildren=result.steps.size()+1;
-            for (const auto& key:countedGroups) {
-                const auto group=std::find_if(result.steps.begin(),result.steps.end(),[&](const auto& call) {
-                    return call.fusionKey==key;
-                });
-                expectedChildren-=group->fusionMembers.size()-1;
+                throw std::runtime_error("Unsupported mixed temporal topology: requires ordered calls/groups and terminal Commit.");
+            // A source group remains one root node even if it contains several
+            // local operations. Count scopes, not flattened equation leaves.
+            std::size_t nextCall=0,temporalCount=0;
+            for (const auto& node:result.root.children) {
+                if (node.kind==ExecutionKind::Commit) continue;
+                const auto count=node.kind==ExecutionKind::EquationCall?1:node.children.size();
+                const bool temporal=result.steps[nextCall].temporalResidual;
+                for (std::size_t i=0;i<count;++i)
+                    if (result.steps[nextCall+i].temporalResidual!=temporal)
+                        throw std::runtime_error("Unsupported mixed temporal topology: a group crosses temporal placement.");
+                const bool fusedContinuation=node.kind==ExecutionKind::EquationCall && nextCall>0
+                    && !result.steps[nextCall].fusionKey.empty()
+                    && result.steps[nextCall-1].fusionKey==result.steps[nextCall].fusionKey;
+                if (!fusedContinuation) {
+                    if (temporal) ++temporalCount;
+                    else if (!temporalCount) ++prefixCount;
+                    else ++suffixCount;
+                }
+                nextCall+=count;
             }
+            const auto expectedChildren=prefixCount+temporalCount+suffixCount+1;
             if (result.loweredRoot.children.size()!=expectedChildren)
                 throw std::runtime_error("Unsupported mixed temporal topology: root lifecycle decorations require explicit temporal placement.");
             prefix.assign(result.loweredRoot.children.begin(),result.loweredRoot.children.begin()+prefixCount);
+            suffix.assign(result.loweredRoot.children.begin()+prefixCount+temporalCount,result.loweredRoot.children.end()-1);
         }
         result.temporalRoot=temporalMethod->compileFragment(*time,fused,prefix);
+        result.temporalRoot.children.insert(result.temporalRoot.children.end(),suffix.begin(),suffix.end());
         // Source commit positions survive temporal lowering. The provider owns
         // each commit's implementation; WHICH never invents a source commit.
         for (std::size_t i=0;i<result.root.children.size();++i) {
@@ -305,7 +325,7 @@ SolvePlanNode compileMethodProgram(const CompiledExecutionProgram& program, cons
                 result.kind=PlanNodeKind::Sequence;result.id.clear();
                 return result;
             }
-            if (!method.fragment.children.empty()) {
+            if (!method.fragment.children.empty() || !method.fragment.operation.empty()) {
                 result=method.fragment;
             } else {
                 if (method.backendOperation.empty())

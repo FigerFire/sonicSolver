@@ -13,6 +13,7 @@
 #include "SF_pressureCoupling.h"
 #include "SF_builtinState.h"
 #include "SF_executionComposition.h"
+#include "SF_immersedMethods.h"
 #include "SF_eulerianRelations.h"
 #include "SF_providerResolver.h"
 
@@ -368,6 +369,7 @@ ResolvedSimulationSystem build(
     for (const auto& id:selection.solutionVariables)
         if (!result.rawSystem.state.isSolution(id)) result.rawSystem.state.selectSolution(id);
 
+    validateImmersedComposition(result.rawSystem);
     TransformerRegistry transformers;
     const auto momentum=std::find_if(builtin.execution.begin(),builtin.execution.end(),[](const auto& node) {
         return node.kind==ExecutionKind::EquationCall && node.step.equation=="momentum";
@@ -375,7 +377,6 @@ ResolvedSimulationSystem build(
     transformers.registerTransformer(makePressureConstraintTransformer(
         momentum==builtin.execution.end()?std::string{}:momentum->step.target.symbol));
     transformers.registerTransformer(makeSharedPressureTransformer());
-    transformers.registerTransformer(makeImmersedConstraintTransformer());
     // REGISTERED MODEL：压力耦合 preset。它的生效条件来自 resolved raw
     // equation/constraint structure，而不是 density/pressure 标签；状态必须
     // 显式报告，禁止静默忽略。
@@ -387,11 +388,13 @@ ResolvedSimulationSystem build(
     // Unsupported（缺 formulation operation），但 plan 仍必须真实描述该
     // schedule，provider resolver 才能报告缺失。
     const bool couplingPolicyContributed = isCouplingActive(result.coupling);
-    const bool monolithicPolicy = std::any_of(
-        result.executionPolicies.begin(),result.executionPolicies.end(),
-        [](const LegacyExecutionPolicy& policy) {
-            return policy.kind==LegacyExecutionPolicyKind::MonolithicKKT;
-        });
+    const auto monolithic=[](const NumericalBinding& binding) {
+        return binding.method=="Immersed.dfmImplicitPrescribed"
+            || binding.method=="Immersed.dfmImplicitSelfPropelled"
+            || binding.method=="Immersed.dfmAugmentedLagrangian";
+    };
+    const bool monolithicPolicy=std::any_of(models.numerics.begin(),models.numerics.end(),monolithic)
+        || std::any_of(users.numerics.begin(),users.numerics.end(),monolithic);
     if (monolithicPolicy
         && couplingPolicyContributed) {
         // DLM/KKT 是完全隐式约束耦合：它取代 segregated pressure policy，
@@ -410,8 +413,6 @@ ResolvedSimulationSystem build(
     result.executableSystem = TransformationPipeline::apply(
         result.rawSystem,transformationRequests,transformers,
         result.executionPolicies,result.transformations);
-    if (hasConstraint(result.executableSystem,"C_SHARED_PRESSURE"))
-        projectEulerianBackendDefinitions(result.executableSystem);
     for (auto* module:{&builtin,&models,&users}) {
         executionProgram.root.children.insert(executionProgram.root.children.end(),
             module->execution.begin(),module->execution.end());
@@ -450,10 +451,17 @@ ResolvedSimulationSystem build(
             return binding.operation==OpIds::TurbulenceAdvance;
         });
     result.runtime.requirements.push_back({"SingleFluidTurbulenceScope",nativeTurbulence,
-        !nativeTurbulence || (!request.parallel && request.templateOrigin==PhysicsTemplateKind::SingleFluid
-            && std::none_of(result.rawSystem.contributions.begin(),result.rawSystem.contributions.end(),
-                [](const auto& contribution) { return contribution.id.rfind("model.ibm.",0)==0; })),
+        !nativeTurbulence || (!request.parallel && request.templateOrigin==PhysicsTemplateKind::SingleFluid),
         "native RAS transport is single-fluid, serial, single patch; pressure/IBM/MPI providers are unavailable"});
+    const bool eulerianTurbulence=std::any_of(result.runtime.operationBindings.begin(),result.runtime.operationBindings.end(),
+        [](const auto& binding) {return binding.provider=="flow.eulerian-turbulence";});
+    result.runtime.requirements.push_back({"EulerianTurbulenceScope",eulerianTurbulence,
+        !eulerianTurbulence || !request.parallel,
+        "native Eulerian turbulence uses the existing serial single-block phase transport backend; distributed/multi-patch execution is unavailable"});
+    if (eulerianTurbulence && request.parallel) {
+        result.runtime.report.status=RuntimeStatus::Unsupported;
+        result.runtime.report.reason+=" Native Eulerian turbulence has no distributed/multi-patch phase transport provider.";
+    }
     result.runtime.requirements.push_back({
         "EulerianGlobalDof",true,true,"canonical cell ownership"});
     // 共享面的 canonical flux identity 需要真实的 rank-to-rank 通信；

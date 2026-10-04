@@ -70,6 +70,18 @@ struct ConstraintDescriptor {
     Provenance origin;
 };
 
+/// @brief Boundary closure is a stencil contract, not an artificial equation.
+struct BoundaryClosureContract {
+    std::string id;
+    std::string provider;
+    std::vector<std::string> reads;
+    std::vector<std::string> writes;
+    /// @brief Stage time is the spatial operator's time; final closure uses step-end time.
+    bool atEverySpatialEvaluation = true;
+    std::vector<std::string> order;
+    Provenance origin;
+};
+
 /// @brief Composition 完成、algorithmic transformation 开始前的数学系统。
 ///
 /// 该对象不保存 timestep、RK stage、MPI schedule 或 runner identity。
@@ -78,11 +90,12 @@ struct RawEquationSystem {
     std::vector<EquationDescriptor> legacyEquations;
     SF::Equation::System legacyDefinitions;
     /// @brief Equation AST is the mathematical source for migrated FormulaCalls.
-    /// Existing flat definitions remain a compatibility view during lowering.
+    /// Flat definitions are limited to explicitly unmigrated compatibility contributions.
     EquationRegistry registry;
     std::vector<ConstraintDescriptor> constraints;
     std::vector<std::string> closures;
     std::vector<std::string> boundaries;
+    std::vector<BoundaryClosureContract> boundaryClosures;
     std::vector<std::string> dependencies;
     std::vector<ContributionRecord> contributions;
     std::vector<SystemModification> modifications;
@@ -135,6 +148,7 @@ enum class OperationCapability {
     VelocityCorrection,
     FluxCorrection,
     EulerianPhaseExecution,
+    EulerianTurbulenceExecution,
     ImmersedConstraint
 };
 enum class OperationRecipeRole { Convection, Diffusion };
@@ -187,6 +201,7 @@ struct ExecutableEquationSystem {
     std::vector<ExecutableOperation> operations;
     std::vector<std::string> closures;
     std::vector<std::string> boundaries;
+    std::vector<BoundaryClosureContract> boundaryClosures;
     std::vector<std::string> dependencies;
     std::vector<GeneratedOperatorDescriptor> correctionOperators;
     std::vector<CompiledEquation> compiledEquations;

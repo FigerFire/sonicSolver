@@ -77,7 +77,5 @@ std::unique_ptr<IEquationSystemTransformer> makePressureConstraintTransformer(st
 /// @brief Eulerian shared-pressure constraint 使用相同 registry/pipeline。
 std::unique_ptr<IEquationSystemTransformer> makeSharedPressureTransformer();
 
-/// @brief Variational/KKT IBM constraint 使用相同 registry/pipeline。
-std::unique_ptr<IEquationSystemTransformer> makeImmersedConstraintTransformer();
 
 } // namespace SF::System

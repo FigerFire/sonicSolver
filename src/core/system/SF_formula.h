@@ -40,8 +40,8 @@ struct Equation {
     FormulaExpr lhs;
     FormulaExpr rhs;
     Provenance origin;
-    /// Authored AST is the mathematical authority; a retained legacy
-    /// SF::Equation::Definition may describe it but must not regenerate it.
+    /// Authored AST is the sole native mathematical authority.
+    /// Compatibility conversion is limited to equations not yet migrated.
     bool authored = false;
 };
 
@@ -65,8 +65,7 @@ private:
 std::string canonicalFormula(const Equation& formula);
 std::string formulaText(const Equation& formula);
 bool dependsOn(const FormulaExpr& expression, std::string_view symbol);
-/// @brief Transitional conversion of existing equation definitions into the
-/// same mathematical AST consumed by FormulaCall compilation.
+/// @brief Legacy compatibility conversion only; native equations never round-trip through the flat DSL.
 Equation formulaFromEquation(const SF::Equation::Definition& equation,
                             Provenance origin = {});
 

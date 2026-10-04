@@ -117,8 +117,8 @@ int main() {
             return method.method=="TurbulenceTransport";
         }),"Closure-only model acquired RAS transport method.");
     }
-    SystemContribution eulerian;SF::Turbulence::contribute(eulerian,{"kOmegaSST",{"water"},true});
-    require(eulerian.legacyExecution.size()==2 && eulerian.execution.empty(),"Eulerian compatibility was migrated accidentally.");
+    SystemContribution eulerian;SF::Turbulence::contribute(eulerian,{"kOmegaSST",{"water"},true,{"water","air"}});
+    require(eulerian.legacyExecution.empty() && eulerian.legacyEquations.empty() && eulerian.execution.size()==3,"Eulerian native model channels are incomplete.");
 
     // Real provider-owned backing: STATE views alias ScalarFields, including writes.
     SF::Field field;field.setup(3,3,1,1,5);

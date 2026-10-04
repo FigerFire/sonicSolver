@@ -125,12 +125,32 @@ std::string validateNativeProvider(const std::string& selected,
         const ExecutableEquationSystem& equations,const CompiledNumericalSystem& numerics,
         const CompiledSolvePlan& plan,const ExecutionCapabilitySignature& signature,
         const std::vector<LegacyExecutionPolicy>& policies,bool additionalContributions) {
-    if (selected=="flow.eulerian-pressure") {
+    if (selected=="flow.eulerian-pressure" || selected=="flow.eulerian-turbulence") {
         if (!hasConstraint(equations,"C_SHARED_PRESSURE") || !hasConstraint(equations,"C_VOLUME_FRACTION")
             || numerics.phaseTransport.convection!=FDM::PhaseConvectionScheme::Upwind
             || plan.compiledProgram.hasTemporalRoot || !policies.empty())
             return "native Eulerian provider requires shared-pressure/volume closures, current Upwind backend and no extra legacy constraint schedule";
-    } else if (selected=="flow.turbulence") {
+    } else if (selected=="ibm.constraint") {
+        const bool kkt=std::any_of(plan.compiledProgram.steps.begin(),plan.compiledProgram.steps.end(),
+            [](const auto& call) { return call.backendProvider=="ibm.constraint"
+                && std::any_of(call.operations.begin(),call.operations.end(),
+                    [](const auto& op) {return op.operation==OpIds::IbmKktSolve;}); });
+        if (kkt && (plan.compiledProgram.hasTemporalRoot || !signature.momentumPredictor))
+            return "native immersed KKT requires an implemented pressure predictor/block schedule; explicit density stages are not a supported KKT predictor";
+        if (!kkt) {
+            if (!plan.compiledProgram.hasTemporalRoot)
+                return "native immersed correction requires its implemented complete explicit predictor; pressure/implicit coupling is unavailable";
+            const auto first=std::find_if(plan.compiledProgram.steps.begin(),plan.compiledProgram.steps.end(),
+                [](const auto& call) {return call.backendProvider=="ibm.constraint";});
+            if (first==plan.compiledProgram.steps.end()
+                || std::none_of(plan.compiledProgram.steps.begin(),first,[](const auto& call) {return call.temporalResidual;})
+                || std::any_of(first,plan.compiledProgram.steps.end(),[](const auto& call) {return call.temporalResidual;}))
+                return "native immersed correction must follow the complete physical predictor and precede commit; no pre-predictor or per-stage implementation exists";
+        }
+    } else if (selected=="flow.turbulence" || selected=="flow.turbulence-closure") {
+        if (!equations.boundaryClosures.empty() || std::any_of(plan.compiledProgram.steps.begin(),plan.compiledProgram.steps.end(),
+            [](const auto& call) {return call.backendProvider=="ibm.constraint";}))
+            return "native turbulence + IBM requires unimplemented stage/velocity/wall-distance/boundary coupling contracts";
         if (signature.pressureConstraint || !plan.compiledProgram.hasTemporalRoot
             || !equations.constraints.empty() || !policies.empty())
             return "single-fluid transported turbulence requires explicit flow, no pressure/IBM constraints";

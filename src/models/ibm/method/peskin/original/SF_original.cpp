@@ -7,6 +7,8 @@
 #include "immersed/SF_immersed.h"
 #include "operations/SF_fieldOps.h"
 
+#include "operations/SF_constraintCheckpoint.h"
+
 #include <algorithm>
 #include <cmath>
 #include <sstream>
@@ -28,6 +30,7 @@ FDM::ImmersedConstraintResult ImmersedForcingSystem::applyPeskinOriginal(
     }
     Field& field=*fields.front();
     lastField_=&field;
+    Checkpoint::state("peskin-predictor",field,targetTime);
     const int total=field.TotalSize();
     if (!laggedMultiplier_.empty()
         && laggedMultiplier_.size()!=(size_t)total) {
@@ -98,9 +101,12 @@ FDM::ImmersedConstraintResult ImmersedForcingSystem::applyPeskinOriginal(
     };
     for (std::size_t marker=0;marker<surfaceSystem_.points.size();++marker) {
         const auto& point=surfaceSystem_.points[marker];
+        if (!std::isfinite(point.measure) || point.measure<=0.0) {
+            throw std::runtime_error("Peskin interpolation has a non-positive marker measure.");
+        }
         for (const auto& edge:point.interpolation) {
             if (edge.cell<0 || edge.cell>=total
-                || !std::isfinite(edge.value)) {
+                || !std::isfinite(edge.value) || edge.value<0.0) {
                 throw std::runtime_error(
                     "Peskin interpolation row contains an invalid edge.");
             }
@@ -115,13 +121,19 @@ FDM::ImmersedConstraintResult ImmersedForcingSystem::applyPeskinOriginal(
             diagonals[marker]+=edge.value*edge.value*point.measure
                 *inverseMass[(size_t)edge.cell];
         }
-        if (!std::isfinite(diagonals[marker]) || diagonals[marker]<=0.0) {
+        // A rank with no owner edge contributes zero. Strict positivity belongs
+        // to the complete marker mass response after Runtime SUM.
+        if (!std::isfinite(diagonals[marker]) || diagonals[marker]<0.0) {
             throw std::runtime_error(
-                "Peskin interpolation produced a singular mass diagonal.");
+                "Peskin interpolation produced an invalid local mass contribution.");
         }
     }
+    Checkpoint::markers("peskin-local-Ju",surfaceSystem_,interpolated,targetTime);
     reduceSurfaceVectors(interpolated);
+    Checkpoint::markers("peskin-global-Ju",surfaceSystem_,interpolated,targetTime);
+    Checkpoint::diagonal("local-mass-response",surfaceSystem_,diagonals,targetTime);
     if (runtime_) runtime_->globalSum(diagonals);
+    Checkpoint::diagonal("global-mass-response",surfaceSystem_,diagonals,targetTime);
     std::vector<Vector3> surfaceMultiplier(
         surfaceSystem_.points.size(),Vector3());
     for (std::size_t marker=0;marker<surfaceSystem_.points.size();++marker) {
@@ -138,6 +150,7 @@ FDM::ImmersedConstraintResult ImmersedForcingSystem::applyPeskinOriginal(
         }
     }
     copySurfaceMultipliers(surfaceMultiplier);
+    Checkpoint::markers("peskin-lambda",surfaceSystem_,surfaceMultiplier,targetTime);
     std::vector<Vector3> nextMultiplier((size_t)total,Vector3());
     for (std::size_t marker=0;marker<surfaceSystem_.points.size();++marker) {
         const auto& point=surfaceSystem_.points[marker];
@@ -163,8 +176,12 @@ FDM::ImmersedConstraintResult ImmersedForcingSystem::applyPeskinOriginal(
             ++lastResult_.constrainedCells;
         }
     }
+    Checkpoint::force("peskin-consumed-force",field,laggedMultiplier_,targetTime);
+    Checkpoint::force("peskin-next-force",field,nextMultiplier,targetTime);
     laggedMultiplier_=std::move(nextMultiplier);
     finalizeDistributedResult(lastResult_);
+    Checkpoint::result(lastResult_,targetTime);
+    Checkpoint::state("peskin-corrected",field,targetTime);
     field.invalidateThermodynamicCache();
     lastResult_.performed=true;
     std::ostringstream detail;

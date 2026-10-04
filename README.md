@@ -1,6 +1,6 @@
 # SonicSolver
 
-SonicSolver 是科研型结构网格有限差分 CFD 框架。case 组合 WHAT（EquationRegistry 数学方程）、STATE（基础变量注册表与物理存储/closure 契约）、HOW（EquationCall → typed Target、scope-local order 与通用 Loop）、WHICH（时间/空间/通量/线性 numerical providers）。Compiler 接收冻结的 WHAT/STATE/HOW/WHICH，验证 capability、绑定 storage 并 lower 到现有 kernels；它不选择 solver。single-fluid density 与常密度压力主路径已迁入此模型；Eulerian、湍流与 IBM 的 legacy backend 边界明确保留。详见 [架构文档](src/ARCHITECTURE.md) 与 [四模块迁移报告](docs/four-module-state-migration.md)。
+SonicSolver 是科研型结构网格有限差分 CFD 框架。case 组合 WHAT（EquationRegistry 数学方程）、STATE（基础变量注册表与物理存储/closure 契约）、HOW（EquationCall → typed Target、scope-local order 与通用 Loop）、WHICH（时间/空间/通量/线性 numerical providers）。Compiler 接收冻结的 WHAT/STATE/HOW/WHICH，验证 capability、绑定 storage 并 lower 到现有 kernels；它不选择 solver。single-fluid density、常密度压力、Eulerian shared-pressure 和 single-fluid/Eulerian RAS 主路径已迁入此模型；专用 numerical kernels 保留，IBM native contribution 与尚未实现的组合能力分别标注。详见 [架构文档](src/ARCHITECTURE.md) 与 [四模块迁移报告](docs/four-module-state-migration.md)。
 
 | 契约 | 用户选择的含义 | 当前对应物 |
 |---|---|---|
@@ -38,6 +38,10 @@ mpirun -np 4 ./build/sonicSolver run --steps 20 test/Sod/sodCase
 
 已有的 density single-fluid 显式时间实现支持 `forwardEuler`、`SSPRK3`、`classicalRK4` 的适配组合；高阶 conservative convection 仍有融合 kernel。常密度单流体 PISO、SIMPLE/PIMPLE 在已验证的正交网格、单逻辑源块能力范围内复用同一组 pressure operators。Eulerian shared-pressure 与内置 IBM 保留经过验证的专用 numerical helpers，通过已编译 operation/Plan 运行。Ghost/ILW 是边界闭合，不是另一套时间循环。
 
-当前并不存在任意用户方程的通用 production lowering；native `replace/disable` 尚未实现，空间 recipe 主要按 convection/diffusion 类别选择，湍流输运和部分相方程仍有专用执行实现。不能从 `explain` 能打印方程就推断任意方程均可运行；`check` 的 provider 与 capability 结果才是当前可执行性的依据。内置预设与完全等价的用户显式方程尚无编译产物和数值结果相同的验收测试。缺口和源码证据集中列在 [审计报告](docs/three-contract-architecture-audit.md)。
+当前并不存在任意用户方程的通用 production lowering；native `replace/disable` 尚未实现，空间 recipe 主要按 convection/diffusion 类别选择，湍流输运和部分相方程仍有专用执行实现。不能从 `explain` 能打印方程就推断任意方程均可运行；`check` 的 provider 与 capability 结果才是当前可执行性的依据。Eulerian 湍流已有同等 C++ user contribution 的编译/provider/order 一致性测试，以及原生接线与旧内核的数值对照；这不代表任意 YAML 方程输入已实现。缺口和源码证据集中列在 [审计报告](docs/three-contract-architecture-audit.md)。
 
 当前 authority 与删除项见 [WHAT/HOW/WHICH 迁移报告](docs/equation-execution-migration.md)。较早 Phase 29 报告是历史记录，不再定义 production authority。
+
+Eulerian turbulence 原生迁移已完成：kEpsilon/kOmegaSST 的 phase-mass 加权输运、显式 source/隐式 sink，以及 mu_t 代数闭合通过同一 WHAT/STATE/HOW/WHICH 编译路径执行。STATE aliases 原数组，selected phases 的 subset/反序映射按真实 phase slot 绑定；独立 flow.eulerian-turbulence provider 保留既有 prepare/solve/commit 时序，不由 flow provider 隐式插入。原始 production 入口因 identity/HOW 断点无法运行；本轮与冻结旧内核的隔离接线对照比较，两个模型、多个 PIMPLE passes 及 LES closure 的全部输出/trace 严格相同。完整 host CTest 38/38 通过；Eulerian turbulence MPI/multi-patch 明确 Unsupported。详见[中文报告](docs/eulerian-turbulence-native-migration.md)。
+
+IBM 原生贡献已接入同一 WHAT/STATE/HOW/WHICH：Ghost/ILW 是显式 stage boundary contract；BP 是动量 penalty/机械功；Peskin 与 explicit DFM 保留 lagged force；FTS/fractional DLM 是 post-predictor projection。原数组与数值 kernels 保留，legacy equation/policy/strategy routing 和空 transformer 已删除。KKT 目前有 native structural block contract，但 canonical production cases 仍存在明确 recipe/predictor 能力缺口；turbulence＋IBM、pressure＋IBM、Eulerian＋IBM 也未因本次接线自动开放。Peskin MPI 的合法局部零支撑现在允许进入全局 SUM，完整 diagonal 仍严格检查；物理 ILW 的切分法向、切向 halo 输入，以及 force/mask 输出 COPY 已修正。47/47 主机 CTest 通过，7 个串行案例与冻结输出逐字节一致，8 个 MPI 案例完整运行到 endTime=5；串行/MPI 全时域最大速度分量差异 6.75e-13，输出 replica 冲突为 0。物理体积指标及尚未成立的 surface 一阶矩/力矩性质见[并行验证报告](docs/ibm-parallel-consistency-validation.md)。迁移阶段的历史同配置对照见[中文 IBM 迁移报告](docs/ibm-native-contributions-migration.md)。
