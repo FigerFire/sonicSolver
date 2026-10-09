@@ -19,10 +19,14 @@ bool IB::setup(Field& field,
                const IBMRuntimeConfig& config) {
     active_ = false;
     config_ = config;
+    wallField_ = &field;
     selection_ = {};
     capabilities_ = {};
     descriptor_ = {};
     fluidPorts_.clear();
+    if (config_.wallClosure==FDM::ImmersedWallClosure::StationaryNoSlipAdiabatic
+        && (config_.method!=FDM::IBMMethod::Ghost || config_.ilwEnabled))
+        throw std::runtime_error("stationaryNoSlipAdiabatic requires Ghost and explicit Euler ILW disablement.");
     if (stlFiles.empty()) return false;
 
     const Common::GeometrySetup geometry =
@@ -65,8 +69,18 @@ const std::vector<FDM::ImmersedFluidPort>& IB::fluidPorts() const {
 
 void IB::applyGhostCells(Field& field, double time, double dt) {
     if (!usesGhostCells()) return;
+    if (config_.wallClosure==FDM::ImmersedWallClosure::StationaryNoSlipAdiabatic && wallField_!=&field)
+        throw std::runtime_error("Viscous immersed wall is bound to a different physical patch.");
     Common::validateStageTime(time, dt);
     ghostCell_.apply(field, ghostWeights_, config_);
+}
+
+void IB::applySST(const Field& field,double laminarMu,std::vector<double>& k,
+        std::vector<double>& omega,std::vector<double>& muT) const {
+    if (!usesGhostCells() || config_.wallClosure!=FDM::ImmersedWallClosure::StationaryNoSlipAdiabatic)
+        throw std::runtime_error("SST requires the bound stationary no-slip immersed wall.");
+    if (wallField_!=&field) throw std::runtime_error("SST immersed wall is bound to a different physical patch.");
+    GhostIBM::applySSTWall(field,ghostWeights_.viscousPlans(),laminarMu,k,omega,muT);
 }
 
 FDM::ImmersedConstraintResult IB::applyConstraint(

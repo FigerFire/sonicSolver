@@ -565,10 +565,10 @@ void GuiController::generateInitialOutput()
     if (parallelCommand(parallelPath, &program, &prefixArguments)) {
         arguments = prefixArguments;
         arguments << executable
-                  << QStringLiteral("--initial-output")
+                  << QStringLiteral("initialOutput")
                   << project_.casePath();
     } else {
-        arguments << QStringLiteral("--initial-output")
+        arguments << QStringLiteral("initialOutput")
                   << project_.casePath();
     }
     startSolverProcess(program, arguments, project_.directory(),

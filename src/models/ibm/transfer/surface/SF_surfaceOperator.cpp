@@ -14,13 +14,13 @@ const FDM::ImmersedSurfaceSystem& SurfaceOperator::build(
         const Field& field,
         const std::vector<GeoProcessing::Triangle>& triangles,
         const Vector3& center,
-        double supportRadius) {
+        double supportRadius, FDM::IBMSurfaceNormalization normalization) {
     if (!std::isfinite(supportRadius) || supportRadius <= 0.0) {
         throw std::runtime_error(
             "SurfaceOperator requires finite positive supportRadius.");
     }
     markerRegistry_.build(triangles,center);
-    couplingGraph_.build(field,markerRegistry_.markers(),supportRadius);
+    couplingGraph_.build(field,markerRegistry_.markers(),supportRadius,normalization);
     // build 阶段只形成 owner raw edge；调用方必须在 Runtime 完成全局归并后调用
     // normalizeDistributed，避免多 rank 在局部 support 上错误地各自归一化。
     system_={};
@@ -28,8 +28,8 @@ const FDM::ImmersedSurfaceSystem& SurfaceOperator::build(
 }
 
 const FDM::ImmersedSurfaceSystem& SurfaceOperator::normalizeDistributed(
-        const std::vector<double>& normalizations) {
-    couplingGraph_.normalize(normalizations);
+        const std::vector<double>& normalizations, const std::vector<double>& moments) {
+    couplingGraph_.normalize(normalizations,moments);
     system_={};
     system_.points.reserve(markerRegistry_.markers().size());
     for (std::size_t markerIndex=0;

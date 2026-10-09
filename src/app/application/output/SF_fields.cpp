@@ -18,10 +18,35 @@
 #include "SF_phaseSystem.h"
 #include "levelSet/SF_state.h"
 #include "core/state/SF_state.h"
+#include "core/system/SF_stateRegistry.h"
+#include "core/state/SF_stateBundle.h"
 
 #include <stdexcept>
 
 namespace SF::Application::Output {
+
+std::vector<ResultWriter::ScalarField> registeredStateFields(
+        const System::StateRegistry& symbols,State::StateBundle& state,const Field& geometry) {
+    std::vector<ResultWriter::ScalarField> result;
+    for (const auto& symbol:symbols.symbols()) {
+        if (!symbol.outputEligible || symbol.constantValue) continue;
+        auto candidates=state.distributed.select(symbol.storageKey,State::HaloSyncStage::None);
+        State::DistributedFieldView* storage=nullptr;
+        for (auto* candidate:candidates) if (candidate->geometry==&geometry) {
+            if (storage) throw std::runtime_error("Duplicate output STATE owner: "+symbol.id);
+            storage=candidate;
+        }
+        if (!storage || storage->location!=State::FieldLocation::Cell
+            || symbol.componentOffset+symbol.components>storage->components)
+            throw std::runtime_error("No registered physical output binding: "+symbol.id);
+        ResultWriter::ScalarField view;view.name=symbol.id;view.components=symbol.components;
+        view.componentAt=[storage,offset=symbol.componentOffset](int i,int j,int k,int c) {
+            return storage->read(storage->geometry->getIdx(i,j,k),offset+c);
+        };
+        result.push_back(std::move(view));
+    }
+    return result;
+}
 
 std::vector<ResultWriter::PieceLayout> buildMultiBlockVTKPieces(
         const MultiBlockMesh& mesh) {

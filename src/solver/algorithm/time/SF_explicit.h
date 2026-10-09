@@ -38,6 +38,7 @@ struct RKStorage {
 struct Workspace {
     System::CompiledTimeRecipe recipe;
     bool active = false;
+    bool rhsReady = false;
     int nextStage = 0;
     std::vector<RKStorage> patches;
 };
@@ -51,6 +52,9 @@ void begin(Workspace& workspace,
            State::StateBundle& state,
            const System::CompiledTimeRecipe& recipe,
            FDM::IEquationSystemCoupling* equationSystem);
+
+/// Evaluate without updating Q; the common stage barrier owns its lifetime.
+void evaluateRHS(Workspace&,int,const std::vector<Field*>&,std::vector<PatchWorkspace>&,State::StateBundle&,const AssembleRHS&);
 
 /// @brief Execute exactly one plan-selected explicit stage.
 void executeStage(

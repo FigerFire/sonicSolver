@@ -121,7 +121,7 @@ ImmersedForcingSystem::applyDFMFractionalStepPrescribed(
     }
     finalizeDistributedResult(lastResult_);
     Checkpoint::force("fractional-force",field,multiplier_,targetTime);
-    Checkpoint::result(lastResult_,targetTime);
+    Checkpoint::result(lastResult_,targetTime,dt);
     Validation::requireConstraintResidual(
         lastResult_.maximumVelocityResidual,
         config_.forcing.constraintTolerance,"fractionalDLM");

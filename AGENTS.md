@@ -1170,3 +1170,19 @@ Equation-driven
 
 禁止恢复 `TimeScheme`、`explicitStageCount`、`ddtDispatch`，也禁止创建
 `ExplicitSolver`、`ImplicitSolver`、`RK4Solver` 等全局 lifecycle 类型。
+
+---
+
+## 31. IBM 壁面测试采用 No-slip
+
+用户于 2026-10-08 明确要求：后续 IBM 壁面测试统一采用 no-slip，不再以
+Euler/slip 圆柱算例作为壁面物理验收。
+
+- Ghost 当前使用显式 `wallClosure: stationaryNoSlipAdiabatic`，关闭 Euler ILW，
+  并启用该实现要求的黏性离散；以 `cylinderFlowViscousGhost` 为配置参考。
+- Forcing / projection / DLM / KKT 按各自数学实现施加无滑移壁面速度目标，
+  不给这些方法套用 Ghost 专属的 wallClosure。
+- 不支持 no-slip 的 MPI、移动壁面或模块组合明确标为 Unsupported，
+  不得静默改用 slip，也不得仅增加 capability 标记宣称支持。
+- 旧 slip 配置、输出和冻结记录仅保留为历史对照；迁移测试时分别记录壁面数学变化
+  与架构变化，不覆盖旧基线或宣称两种壁面应有相同数值结果。

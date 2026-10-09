@@ -47,6 +47,9 @@ int execute(const System::ResolvedSimulationSystem& system,
             ExecutionEnvironment& env,
             const RunRequest& request) {
     if (env.domain == DomainKind::DistributedMultiPatch) {
+        if (system.executableSystem.immersed
+            && system.executableSystem.immersed->wallClosure==FDM::ImmersedWallClosure::StationaryNoSlipAdiabatic)
+            throw std::runtime_error("stationaryNoSlipAdiabatic requires a single physical patch; composite/distributed wall ports are Unsupported.");
         return executeMulti(
             env.parallelMesh, *env.writer, *env.parallel, env.compositeIBM,
             caseConfig.solver, system, plan, caseConfig, env.ibmEnabled,

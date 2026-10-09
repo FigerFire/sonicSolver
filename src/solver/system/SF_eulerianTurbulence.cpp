@@ -123,7 +123,23 @@ public:
             if (model!="Smagorinsky") {result.reads.push_back("k."+phase.name);result.reads.push_back(second+"."+phase.name);}
             result.writes.push_back("mu_t."+phase.name);
         }
-        if (transport_) for (const auto& member:members) result.writes.push_back(member.target);
+        if (transport_) for (const auto& member:members) {
+            result.writes.push_back(member.target);result.stateEffects.push_back({member.target,false,false});
+        }
+        for (const auto& phase:contract.phases) {
+            const auto coefficient="turbulence.coefficients."+phase.name;
+            result.stateEffects.push_back({"mu_t."+phase.name,true,false});
+            if (transport_) {
+                result.stateUses.push_back({coefficient,StateVersion::Frozen,false,{},true});
+                result.stateUses.push_back({"phaseMass."+phase.name});
+            } else {
+                for (const auto* name:{"rho","U","T"}) result.stateUses.push_back({std::string(name)+"."+phase.name});
+                if (model!="Smagorinsky") {
+                    result.stateUses.push_back({"k."+phase.name});result.stateUses.push_back({second+"."+phase.name});
+                }
+                result.stateEffects.push_back({coefficient,true,false});
+            }
+        }
         result.fragment.kind=PlanNodeKind::Sequence;result.fragment.id=std::string(id());
         const auto add=[&](const char* operation,const char* owner,OperationCapability capability) {
             auto leaf=op(operation,owner);leaf.equationCalls=result.calls;result.fragment.children.push_back(std::move(leaf));

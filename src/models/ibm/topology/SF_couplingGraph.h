@@ -4,6 +4,8 @@
 /// @brief 建立唯一 marker--Eulerian DOF 边及体积加权插值行。
 
 #include "SF_field.h"
+#include "core/config/types/SF_ibmConfigTypes.h"
+#include <array>
 #include "SF_immersedConstraint.h"
 #include "topology/SF_markerRegistry.h"
 
@@ -19,10 +21,13 @@ public:
     /// @brief 为每个 marker 建立唯一的本地 Eulerian owner raw edge。
     void build(const Field& field,
                const std::vector<SurfaceMarker>& markers,
-               double supportRadius);
+               double supportRadius, FDM::IBMSurfaceNormalization normalization);
 
     /// @brief 用所有 owner edge 的 canonical 权重和生成分区一致 J 行。
-    void normalize(const std::vector<double>& globalNormalizations);
+    void normalize(const std::vector<double>& globalNormalizations,
+                   const std::vector<double>& globalMoments);
+    /// @brief 每-marker owner Gram partials，4x4 row-major，供 Runtime SUM。
+    const std::vector<double>& rawMoments() const { return rawMoments_; }
 
     /// @brief 返回本 rank owner edge 对每个 marker 的 raw 权重和。
     const std::vector<double>& rawNormalizations() const {
@@ -36,6 +41,9 @@ private:
     std::vector<std::vector<FDM::ImmersedInterpolationWeight>> rawRows_;
     std::vector<std::vector<FDM::ImmersedInterpolationWeight>> rows_;
     std::vector<double> rawNormalizations_;
+    std::vector<double> rawMoments_;
+    std::vector<std::vector<std::array<double,4>>> rawBasis_;
+    FDM::IBMSurfaceNormalization normalization_=FDM::IBMSurfaceNormalization::PartitionOfUnity;
 };
 
 } // namespace SF::IBM::Topology

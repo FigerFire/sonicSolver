@@ -49,6 +49,11 @@ ResolvedOperationBinding ProviderCatalog::resolve(
 
 ProviderCatalog ProviderCatalog::builtIn() {
     ProviderCatalog catalog;
+    catalog.add({TemporalOps::Provider,{OperationCapability::TemporalSynchronization}});
+    catalog.add({"equation.scalar-central2",{OperationCapability::ScalarExplicit}});
+    catalog.add({"equation.scalar-transport",{OperationCapability::ScalarExplicit}});
+    catalog.add({"flow.homogeneous",{OperationCapability::ConservativeExplicit}});
+    catalog.add({"interface.level-set",{OperationCapability::LevelSetExecution}});
     catalog.add({"flow.turbulence-closure",{OperationCapability::SingleFluidTurbulenceClosure}});
     catalog.add({"flow.turbulence",{OperationCapability::SingleFluidTurbulenceTransport}});
     catalog.add({"flow.conservative",{

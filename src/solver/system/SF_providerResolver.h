@@ -14,6 +14,9 @@ namespace SF::System {
 std::string validateSolutionProviderContract(const StateRegistry& state,
     const EquationCompositionConfig& composition);
 
+std::string validateCompiledConservativeStage(const ExecutableEquationSystem&,
+    const CompiledSolvePlan&);
+
 ExecutionCapabilitySignature compileExecutionCapabilities(
     const ExecutableEquationSystem& equations,
     const std::vector<LegacyExecutionPolicy>& policies,

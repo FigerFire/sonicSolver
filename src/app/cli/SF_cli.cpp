@@ -29,7 +29,7 @@ void printText(const std::string& text) {
 }
 
 void printHelp() {
-    printText(R"HELP(sonicSolver - structured-grid compressible FDM solver
+    printText(R"HELP(sonicSolver - structured-grid FDM framework
 
 Usage:
   sonicSolver [CASE]                      run CASE; default CASE is .
@@ -39,18 +39,16 @@ Usage:
   sonicSolver doctor [CASE]              print implementation diagnostics
   sonicSolver models [CATEGORY] [OPTIONS] list available models
   sonicSolver why MODEL [--with mpi]      explain capability requirements
-  sonicSolver explain-model MODEL         explain one model descriptor
+  sonicSolver explainModel MODEL         explain one model descriptor
   sonicSolver recipes                     list case recipes
   sonicSolver init [CASE] --recipe RECIPE  create a native case template
 
 Commands and options:
-  --initial-output [CASE]                 write initial fields; default CASE is .
-  --steps N [CASE]                        limit a run to N time steps; default .
-  cleanCase [CASE]                        remove CASE/result contents
-  postProcess [CASE]                      open the unique result PVD
-  -cleanResult [CASE]                     alias for cleanCase
-  -postProcessing [CASE]                 alias for postProcess
-  -h, --help                              show this help
+  initialOutput [CASE]                 write initial fields; default CASE is .
+  steps N [CASE]                        limit a run to N time steps; default .
+  postProcessing [CASE]                      open the unique result PVD
+  cleanResult [CASE]                      remove CASE/result contents
+  help                                   show this help
 
 Examples:
   sonicSolver check test/sodCase
@@ -85,7 +83,7 @@ int runWithArgs(int argc, char* argv[]) {
         SF::broadcast("Usage: ", argv[0]);
         SF::broadcast("Example: ", "./sonicSolver test/sodCase");
         SF::broadcast("Initial output: ",
-                      "./sonicSolver --initial-output test/sodCase");
+                      "./sonicSolver initialOutput test/sodCase");
         return 1;
     }
 
@@ -102,7 +100,7 @@ int runWithArgs(int argc, char* argv[]) {
 
     if (std::string(argv[1]) == "--steps") {
         if (argc != 4) {
-            throw std::runtime_error("Usage: sonicSolver --steps N CASE");
+            throw std::runtime_error("Usage: sonicSolver steps N [CASE]");
         }
         std::size_t consumed = 0;
         request.stepLimit = std::stoi(argv[2], &consumed);
@@ -130,7 +128,7 @@ int runTranslated(const Args& arguments) {
     return runWithArgs(static_cast<int>(translated.size()), argv.data());
 }
 
-// 把 `run` 子命令的 run-control 选项重组为 legacy argv 形态，再交给
+// 把 `run` 子命令的 run-control 选项重组为内部 argv 形态，再交给
 // runWithArgs 统一解析为 RunRequest。
 int runCommand(int argc, char* argv[]) {
     std::string casePath;
@@ -413,7 +411,7 @@ int SF::CLI::run(int argc, char* argv[]) {
         if (argc < 2) return runTranslated({"."});
         const std::string command = argv[1];
         // 命令分发
-        if (command == "-h" || command == "--help") {
+        if (command == "help") {
             printHelp();
             return 0;
         }
@@ -455,8 +453,8 @@ int SF::CLI::run(int argc, char* argv[]) {
             printWhy(argv[2], withMPI);
             return 0;
         }
-        if (command == "explain-model") {
-            if (argc != 3) throw std::runtime_error("explain-model requires MODEL");
+        if (command == "explainModel") {
+            if (argc != 3) throw std::runtime_error("explainModel requires MODEL");
             printWhy(argv[2], false, true);
             return 0;
         }
@@ -497,25 +495,24 @@ int SF::CLI::run(int argc, char* argv[]) {
             return 0;
         }
         if (command == "run") return runCommand(argc, argv);
-        if (command == "cleanCase")
+        if (command == "cleanResult")
             return cleanResult(optionalCaseDirectory(argc, argv));
-        if (command == "-cleanResult")
-            return cleanResult(optionalCaseDirectory(argc, argv));
-        if (command == "postProcess")
+        if (command == "postProcessing")
             return openPostProcessing(optionalCaseDirectory(argc, argv));
-        if (command == "-postProcessing")
-            return openPostProcessing(optionalCaseDirectory(argc, argv));
-        if (command == "--initial-output" && argc == 2)
-            return runTranslated({"--initial-output", "."});
-        if (command == "--steps" && argc == 3)
-            return runTranslated({"--steps", argv[2], "."});
-        if (command == "--initial-output" || command == "--steps")
-            return runWithArgs(argc, argv);
-
-        // Allow the compact form `sonicSolver CASE`.
-        if (command.front() != '-') return runWithArgs(argc, argv);
-        throw std::runtime_error("unknown option '" + command
-                                 + "'; use sonicSolver --help");
+        if (command == "initialOutput") {
+            if (argc > 3) throw std::runtime_error("initialOutput accepts at most one CASE");
+            return runTranslated({"--initial-output", argc == 3 ? argv[2] : "."});
+        }
+        if (command == "steps") {
+            if (argc < 3 || argc > 4)
+                throw std::runtime_error("Usage: sonicSolver steps N [CASE]");
+            return runTranslated({"--steps", argv[2], argc == 4 ? argv[3] : "."});
+        }
+        // Compact case invocation is valid only for an existing path.
+        if (!command.empty() && command.front() != '-'
+            && std::filesystem::exists(command)) return runWithArgs(argc, argv);
+        throw std::runtime_error("unknown command '" + command
+                                 + "'; use sonicSolver help");
     } catch (const std::exception& error) {
         // MPI 非 root rank 不能只走 broadcast：若它在 collective 前失败，
         // root 会在通信中等待。每个失败进程必须直接写出自身异常，方便

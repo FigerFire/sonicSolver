@@ -31,6 +31,9 @@ CaseConfig CaseAdapter::build(const Model::Description& m) {
     native_=true;sections_={};
     EquationCompositionConfig composition;
     P nativeAlgorithmParameters=P::object();
+    std::optional<System::ExecutionProgram> authoredExecution;
+    std::vector<System::NumericalBinding> authoredNumerics;
+    bool numericalBindingsDeclared=false;
     // 语义角色 → parameters。同一个角色只能被一个对象占用。
     std::map<std::string,P> roles;
     auto assignRole=[&](const std::string& role,const P& parameters) {
@@ -109,6 +112,71 @@ CaseConfig CaseAdapter::build(const Model::Description& m) {
                 throw std::runtime_error(
                     "Equation modifications are declared by the input contract, "
                     "but lowering custom modifications is not implemented.");
+            }
+        });
+    factories.add("executionProgram",{{{"root","object",true}},false},
+        [&](const Model::ObjectDescriptor& object,Context&) {
+            if (authoredExecution) throw std::runtime_error("Multiple authored HOW programs.");
+            const auto parse=[&](const auto& self,const P& value)->System::ExecutionScope {
+                Model::Schema{{{"kind","string",true},{"id","string"},{"order","integer"},
+                    {"equation","string"},{"target","string"},{"targetKind","string"},{"occurrence","string"},
+                    {"children","array"},{"repetitions","integer"},{"minimumIterations","integer"},
+                    {"terminationSignal","string"}},false}.validate(value,"HOW node");
+                System::ExecutionScope node;
+                const auto kind=value.at("kind").get<std::string>();
+                if (kind=="Sequence") node.kind=System::ExecutionKind::Sequence;
+                else if (kind=="Loop") node.kind=System::ExecutionKind::Loop;
+                else if (kind=="StageLoop") node.kind=System::ExecutionKind::StageLoop;
+                else if (kind=="Commit") node.kind=System::ExecutionKind::Commit;
+                else if (kind=="EquationCall") node.kind=System::ExecutionKind::EquationCall;
+                else throw std::runtime_error("Unknown HOW node kind: "+kind);
+                node.id=value.value("id",std::string());node.order=value.value("order",0);
+                node.origin={System::OriginKind::User,"native executionProgram"};
+                node.repetitions=value.value("repetitions",1);node.minimumIterations=value.value("minimumIterations",1);
+                node.terminationSignal=value.value("terminationSignal",std::string());
+                if (node.kind==System::ExecutionKind::EquationCall) {
+                    if (!value.contains("equation") || !value.contains("target") || value.contains("children"))
+                        throw std::runtime_error("HOW EquationCall requires equation/target and no child scope.");
+                    node.step={value.at("equation").get<std::string>(),
+                        System::targetFromSyntax(value.at("target").get<std::string>()),value.value("occurrence",std::string())};
+                    if (value.contains("targetKind")) {
+                        if (node.step.target.kind!=System::TargetKind::Physical)
+                            throw std::runtime_error("HOW targetKind cannot override a qualified target.");
+                        const auto targetKind=value.at("targetKind").get<std::string>();
+                        if (targetKind=="Physical") node.step.target.kind=System::TargetKind::Physical;
+                        else if (targetKind=="Working") node.step.target.kind=System::TargetKind::Working;
+                        else if (targetKind=="Correction") node.step.target.kind=System::TargetKind::Correction;
+                        else if (targetKind=="Workspace") node.step.target.kind=System::TargetKind::Workspace;
+                        else throw std::runtime_error("Unknown HOW target kind: "+targetKind);
+                    }
+                } else {
+                    if (value.contains("equation") || value.contains("target") || value.contains("targetKind") || value.contains("occurrence"))
+                        throw std::runtime_error("HOW control scope cannot carry an equation target.");
+                    if (value.contains("children")) for (const auto& child:value.at("children")) node.children.push_back(self(self,child));
+                }
+                return node;
+            };
+            System::ExecutionProgram program;program.root=parse(parse,object.parameters.at("root"));
+            if (program.root.kind!=System::ExecutionKind::Sequence || program.root.children.empty())
+                throw std::runtime_error("Authored HOW root requires a nonempty Sequence.");
+            authoredExecution=std::move(program);
+        });
+    factories.add("providerBindings",{{{"bindings","array",true}},false},
+        [&](const Model::ObjectDescriptor& object,Context&) {
+            if (numericalBindingsDeclared) throw std::runtime_error("Multiple authored WHICH binding collections.");
+            numericalBindingsDeclared=true;
+            for (const auto& value:object.parameters.at("bindings")) {
+                Model::Schema{{{"equation","string",true},{"method","string",true},{"inputs","array"},
+                    {"occurrence","string"},{"parameters","object"}},false}.validate(value,"WHICH binding");
+                System::NumericalBinding binding;
+                binding.equation=value.at("equation").get<std::string>();binding.method=value.at("method").get<std::string>();
+                binding.occurrence=value.value("occurrence",std::string());
+                if (value.contains("inputs")) binding.inputs=value.at("inputs").get<std::vector<std::string>>();
+                if (value.contains("parameters")) for (const auto& entry:value.at("parameters").items()) {
+                    if (!entry.value().is_number()) throw std::runtime_error("WHICH parameters must be numeric: "+entry.key());
+                    binding.parameters.emplace(entry.key(),entry.value().get<double>());
+                }
+                authoredNumerics.push_back(std::move(binding));
             }
         });
     factories.add("algorithmRegistry",{{{"Explicit","object"},{"SIMPLE","object"},
@@ -256,6 +324,8 @@ CaseConfig CaseAdapter::build(const Model::Description& m) {
         bound[composition.algorithm]=std::move(controls);
         sections_.algorithm=std::move(bound);
     }
+    if (authoredExecution && (!numericalBindingsDeclared || authoredNumerics.empty()))
+        throw std::runtime_error("Authored HOW requires an explicit nonempty providerBindings WHICH collection; preset bindings are not silently inherited.");
     auto result=decodeNativeCase();if(!result)throw std::runtime_error("Cannot bind model "+m.name);
     result->caseName=m.name;
     if(result->createMesh)result->meshParameterFile=meshGenerator_;
@@ -274,6 +344,8 @@ CaseConfig CaseAdapter::build(const Model::Description& m) {
     composition.pressureCorrectors=result->solver.pressure.coupling.pressureCorrectors;
     composition.nonOrthogonalCorrectors=result->solver.pressure.coupling.nonOrthogonalCorrectors;
     result->composition=std::move(composition);
+    result->authoredExecution=std::move(authoredExecution);
+    result->authoredNumerics=std::move(authoredNumerics);
     return *result;
 }
 }

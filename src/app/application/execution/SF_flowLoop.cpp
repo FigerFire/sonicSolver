@@ -4,6 +4,7 @@
 #include "app/application/execution/SF_flowLoop.h"
 
 #include "solver/algorithm/SF_singleFluidStepper.h"
+#include "solver/system/SF_systemValidator.h"
 
 #include <stdexcept>
 #include <utility>
@@ -31,6 +32,26 @@
 // save / report / finished
 
 namespace SF::Application::Execution {
+
+int executeEquations(const FDM::SolverConfig& config,
+        const System::ResolvedSimulationSystem& system,State::StateBundle& bundle,
+        FDM::SolverServices services,const Time::RunControl& control,
+        const Time::DriverCallbacks& callbacks) {
+    System::validate(system);
+    if (system.runtime.report.status!=System::RuntimeStatus::Runnable)
+        throw std::runtime_error("Equation execution unsupported: "+system.runtime.report.reason);
+    if (bundle.time!=control.startTime)
+        throw std::runtime_error("RunControl startTime must match authoritative StateBundle time.");
+    if (callbacks.advance)
+        throw std::runtime_error("Application callbacks cannot replace compiled equation advance.");
+    SolverAlgorithm::SingleFluidStepper host(config,system.executableSystem,
+        system.numericalSystem,system.solvePlan,system.runtime);
+    host.bindServices(services);
+    FDM::SolverState state;state.bundle=&bundle;
+    return flowLoop(host,state,system.solvePlan,control,"EquationSystem",
+        callbacks.saveStep,callbacks.saveTime,callbacks.report,callbacks.globallyFinished,
+        [](const FDM::StepResult& result) {return result.message;});
+}
 
 int flowLoop(
         FDM::INavierStokesStepper& stepper,
@@ -109,6 +130,7 @@ int runConservative(
     services.immersed = immersed;
     services.transportModel = transport;
     services.equationSystem = equations;
+    services.levelSet = dynamic_cast<FDM::ILevelSetOperations*>(equations);
     solver.bindServices(services);
     return flowLoop(
         solver,state,plan,control,name,
@@ -118,4 +140,3 @@ int runConservative(
 }
 
 } // namespace SF::Application::Execution::Detail
-

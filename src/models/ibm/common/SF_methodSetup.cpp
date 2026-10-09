@@ -22,13 +22,20 @@ FDM::ImmersedAlgorithmDescriptor setupMethod(
         field.clearCellFlags(FLUID_CELL);
         forcing.configure(geometry, config);
         logForcingSetup(selectMethod(config));
+        if (config.forcing.constraintSupport==FDM::IBMConstraintSupport::Surface)
+            broadcast("IBM surface transfer: ",FDM::toString(config.forcing.surfaceNormalization));
         return forcing.algorithmDescriptor();
     }
 
+    broadcast("IBM wall closure: ",config.wallClosure==FDM::ImmersedWallClosure::EulerSlip
+        ?"eulerSlip (original Euler/ILW compatibility)"
+        :"stationaryNoSlipAdiabatic (constrained quadratic, serial, fixed geometry)");
     broadcast("IBM preprocessing: ", "start");
     ghostWeights.build(field, geometry, config);
     logGhostSetup(config, ghostWeights, stlSeconds);
-    return Descriptor::ghostCell();
+    auto descriptor=Descriptor::ghostCell();
+    descriptor.wallClosure=config.wallClosure;
+    return descriptor;
 }
 
 } // namespace SF::IBM::Common

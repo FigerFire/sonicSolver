@@ -1,8 +1,11 @@
 /// Numerical providers own domain matching, storage realization and local lifecycle.
 #include "SF_methodObjects.h"
 #include "SF_immersedMethods.h"
+#include "SF_levelSetMethods.h"
+#include "SF_multiphaseMethods.h"
 #include "SF_eulerianCoupling.h"
 #include "SF_pressureCoupling.h"
+#include "SF_scalarMethod.h"
 #include "core/system/SF_operationIds.h"
 #include <algorithm>
 #include <stdexcept>
@@ -32,13 +35,39 @@ SolvePlanNode explicitFragment(const CompiledEquationCall& body,
     root.kind=PlanNodeKind::Sequence;
     root.id="Explicit.step";
     root.name="explicit time step";
+    if (!body.temporalParticipants.empty()) {
+        const auto leaf=[&](const std::string& op,const std::string& owner,
+                const TemporalParticipant* participant=nullptr) {
+            auto node=methodLeaf(PlanNodeKind::Update,op,op,op,owner);
+            if (participant) {node.occurrence=participant->identity;node.equationCalls=participant->calls;}
+            return node;
+        };
+        for (const auto& p:body.temporalParticipants) for (const auto& op:p.preparation)
+            root.children.push_back(leaf(op,p.provider,&p));
+        root.children.push_back(leaf(TemporalOps::Dt,TemporalOps::Provider));
+        root.children.insert(root.children.end(),prefix.begin(),prefix.end());
+        for (const auto& p:body.temporalParticipants) root.children.push_back(leaf(p.snapshot,p.provider,&p));
+        auto stages=methodLeaf(PlanNodeKind::StageLoop,"Explicit.stages","synchronous explicit stages",{});
+        stages.repetitions=recipe.stageCount();
+        stages.children.push_back(leaf(TemporalOps::Open,TemporalOps::Provider));
+        for (const auto& p:body.temporalParticipants) stages.children.push_back(leaf(p.prepareStage,p.provider,&p));
+        stages.children.push_back(leaf(TemporalOps::Ready,TemporalOps::Provider));
+        for (const auto& p:body.temporalParticipants) stages.children.push_back(leaf(p.rhs,p.provider,&p));
+        stages.children.push_back(leaf(TemporalOps::RhsReady,TemporalOps::Provider));
+        for (const auto& p:body.temporalParticipants) stages.children.push_back(leaf(p.advance,p.provider,&p));
+        stages.children.push_back(leaf(TemporalOps::Close,TemporalOps::Provider));
+        root.children.push_back(std::move(stages));return root;
+    }
+    for (const auto& operation:body.temporalPreparation)
+        root.children.push_back(methodLeaf(PlanNodeKind::Update,
+            "Explicit.prepare","prepare physical step",operation,body.backendProvider));
+    if (body.temporalStepSize.empty() || body.temporalSnapshot.empty())
+        throw std::runtime_error("Temporal provider must declare step-size and snapshot operations.");
     root.children.push_back(methodLeaf(PlanNodeKind::Update,
-        "Explicit.prepare","prepare physical step",OpIds::FlowStepPrepare,body.backendProvider));
-    root.children.push_back(methodLeaf(PlanNodeKind::Update,
-        "Explicit.dt","compute stable time step",OpIds::FlowDtCompute,body.backendProvider));
+        "Explicit.dt","compute time step",body.temporalStepSize,body.backendProvider));
     root.children.insert(root.children.end(),prefix.begin(),prefix.end());
     root.children.push_back(methodLeaf(PlanNodeKind::Update,
-        "Explicit.begin","begin explicit step",OpIds::FlowStepBegin,body.backendProvider));
+        "Explicit.begin","begin explicit step",body.temporalSnapshot,body.backendProvider));
     auto stages=methodLeaf(PlanNodeKind::StageLoop,"Explicit.stages",
         std::string(FDM::toString(recipe.id()))+" fused explicit stages",{});
     stages.repetitions=recipe.stageCount();
@@ -154,12 +183,20 @@ public:
         result.target=bindTarget(system,step);
         result.equationMethod=std::string(id());
         result.temporalResidual=true;
+        result.temporalPreparation={OpIds::FlowStepPrepare};
+        result.temporalStepSize=OpIds::FlowDtCompute;
+        result.temporalSnapshot=OpIds::FlowStepBegin;
+        result.temporalOwner="flow.conservative";
+        result.temporalStagePrepare="flow.stage.prepare";result.temporalRhs="flow.stage.rhs";
+        result.temporalAdvance="flow.stage.advance";result.temporalPublish=OpIds::FlowStepCommit;
         result.oldTimeWorkspace="explicit.q0";
         result.publishesStageToPhysicalTarget=true;
+        if (system.state.contains("mu_t")) result.stateUses.push_back({"turbulence.mu_t.step",StateVersion::Frozen});
         result.spatialTerms=true;
         result.residualWorkspace="residual";
         for (const char* operation:{OpIds::FlowStepPrepare,OpIds::FlowDtCompute,OpIds::FlowStepBegin,
-                OpIds::ExplicitStageExecute,OpIds::FlowStepCommit,OpIds::TimeCommit})
+                OpIds::ExplicitStageExecute,OpIds::FlowStepCommit,OpIds::TimeCommit,
+                "flow.stage.prepare","flow.stage.rhs","flow.stage.advance"})
             result.operations.push_back({operation,operation,OperationStage::Prepare,
                 {OperationCapability::ConservativeExplicit},{OriginKind::Generated,"ConservativeResidual"}});
         result.backendOperation=OpIds::ExplicitStageExecute;
@@ -172,6 +209,22 @@ public:
         result.calls.push_back({formula.id,symbol});
         collectSymbols(formula.lhs,result.reads);
         collectSymbols(formula.rhs,result.reads);
+        const auto stageSources=[&](const auto& self,const FormulaExpr& expression)->void {
+            if (expression.kind==FormulaExpr::Kind::Operator && expression.name=="source" && expression.arguments.size()==4
+                && expression.arguments[0].kind==FormulaExpr::Kind::Symbol
+                && (expression.arguments[0].name=="linearScalarForce" || expression.arguments[0].name=="linearScalarWork")) {
+                const auto& symbol=system.state.at(expression.arguments[1].name);
+                if (symbol.components!=1 || symbol.storageBinding!=StorageBinding::NamedDistributed || symbol.derivation!=StateDerivation::None)
+                    throw std::runtime_error("Scalar feedback requires scalar NamedDistributed Stage input.");
+                result.stateUses.push_back({symbol.id,StateVersion::Stage});
+                if (expression.arguments[0].name=="linearScalarWork") {
+                    result.stateUses.push_back({"rho",StateVersion::Stage});
+                    result.stateUses.push_back({"rhoU",StateVersion::Stage});
+                }
+            }
+            for(const auto& child:expression.arguments)self(self,child);
+        };
+        stageSources(stageSources,formula.rhs);
         return result;
     }
 };
@@ -251,11 +304,30 @@ public:
         result.calls={{step.equation,step.target.symbol}};
         result.writes={step.target.symbol,"mu_t"};
         result.reads={"rho","U","k",second,"mu_t"};
+        result.stateUses={{"rho"},{"U"},{"k"},{second}};
+        result.stateEffects={{"k",false,true},{second,false,true},{"mu_t",true,true},{"turbulence.mu_t.step",true,false}};
+        result.capabilityRequirements={{"velocity.immersed","turbulence.boundary.immersed",
+            "requires matching immersed mean-flow wall, wall distance, turbulence boundary and velocity time-level treatment",
+            "momentum","rhoU","immersed.ghost"}};
+        if (second=="omega" && system.immersed
+            && system.immersed->wallClosure==FDM::ImmersedWallClosure::StationaryNoSlipAdiabatic) {
+            if (!system.state.contains("immersed.wallDistance")
+                || system.state.at("immersed.wallDistance").derivation!=StateDerivation::WallDistance)
+                throw std::runtime_error("SST immersed wall requires the original geometry wall-distance view.");
+            result.stateUses.push_back({"immersed.wallDistance"});
+            result.boundCapabilities={{"turbulence.boundary.immersed","momentum","rhoU","immersed.ghost"}};
+            result.capabilityRequirements.push_back({{},"meanflow.boundary.immersed.viscous",
+                "SST wall closure must bind the same stationary no-slip mean-flow wall",
+                "momentum","rhoU","immersed.ghost"});
+        }
         result.fusionKey=std::string(id())+"/"+model;
         result.fusionMembers={{"k","k"},{second,second}};
         result.temporalMethod="physical-step explicit in-place update";
         result.requirements={"single-fluid serial single patch","complete adjacent RAS pair",
             "boundary -> WriteOwned -> ReadHalo -> correction -> boundary -> WriteOwned -> ReadHalo"};
+        if (second=="omega" && system.immersed
+            && system.immersed->wallClosure==FDM::ImmersedWallClosure::StationaryNoSlipAdiabatic)
+            result.requirements.push_back("SST consumes boundary-ready step-entry velocity; mu_t frozen for this physical step");
         result.operations.push_back({OpIds::TurbulenceAdvance,"advance frozen RAS pair once",
             OperationStage::Prepare,{OperationCapability::SingleFluidTurbulenceTransport},
             {OriginKind::Generated,std::string(id())}});
@@ -281,6 +353,9 @@ public:
         result.equationMethod=std::string(id());
         result.backendOperation=OpIds::TurbulenceClosureRefresh;
         result.calls={{"mu_t","mu_t"}};result.writes={"mu_t"};result.reads={"rho","U"};
+        result.stateUses={{"rho"},{"U"}};result.stateEffects={{"mu_t",true,true},{"turbulence.mu_t.step",true,false}};
+        result.capabilityRequirements={{"velocity.immersed","turbulence.boundary.immersed",
+            "immersed strain-rate and wall/boundary closure treatment are unavailable"}};
         result.operations.push_back({OpIds::TurbulenceClosureRefresh,"refresh algebraic eddy viscosity",
             OperationStage::Prepare,{OperationCapability::SingleFluidTurbulenceClosure},{}});
         return result;
@@ -514,6 +589,7 @@ public:
         result.requirements=requirements_;
         result.workspaceRequires=needs_;
         result.workspaceProvides=provides_;
+        result.stepWorkspaces=provides_;
         result.sourceMathInputs=binding.inputs;
         result.reads=binding.inputs;
         collectSymbols(formula.lhs,result.reads);
@@ -592,6 +668,7 @@ public:
         result.target.viewOwner=StateViewOwner::NumericalProvider;
         result.temporalCapabilities={FDM::TimeRecipeId::ForwardEuler};
         result.workspaceRequires=needs_;result.workspaceProvides=provides_;
+        result.stepWorkspaces=provides_;
         const auto& formula=system.registry.at(call.equation);
         if (method_=="ConservativePressureMomentum") {
             if (binding.inputs!=std::vector<std::string>{"continuity","energy"})
@@ -741,8 +818,11 @@ ProviderRegistry builtinProviders() {
         {OpIds::PressureConvergenceEvaluate});
     static const TurbulenceTransportMethod turbulence;
     ProviderRegistry result;
+    addScalarMethod(result);
     addEulerianMethods(result);
     addImmersedMethods(result);
+    addLevelSetMethods(result);
+    addMultiphaseMethods(result);
     result.add(turbulence);
     static const TurbulenceClosureMethod turbulenceClosure;
     result.add(turbulenceClosure);

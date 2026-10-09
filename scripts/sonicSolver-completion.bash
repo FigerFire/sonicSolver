@@ -7,10 +7,16 @@ _sonicSolver_complete() {
     prev="${COMP_WORDS[COMP_CWORD-1]}"
     command="${COMP_WORDS[1]}"
 
-    local commands="run check explain doctor models why explain-model recipes init cleanCase postProcess -cleanResult -postProcessing"
-    local options="--help -h --initial-output --steps"
+    local commands="run check explain doctor models why explainModel recipes init cleanResult postProcessing initialOutput steps help"
+    local options="--initial-output --steps"
     local models="ghostCell peskinOriginal dfmExplicitSelfPropelled dfmFractionalStepSelfPropelled dfmFractionalStepPrescribed dfmImplicitPrescribed dfmImplicitSelfPropelled dfmAugmentedLagrangian velocityForcingFTS velocityForcingBP"
     local recipes="compressibleSingleFluid compressibleFixedImmersedBody compressibleMovingBody selfPropelledBody levelSetSurfaceTension"
+
+    COMPREPLY=()
+    if (( COMP_CWORD == 1 )); then
+        COMPREPLY=( $(compgen -W "$commands" -- "$cur") )
+        return 0
+    fi
 
     if [[ "$prev" == "--with" ]]; then
         COMPREPLY=( $(compgen -W "mpi" -- "$cur") )
@@ -25,10 +31,15 @@ _sonicSolver_complete() {
         models)
             COMPREPLY=( $(compgen -W "ibm --with" -- "$cur") )
             ;;
-        why|explain-model)
+        why|explainModel)
             COMPREPLY=( $(compgen -W "$models" -- "$cur") )
             ;;
-        recipes)
+        steps)
+            if (( COMP_CWORD > 2 )); then
+                COMPREPLY=( $(compgen -d -- "$cur") )
+            fi
+            ;;
+        help|recipes)
             COMPREPLY=()
             ;;
         init)
@@ -40,21 +51,30 @@ _sonicSolver_complete() {
                 COMPREPLY=( $(compgen -W "--recipe" -- "$cur") )
             fi
             ;;
-        run|check|explain|doctor|cleanCase|postProcess|-cleanResult|-postProcessing|--initial-output|--steps)
-            if [[ "$cur" == -* ]]; then
+        run)
+            if [[ "$prev" == "--steps" ]]; then
+                COMPREPLY=()
+            elif [[ "$cur" == -* ]]; then
                 COMPREPLY=( $(compgen -W "$options" -- "$cur") )
+            else
+                COMPREPLY=( $(compgen -d -- "$cur") )
+            fi
+            ;;
+        check|explain|doctor|cleanResult|postProcessing|initialOutput)
+            if [[ "$cur" == -* ]]; then
+                COMPREPLY=()
             else
                 COMPREPLY=( $(compgen -d -- "$cur") )
             fi
             ;;
         *)
             if [[ "$cur" == -* ]]; then
-                COMPREPLY=( $(compgen -W "$options" -- "$cur") )
+                COMPREPLY=()
             else
-                COMPREPLY=( $(compgen -W "$commands" -- "$cur") $(compgen -d -- "$cur") )
+                COMPREPLY=( $(compgen -d -- "$cur") )
             fi
             ;;
     esac
 }
 
-complete -F _sonicSolver_complete sonicSolver
+complete -o filenames -F _sonicSolver_complete sonicSolver

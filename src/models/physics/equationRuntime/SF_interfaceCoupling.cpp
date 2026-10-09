@@ -35,6 +35,18 @@ void registerInterfaceState(
                  model.primaryScalarRHS());
 }
 
+State::DistributedFieldView interfaceNormalView(Physics::InterfaceModels::Model& model,
+        Field& field,int patchId) {
+    auto* state=model.levelSetState();
+    if (!state) throw std::runtime_error("Interface normal view requires level-set storage.");
+    State::DistributedFieldView view;
+    view.name="levelSetNormal";view.geometry=&field;view.blockId=patchId;
+    view.components=3;view.haloDepth=field.NG();view.exchange=State::ExchangeKind::None;
+    view.read=[state](int cell,int component) {return state->normals().at((size_t)cell)[component];};
+    view.write=[state](int cell,int component,double value) {state->normals().at((size_t)cell)[component]=value;};
+    return view;
+}
+
 InterfaceEquationProvider::InterfaceEquationProvider(
         Physics::InterfaceModels::Model& model,
         State::VariableRegistry& variables,
@@ -42,7 +54,7 @@ InterfaceEquationProvider::InterfaceEquationProvider(
     : model_(model), variables_(variables), runtime_(runtime) {}
 
 void InterfaceEquationProvider::beginStep(Field& field, double dt) {
-    (void)field;
+    field_=&field;
     model_.beginTimeStep(dt);
 }
 
@@ -74,32 +86,44 @@ void InterfaceEquationProvider::preparePressureCorrection(Field& field) {
     prepareInterfaceState(field);
 }
 
-void InterfaceEquationProvider::commitStep(Field& field, double dt) {
-    if (auto* levelSet = model_.levelSetState()) {
-        const auto& config = model_.config();
-        if (config.levelSet.reinitializationSteps > 0) {
-            levelSet->reinitialize(
-                field, config.levelSet.reinitializationSteps,
-                config.levelSet.pseudoTimeStep,
-                config.levelSet.reinitializationOrder,
-                config.levelSet.wenoEpsilon,
-                config.levelSet.wenoPower,
-                config.levelSet.signSmoothingFactor,
-                [&]() {
-                    model_.applyBoundary(field);
-                    runtime_.finalize({"level-set reinitialization stage",
-                                       {Execution::writeOwned("phi")}});
-                    const int depth =
-                        Physics::Multiphase::HJWeno::requiredGhostLayers(
-                            config.levelSet.reinitializationOrder);
-                    runtime_.prepare({"level-set reinitialization stencil",
-                                      {Execution::readHalo("phi", depth)}});
-                    model_.applyBoundary(field);
-                });
-        }
-    }
-    model_.completeTimeStep(field, dt);
-    prepareInterfaceState(field);
+void InterfaceEquationProvider::validateAdvection(int order,double epsilon,double power,bool csf,bool ghostFluid,double sigma,double width) const {
+    const auto& selected=model_.config().levelSet;
+    if (selected.advectionOrder!=order || selected.wenoEpsilon!=epsilon || selected.wenoPower!=power
+        || (Physics::Multiphase::normalizeModelType(selected.surfaceTensionModel)=="csf")!=csf
+        || (Physics::Multiphase::normalizeModelType(selected.surfaceTensionModel)=="ghostfluid")!=ghostFluid
+        || selected.surfaceTension!=sigma || selected.interfaceThickness!=width)
+        throw std::runtime_error("Level-set bound kernel differs from frozen advection WHICH parameters.");
+}
+void InterfaceEquationProvider::beginReinitialization(int order,double pseudoDt,
+        double epsilon,double power,double signFactor) {
+    if (!field_ || !model_.levelSetState())
+        throw std::runtime_error("Level-set pseudo-time requires a bound active patch.");
+    pseudoOptions_={1,pseudoDt,order,epsilon,power,signFactor,[this]() {
+        model_.applyBoundary(*field_);
+        runtime_.finalize({"level-set reinitialization stage",{Execution::writeOwned("phi")}});
+        runtime_.prepare({"level-set reinitialization stencil",
+            {Execution::readHalo("phi",Physics::Multiphase::HJWeno::requiredGhostLayers(pseudoOptions_.order))}});
+        model_.applyBoundary(*field_);
+    }};
+    Physics::Multiphase::Reinit::begin(*field_,*model_.levelSetState(),pseudoOptions_,pseudoWorkspace_);
+}
+State::DistributedFieldView InterfaceEquationProvider::referenceView() {
+    if (!field_ || pseudoWorkspace_.reference.size()!=(size_t)field_->TotalSize())
+        throw std::runtime_error("Level-set reference view requires a frozen pseudo-time snapshot.");
+    State::DistributedFieldView view;view.name="levelSet.phi0";view.geometry=field_;
+    view.components=1;view.haloDepth=field_->NG();view.exchange=State::ExchangeKind::None;
+    view.read=[this](int cell,int) {return pseudoWorkspace_.reference.at((size_t)cell);};
+    view.write=[](int,int,double) {throw std::runtime_error("Frozen phi0 view is read-only during pseudo-time.");};
+    return view;
+}
+void InterfaceEquationProvider::reinitializeStage() {
+    if (!field_) throw std::runtime_error("Level-set pseudo stage before physical step begin.");
+    Physics::Multiphase::Reinit::stage(*field_,*model_.levelSetState(),pseudoOptions_,pseudoWorkspace_);
+}
+void InterfaceEquationProvider::publishGeometry(double dt) {
+    if (!field_) throw std::runtime_error("Level-set geometry publication before physical step begin.");
+    model_.completeTimeStep(*field_,dt);
+    prepareInterfaceState(*field_);
 }
 
 State::VariableRegistry* InterfaceEquationProvider::variables(Field&) {
@@ -190,8 +214,7 @@ void MultiPatchInterfaceEquationProvider::preparePressureCorrection(
     publishCurvature("multi-patch pressure-interface curvature stencil");
 }
 
-void MultiPatchInterfaceEquationProvider::commitStep(
-        const std::vector<Field*>&, double dt) {
+void MultiPatchInterfaceEquationProvider::publishGeometry(double dt) {
     for (int patchId : localPatchIds_) {
         models_.at((size_t)patchId)->applyBoundary(
             mesh_.block((size_t)patchId).field);
@@ -202,6 +225,26 @@ void MultiPatchInterfaceEquationProvider::commitStep(
         auto& model = *models_.at((size_t)patchId);
         model.completeTimeStep(field, dt);
     }
+}
+
+void MultiPatchInterfaceEquationProvider::validateAdvection(int order,double epsilon,double power,bool csf,bool ghostFluid,double sigma,double width) const {
+    for (int id:localPatchIds_) {
+        const auto& selected=models_.at((size_t)id)->config().levelSet;
+        if (selected.advectionOrder!=order || selected.wenoEpsilon!=epsilon || selected.wenoPower!=power
+        || (Physics::Multiphase::normalizeModelType(selected.surfaceTensionModel)=="csf")!=csf
+        || (Physics::Multiphase::normalizeModelType(selected.surfaceTensionModel)=="ghostfluid")!=ghostFluid
+        || selected.surfaceTension!=sigma || selected.interfaceThickness!=width)
+            throw std::runtime_error("Multi-patch level-set kernel differs from frozen WHICH parameters.");
+    }
+}
+State::DistributedFieldView MultiPatchInterfaceEquationProvider::referenceView() {
+    throw std::runtime_error("Unsupported: multi-patch level-set pseudo-time snapshot has no coupled scheduler.");
+}
+void MultiPatchInterfaceEquationProvider::beginReinitialization(int,double,double,double,double) {
+    throw std::runtime_error("Unsupported: multi-patch level-set requires a coupled pseudo-time scheduler.");
+}
+void MultiPatchInterfaceEquationProvider::reinitializeStage() {
+    throw std::runtime_error("Unsupported: multi-patch level-set pseudo-time stage.");
 }
 
 State::VariableRegistry* MultiPatchInterfaceEquationProvider::variables(

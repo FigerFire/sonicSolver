@@ -27,6 +27,18 @@ public:
         const Field& field, int i, int j, int k, int axis) const = 0;
 };
 
+/// Native interface operations own geometry and pseudo-time workspace, never a physical clock.
+class ILevelSetOperations {
+public:
+    virtual ~ILevelSetOperations()=default;
+    virtual void validateAdvection(int order,double epsilon,double power,bool csf,bool ghostFluid,double sigma,double width) const=0;
+    virtual void beginReinitialization(int order,double pseudoDt,double epsilon,
+                                     double power,double signFactor)=0;
+    virtual State::DistributedFieldView referenceView()=0;
+    virtual void reinitializeStage()=0;
+    virtual void publishGeometry(double physicalDt)=0;
+};
+
 /// @brief 附加方程系统与主 NS 方程的窄耦合生命周期。
 class IEquationSystemCoupling {
 public:

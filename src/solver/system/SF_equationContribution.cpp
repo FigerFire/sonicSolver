@@ -183,6 +183,11 @@ void SystemCompositionBuilder::applyContribution(SystemContribution contribution
     for (auto& record : contribution.records) {
         recordContribution(std::move(record.id),std::move(record.name));
     }
+    if (contribution.immersed) {
+        if (system_.immersed) throw std::runtime_error("Duplicate resolved immersed port selection.");
+        system_.immersed=contribution.immersed;
+    }
+    placement.insert(placement.end(),contribution.placement.begin(),contribution.placement.end());
     for (auto& node:contribution.execution) {
         node.origin=origin_; execution.push_back(std::move(node));
     }

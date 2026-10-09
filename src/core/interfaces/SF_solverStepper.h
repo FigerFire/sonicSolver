@@ -8,6 +8,7 @@
 #include "SF_executionRuntime.h"
 #include "SF_observer.h"
 #include "SF_transportModel.h"
+#include "SF_scalarEquationData.h"
 #include "core/state/SF_stateBundle.h"
 
 #include <limits>
@@ -23,11 +24,14 @@ struct SolverState {
 };
 
 struct SolverServices {
+    const ScalarEquationData* scalarEquation=nullptr;
+    std::vector<ScalarInstanceData> scalarInstances;
     IBoundaryPipeline* boundaryPipeline = nullptr;
     ImmersedCouplingPorts immersed;
     IExecutionRuntime* executionRuntime = nullptr;
     ITransportModel* transportModel = nullptr;
     IEquationSystemCoupling* equationSystem = nullptr;
+    ILevelSetOperations* levelSet = nullptr;
     ISolverObserver* observer = nullptr;
 };
 

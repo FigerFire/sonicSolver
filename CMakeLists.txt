@@ -101,6 +101,22 @@ if(BUILD_TESTS)
     target_link_libraries(test_fixedTimePressure PRIVATE SF_headers)
     add_test(NAME fixedTimePressureContract COMMAND test_fixedTimePressure)
 
+    add_executable(test_runtimeBinding test/test_runtimeBinding.cpp)
+    add_executable(test_standaloneScalar test/test_standaloneScalar.cpp)
+    target_link_libraries(test_standaloneScalar PRIVATE SF_application)
+    add_test(NAME standaloneScalarExecution COMMAND test_standaloneScalar)
+    add_executable(test_multiScalar test/test_multiScalar.cpp)
+    target_link_libraries(test_multiScalar PRIVATE SF_application)
+    add_test(NAME multiScalarExecution COMMAND test_multiScalar)
+    add_executable(test_coupledScalar test/test_coupledScalar.cpp)
+    target_link_libraries(test_coupledScalar PRIVATE SF_application)
+    add_test(NAME coupledScalarExecution COMMAND test_coupledScalar)
+    add_executable(test_fluidScalar test/test_fluidScalar.cpp)
+    target_link_libraries(test_fluidScalar PRIVATE SF_application)
+    add_test(NAME fluidScalarExecution COMMAND test_fluidScalar)
+    target_link_libraries(test_runtimeBinding PRIVATE SF_solverAlgorithm SF_solverSystem)
+    add_test(NAME runtimeBindingLifetime COMMAND test_runtimeBinding)
+
     add_executable(test_explicitStages test/test_explicitStages.cpp)
     target_link_libraries(test_explicitStages PRIVATE SF_solverAlgorithm SF_solverSystem)
     add_test(NAME explicitStageMathematics COMMAND test_explicitStages)
@@ -120,6 +136,12 @@ if(BUILD_TESTS)
     add_executable(test_eulerianTurbulence test/test_eulerianTurbulence.cpp)
     target_link_libraries(test_eulerianTurbulence PRIVATE SF_solverSystem SF_turbulence SF_run)
     add_test(NAME nativeEulerianTurbulenceContract COMMAND test_eulerianTurbulence)
+    add_executable(test_nativeLevelSet test/test_nativeLevelSet.cpp)
+    target_link_libraries(test_nativeLevelSet PRIVATE SF_solverSystem SF_physics SF_run)
+    add_test(NAME nativeLevelSetExecution COMMAND test_nativeLevelSet)
+    add_executable(test_nativeMultiphase test/test_nativeMultiphase.cpp)
+    target_link_libraries(test_nativeMultiphase PRIVATE SF_solverSystem SF_physics)
+    add_test(NAME nativeMultiphaseCapability COMMAND test_nativeMultiphase)
     add_executable(test_nativeTurbulence test/test_nativeTurbulence.cpp)
     target_link_libraries(test_nativeTurbulence PRIVATE SF_solverSystem SF_turbulence SF_run)
     add_test(NAME nativeTurbulenceExecution COMMAND test_nativeTurbulence)
@@ -162,6 +184,9 @@ if(BUILD_TESTS)
 
     find_package(Python3 QUIET COMPONENTS Interpreter)
     if(TARGET sonicSolver AND Python3_Interpreter_FOUND)
+        add_test(NAME nativeInterfaceNumericalIO
+            COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/check_native_interface.py
+                --solver $<TARGET_FILE:sonicSolver> --root ${CMAKE_SOURCE_DIR})
         foreach(model kOmegaSST kEpsilon)
             add_test(NAME eulerian${model}NumericalRegression
                 COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/check_eulerian_turbulence.py
@@ -232,6 +257,19 @@ if(BUILD_TESTS)
     endif()
 
 
+    add_executable(test_executionContract test/test_executionContract.cpp)
+    target_link_libraries(test_executionContract PRIVATE SF_solverSystem SF_physics)
+    add_test(NAME scopeAndStateContracts COMMAND test_executionContract)
+
+    add_executable(test_viscousImmersedWall test/test_viscousImmersedWall.cpp)
+    target_link_libraries(test_viscousImmersedWall PRIVATE SF_solverSystem SF_ibm SF_turbulence SF_run)
+    add_test(NAME viscousImmersedWall COMMAND test_viscousImmersedWall)
+    if(Python3_Interpreter_FOUND AND BUILD_CLI)
+        add_test(NAME viscousSSTNativeSchedule
+            COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/check_viscous_immersed_wall.py
+                --solver $<TARGET_FILE:sonicSolver> --root ${CMAKE_SOURCE_DIR})
+    endif()
+
     add_executable(test_nativeImmersed test/test_nativeImmersed.cpp)
     target_link_libraries(test_nativeImmersed PRIVATE SF_solverSystem SF_ibm SF_turbulence SF_run)
     add_test(NAME nativeImmersedContributions COMMAND test_nativeImmersed)
@@ -264,6 +302,16 @@ if(BUILD_TESTS)
     add_executable(test_nodalQuadrature test/test_nodalQuadrature.cpp)
     target_link_libraries(test_nodalQuadrature PRIVATE SF_field)
     add_test(NAME nodalQuadrature COMMAND test_nodalQuadrature)
+    add_executable(test_surfaceMoments test/test_surfaceMoments.cpp)
+    target_link_libraries(test_surfaceMoments PRIVATE SF_ibm)
+    add_test(NAME surfaceFirstMoments COMMAND test_surfaceMoments)
+    if(TARGET SF_mpi AND MPI_CXX_FOUND)
+        add_executable(test_distributedSurfaceMoments test/test_distributedSurfaceMoments.cpp)
+        target_link_libraries(test_distributedSurfaceMoments PRIVATE SF_ibm SF_mpi SF_executionRuntime MPI::MPI_CXX)
+        add_test(NAME distributedSurfaceFirstMoments2 COMMAND mpirun -np 2 $<TARGET_FILE:test_distributedSurfaceMoments>)
+        add_test(NAME distributedSurfaceFirstMoments4 COMMAND mpirun -np 4 $<TARGET_FILE:test_distributedSurfaceMoments>)
+    endif()
+
     add_executable(test_physicalILWPartition test/test_physicalILWPartition.cpp)
     target_link_libraries(test_physicalILWPartition PRIVATE SF_boundary)
     add_test(NAME physicalILWPartition COMMAND test_physicalILWPartition)
@@ -300,6 +348,7 @@ if(BUILD_TESTS)
             COMMAND mpirun -np 2 $<TARGET_FILE:test_distributedPressure> --fail-on-one-rank)
         set_tests_properties(distributedPressureFailStop PROPERTIES WILL_FAIL TRUE TIMEOUT 30)
         if(TARGET sonicSolver AND Python3_Interpreter_FOUND)
+
             add_test(NAME distributedPressureRegression
                 COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/check_distributed_pressure.py
                     --solver $<TARGET_FILE:sonicSolver>

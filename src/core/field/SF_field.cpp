@@ -48,6 +48,17 @@ namespace SF {
             throw std::runtime_error(
                 "Field::setup component count differs from bound FluidStateModel.");
         }
+        setupStorage(nx,ny,nz,ghost,nVar);
+    }
+
+    void Field::setupGeometry(int nx,int ny,int nz,int ghost) {
+        if (stateModel_) throw std::runtime_error("Geometry-only Field cannot bind a fluid state model.");
+        setupStorage(nx,ny,nz,ghost,0);
+    }
+
+    void Field::setupStorage(int nx,int ny,int nz,int ghost,int nVar) {
+        if (nx<1 || ny<1 || nz<1 || ghost<0)
+            throw std::runtime_error("Invalid Field geometry dimensions.");
         nVar_ = nVar;
         this->ng = ghost;
         this->mx = nx + 2 * ghost;

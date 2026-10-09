@@ -1,0 +1,22 @@
+{
+  "provenance": "Isolated old kernel reference: only missing legacy HOW guard bypassed in a temporary object; not a runnable old production baseline. See local migration report.",
+  "executable_sha256": "6dcdac8701bfc27df292bdaf1be9680ece829136f91a65c99082fbcdd313e61d",
+  "time_dt": [
+    [
+      "4.008919e-04",
+      "4.008919e-04"
+    ],
+    [
+      "7.633552e-04",
+      "3.624633e-04"
+    ],
+    [
+      "1.000000e-03",
+      "2.366448e-04"
+    ]
+  ],
+  "vts_sha256": {
+    "InterfaceSod_t0.001.vts": "1d7d2f50cd7fef0a8867880b96204168fd2dd96620558e12d5bcb4464bda62d7",
+    "InterfaceSod_t0.vts": "c3a4b2f833a7bc2b189140d6e80814a5291f15f8d224f0399471e40269413a1a"
+  }
+}

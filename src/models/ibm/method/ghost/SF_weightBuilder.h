@@ -12,6 +12,7 @@
 #include "SF_weightTypes.h"
 #include "SF_field.h"
 #include "SF_ilwClosure.h"
+#include "SF_viscousWall.h"
 #include "SF_ibmTopology.h"
 #include "geoProcessing/SF_STLGeometry.h"
 #include <algorithm>
@@ -70,6 +71,7 @@ public:
 
         const auto totalStart = Clock::now();
         weights_.clear();
+        viscousPlans_.clear();
         counts_ = {};
         timing_ = {};
         ilwStorage_.setup((size_t)field.TotalSize());
@@ -92,8 +94,15 @@ public:
                     SDFResult sdf = signedDistanceForActiveGeometry(
                         field, geometry, i, j, k);
                     sdfCache[(size_t)field.getIdx(i, j, k)] = sdf;
-                    inside[(size_t)field.getIdx(i, j, k)] = sdf.inside ? 1 : 0;
+                    // An exact surface node is a boundary value, not a positive-distance
+                    // SST transport unknown. Preserve the old slip classification.
+                    const double coordinateScale=std::max({1.0,std::abs(field.X(i,j,k)),std::abs(field.Y(i,j,k)),std::abs(field.Z(i,j,k))});
+                    const bool onWall=config_.wallClosure==FDM::ImmersedWallClosure::StationaryNoSlipAdiabatic
+                        && sdf.distance<=32*std::numeric_limits<double>::epsilon()*coordinateScale;
+                    inside[(size_t)field.getIdx(i, j, k)] = sdf.inside || onWall ? 1 : 0;
                     geometry_.signedDistance(i, j, k) = sdf.signedDistance;
+                    if (config_.wallClosure==FDM::ImmersedWallClosure::StationaryNoSlipAdiabatic)
+                        field.setWallDistance(i,j,k,std::abs(sdf.signedDistance));
                 }
             }
         }
@@ -180,6 +189,11 @@ public:
                     w.wallNormal = sdf.normal;
                     w.wallDistance = sdf.distance;
                     w.imagePoint = mirrorPoint(sdf);
+                    if (config_.wallClosure==FDM::ImmersedWallClosure::StationaryNoSlipAdiabatic) {
+                        viscousPlans_.push_back(buildViscousWallPlan(field,ilwStorage_,geometry_,i,j,k));
+                        weights_.push_back(w);
+                        continue;
+                    }
                     w.donors = interpolationWeights(field, w.imagePoint, i, j, k);
                     if (w.donors.empty()) {
                         DonorWeight donor;
@@ -212,6 +226,7 @@ public:
 
         const auto totalStart = Clock::now();
         weights_.clear();
+        viscousPlans_.clear();
         counts_ = {};
         timing_ = {};
         ilwStorage_.setup((size_t)field.TotalSize());
@@ -320,9 +335,11 @@ public:
 
     /// @brief 返回本 patch 的 IBM 拓扑几何（ghost 层、壁面/镜像点、法向）。
     const IBMGeometry& geometry() const { return geometry_; }
+    const std::vector<ViscousWallPlan>& viscousPlans() const { return viscousPlans_; }
 
 private:
     std::vector<GhostCellWeight> weights_;
+    std::vector<ViscousWallPlan> viscousPlans_;
     ClassificationCounts counts_;
     SF::IBM::GhostILW::PreprocessStats ilwStats_;
     SF::IBM::GhostILW::Storage ilwStorage_;

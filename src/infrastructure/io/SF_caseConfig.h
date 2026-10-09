@@ -5,6 +5,7 @@
 
 #include "core/config/SF_config.h"
 #include "core/config/SF_equationComposition.h"
+#include "core/system/SF_solveProgram.h"
 #include "core/config/SF_runControl.h"
 #include "SF_multiphase.h"
 #include "SF_resultWriter.h"
@@ -54,6 +55,8 @@ struct CaseConfig {
     /// solver config remains a compatibility input until all runtimes consume
     /// the compiled system directly.
     EquationCompositionConfig composition;
+    std::optional<System::ExecutionProgram> authoredExecution;
+    std::vector<System::NumericalBinding> authoredNumerics;
     Physics::Multiphase::MultiPhaseConfig multiPhase;
     bool multiPhaseEnabled = false;
 

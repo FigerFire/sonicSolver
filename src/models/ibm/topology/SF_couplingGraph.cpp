@@ -4,10 +4,12 @@
 #include "topology/SF_couplingGraph.h"
 
 #include "immersed/SF_regularizedKernel.h"
+#include "immersed/SF_linearReproducing.h"
 
 #include "core/mesh/SF_nodalQuadrature.h"
 
 #include <cmath>
+#include <algorithm>
 #include <stdexcept>
 #include <unordered_set>
 
@@ -38,11 +40,17 @@ std::int64_t canonicalDof(const Field& field, int i, int j, int k) {
 void CouplingGraph::build(
         const Field& field,
         const std::vector<SurfaceMarker>& markers,
-        double supportRadius) {
+        double supportRadius, FDM::IBMSurfaceNormalization normalization) {
     if (!std::isfinite(supportRadius) || supportRadius<=0.0) {
         throw std::runtime_error(
             "IBM coupling graph requires a positive supportRadius.");
     }
+    (void)FDM::toString(normalization);
+    normalization_=normalization;
+    const bool linear=normalization_==FDM::IBMSurfaceNormalization::LinearReproducing;
+    rawMoments_.assign(linear?markers.size()*16u:0u,0.0);
+    rawBasis_.clear();
+    if (linear) rawBasis_.resize(markers.size());
     rawRows_.clear();
     rawRows_.resize(markers.size());
     rows_.clear();
@@ -82,6 +90,13 @@ void CouplingGraph::build(
                     edge.globalEulerianDofId=identity;
                     edge.dualVolume=volume;
                     row.push_back(edge);
+                    if (linear) {
+                        const Vector3 offset=(position-marker.position)*(1.0/supportRadius);
+                        const std::array<double,4> basis={1.,offset.x,offset.y,offset.z};
+                        rawBasis_[markerIndex].push_back(basis);
+                        for (int a=0;a<4;++a) for (int b=0;b<4;++b)
+                            rawMoments_[16u*markerIndex+4*a+b]+=raw*basis[a]*basis[b];
+                    }
                     normalization+=raw;
                 }
             }
@@ -97,17 +112,40 @@ void CouplingGraph::build(
 }
 
 void CouplingGraph::normalize(
-        const std::vector<double>& globalNormalizations) {
+        const std::vector<double>& globalNormalizations,
+        const std::vector<double>& globalMoments) {
     if (globalNormalizations.size()!=rawRows_.size()) {
         throw std::runtime_error(
             "IBM coupling graph normalization size differs from marker count.");
     }
+    const bool linear=normalization_==FDM::IBMSurfaceNormalization::LinearReproducing;
+    if (globalMoments.size()!=(linear?rawRows_.size()*16u:0u))
+        throw std::runtime_error("IBM transfer moment matrix count differs from selected recipe.");
     rows_=rawRows_;
     for (std::size_t marker=0;marker<rows_.size();++marker) {
         const double normalization=globalNormalizations[marker];
         if (!std::isfinite(normalization)||normalization<=0.0) {
             throw std::runtime_error(
                 "IBM coupling graph received a non-positive global marker normalization.");
+        }
+        if (linear) {
+            std::array<double,16> matrix;
+            std::copy_n(globalMoments.begin()+16u*marker,16,matrix.begin());
+            if (std::abs(matrix[0]-normalization)>64.*std::numeric_limits<double>::epsilon()*normalization)
+                throw std::runtime_error("IBM raw moment mass and normalization SUM disagree.");
+            try {
+                const auto coefficients=FDM::Immersed::linearMomentCoefficients(matrix);
+                for (std::size_t edge=0;edge<rows_[marker].size();++edge) {
+                    double value=0.;
+                    for (int a=0;a<4;++a) value+=rawBasis_[marker][edge][a]*coefficients[a];
+                    rows_[marker][edge].value*=value;
+                    if (!std::isfinite(rows_[marker][edge].value))
+                        throw std::runtime_error("non-finite corrected weight");
+                }
+            } catch (const std::exception& error) {
+                throw std::runtime_error("IBM linearReproducing marker "+std::to_string(marker)+": "+error.what());
+            }
+            continue;
         }
         double localSum=0.0;
         for(auto& edge:rows_[marker]) {

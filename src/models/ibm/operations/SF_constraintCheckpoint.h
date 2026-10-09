@@ -17,7 +17,11 @@ inline bool active(double time) {
     if(!directory) return false;
     const double end=limit?std::stod(limit):.001;
     if(!std::isfinite(end)||end<0) throw std::runtime_error("Invalid SF_IBM_CHECKPOINT_TIME.");
-    return time<=end;
+    const char* startValue=std::getenv("SF_IBM_CHECKPOINT_START_TIME");
+    const double start=startValue?std::stod(startValue):0.;
+    if (!std::isfinite(start) || start<0. || start>end)
+        throw std::runtime_error("Invalid SF_IBM_CHECKPOINT_START_TIME.");
+    return time>=start && time<=end;
 }
 inline std::ofstream output(const char* label,double time) {
     static std::size_t sequence=0;
@@ -65,13 +69,13 @@ inline void diagonal(const char* label,const FDM::ImmersedSurfaceSystem& surface
     std::vector<Vector3> columns;for(double value:values)columns.push_back({value,0.,0.});
     markers(label,surface,columns,time);
 }
-inline void result(const FDM::ImmersedConstraintResult& value,double time) {
+inline void result(const FDM::ImmersedConstraintResult& value,double time,double dt) {
     if(!active(time))return;
     auto out=output("constraint-result",time);
-    out<<"cells,residual,stationarity,forceX,forceY,forceZ,torqueX,torqueY,torqueZ,power\n"
+    out<<"cells,residual,stationarity,forceX,forceY,forceZ,torqueX,torqueY,torqueZ,power,dt\n"
        <<value.constrainedCells<<','<<value.maximumVelocityResidual<<','<<value.maximumStationarityResidual<<','
        <<value.forceOnBody.x<<','<<value.forceOnBody.y<<','<<value.forceOnBody.z<<','
-       <<value.torqueOnBody.x<<','<<value.torqueOnBody.y<<','<<value.torqueOnBody.z<<','<<value.fluidMechanicalPower<<'\n';
+       <<value.torqueOnBody.x<<','<<value.torqueOnBody.y<<','<<value.torqueOnBody.z<<','<<value.fluidMechanicalPower<<','<<dt<<'\n';
 }
 inline void force(const char* label,const Field& field,const std::vector<Vector3>& values,double time) {
     if(!active(time))return;

@@ -31,6 +31,7 @@ struct IBMRuntimeConfig {
     bool enabled = false;
     FDM::IBMMethod method = FDM::IBMMethod::Ghost;
     int requiredGhostLayers = 3;
+    FDM::ImmersedWallClosure wallClosure = FDM::ImmersedWallClosure::EulerSlip;
     bool ilwEnabled = false;
     int ilwAccuracyOrder = 0;
     double gamma = 1.4;

@@ -25,6 +25,7 @@ ImmersedAlgorithmDescriptor variational(const FDM::IBMForcingConfig& config) {
     result.support=config.constraintSupport;result.representation=config.representation;
     result.enforcement=config.enforcement;result.solid=config.solidModel;
     result.rigidMotionMode=config.rigidMotionMode;
+    result.surfaceNormalization=config.surfaceNormalization;
     result.monolithic=config.enforcement==FDM::IBMEnforcement::MonolithicKKT;
     const bool lagged=config.enforcement==FDM::IBMEnforcement::ExplicitIBM;
     const bool penalty=config.enforcement==FDM::IBMEnforcement::BrinkmanPenalty;
@@ -47,6 +48,9 @@ ImmersedAlgorithmDescriptor variational(const FDM::IBMForcingConfig& config) {
     return result;
 }
 void validate(const ImmersedAlgorithmDescriptor& descriptor) {
+    if (descriptor.wallClosure!=FDM::ImmersedWallClosure::EulerSlip
+        && descriptor.enforcement!=FDM::IBMEnforcement::GhostCell)
+        throw std::runtime_error("Viscous wall closure requires a Ghost boundary implementation, not a forcing selection.");
     if (descriptor.id.empty() || descriptor.referenceName.empty())
         throw std::runtime_error("IBM implementation options require id and referenceName.");
     if (descriptor.monolithic && (!descriptor.variational.fluidKineticIncrement

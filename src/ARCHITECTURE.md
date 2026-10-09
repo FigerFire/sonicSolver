@@ -1,4 +1,4 @@
-# SonicSolver：WHAT / HOW / STATE / WHICH / Compiler
+# SonicSolver：双数学入口、统一方程驱动的 CFD 求解器架构
 
 SonicSolver 组合可解释、可执行的数值系统。主未知量、数学方程、模块贡献、耦合、时间方法、空间离散和运行时并行语义保持独立；case 不选择一个预打包的 solver family。
 
@@ -26,20 +26,80 @@ SonicSolver 组合可解释、可执行的数值系统。主未知量、数学�
 >
 > Solver validates whether a configuration is executable, not whether the user's numerical choice is wise.
 
+## 数学入口与统一执行主干（目标设计，2026-10-08）
+
+正式目标是 **双数学入口、统一方程驱动**：用户可直接贡献方程，也可贡献泛函、耗散关系和约束，由变分前端生成方程。两种输入汇入同一 WHAT，并组合独立的 STATE / HOW / WHICH。这里的“变分驱动”指数学生成，不引入第二个全局求解器、时间循环或 physical-state authority。
+
 ```text
-MODULES
-   ├── WHAT  ── EquationRegistry ─────┐
-   ├── STATE ── StateRegistry ───────┤
-   ├── HOW   ── ExecutionProgram ────┼── Compiler
-   └── WHICH ── NumericalSelection ──┘       │
-                                        Storage Binding
-                                             │
-                                      CompiledSolvePlan
-                                             │
-                                         PlanExecutor
-                                             │
-                                           Kernel
+Mathematical Input / Model Contributions
+    ├─ Equation Input: PDE / source / constraint ─────────────┐
+    └─ Variational Input: Action / FreeEnergy /              │
+                          Dissipation / Constraint          │
+                  ↓                                         │
+          Variational Compiler                              │
+          declared rules + assumptions + boundary terms     │
+                  ↓                                         │
+          equations / constraints / closure relations ───────┤
+                                                            ↓
+                                          WHAT / EquationRegistry
+                                                            +
+                                               STATE / HOW / WHICH
+                                                            ↓
+                                          Existing System Compiler
+                                                            ↓
+                                  Compiled Program (equations, numerics,
+                                                    solve, runtime)
+                                                            ↓
+                                  Runtime STATE realization + binding
+                                                            ↓
+                                              OpRegistry / PlanExecutor
+                                                            ↓
+                                            numerical kernels / backend
 ```
+
+图中的 Variational Input / Compiler 是 **Planned**，当前没有承诺通用泛函解析或符号变分能力。Equation Input 已有 C++ contribution；任意 YAML PDE 输入仍受实现限制。runtime binding 主干已完成职责拆分，见本文末尾及 [2026-10-08 报告](../docs/runtime-binding-migration-report.md)。后续阶段、门槛和验收统一维护在 [双数学入口实施路线](../docs/dual-mathematical-input-roadmap.md)。
+
+六个职责层保持独立：Composition → Semantic IR（WHAT/STATE/HOW/WHICH）→ Compiler → Compiled IR → Runtime Binding → Execution。变分前端位于 Composition 到统一方程语义的入口；现有 compiler 负责能力检查、绑定与 lowering。Provider 是 WHICH 选择到具体实现的桥梁，不是第五个数学 authority；具体 binder 理解自己的数学和 workspace，通用 PlanExecutor 只执行已编译控制流。
+
+### 变分数学契约（规划）
+
+| 对象 | 数学职责 | 必须声明的条件 |
+|---|---|---|
+| Action | 由驻定作用量生成动力学关系 | 变量、允许变分、时空域、端点与边界条件 |
+| FreeEnergy | 生成化学势、界面力或其他能量导数 | 积分测度、梯度依赖、边界项、变量约束 |
+| Dissipation | 通过选定耗散原理生成耗散关系 | 速率/通量变量、配对、符号和原理；不能一律套用 δS=0 |
+| Constraint | 生成约束及乘子耦合关系 | primal/multiplier、作用域、配对、约束方程和可解性要求 |
+
+Constraint 复用已有 WHAT/STATE 语义；泛函引用统一符号身份，不创建独立变量注册表。前端生成的数学通过现有 SystemContribution / EquationRegistry 接入；需要新增符号时贡献 STATE metadata，不分配数组、不替用户选择主未知量、时间 recipe 或 coupling。模型可以同时提供直接方程、泛函、约束和可选数值实现；WHICH 仍显式选择实现。直接与生成贡献必须检查重复 equation/term/constraint，禁止双重施加同一物理作用。
+
+首版仅实现明确列举的解析变分规则，不要求通用符号微分。每条生成方程保留 functional/rule/assumption/boundary provenance；缺少推导规则、边界条件或下游 numerical provider 时明确失败，不以占位公式或隐式替代宣称支持。explain 应能从来源泛函追溯到生成 WHAT，再沿已有六级解释到数值与并行执行。
+
+连续泛函推导后离散，与先构造离散泛函再求导，是两种显式路径；不假定二者交换或具有相同守恒性质。连续弱式必须保留分部积分边界项；当前 FDM provider 不支持的弱式不能直接当作可执行强式。离散规则必须记录 measure、mass/weight、adjoint 和边界处理。
+
+### KKT 的归属与首个离散示例（规划）
+
+对有限维速度 u，选择对称正定质量/度量矩阵 M、冻结 predictor u*、线性约束 D u=0 与 J u=Ub，定义：
+
+```text
+L(u,p,lambda) = 1/2 (u-u*)^T M (u-u*) + p^T D u + lambda^T (J u-Ub)
+
+stationarity:
+[ M  D^T  J^T ] [ u      ]   [ M u* ]
+[ D   0    0  ] [ p      ] = [ 0    ]
+[ J   0    0  ] [ lambda ]   [ Ub   ]
+```
+
+这是指定离散坐标配对下的约束投影，不是 Hamilton 时间作用量的直接表达，也不是所有 CFD pressure/IBM 的通用矩阵。加权场空间使用相应 adjoint 或已吸收权重的代数矩阵；不能把现有 IBM spreading 无条件替换为裸转置。物理压力与此乘子的符号、单位和 dt 缩放必须由具体推导给出。压力 gauge、约束兼容性/冗余、边界项和 nullspace 必须显式处理；生产隐式动量块也不必等于此示例的 M。
+
+WHAT 持有 momentum/continuity/no-slip 数学，STATE 持有所选 U/p/lambda，HOW 描述 BlockSolve/迭代，WHICH 选择 KKT block 实现、Schur 或增广拉格朗日策略及线性后端。变分前端不强制整体 KKT；SIMPLE/PISO/PIMPLE、显式 forcing、fractional projection 和 Ghost 保留各自适用的数学与执行方法。当前 production KKT 缺口不会因为新增前端而自动消失。
+
+### 模块扩展与代码边界（规划）
+
+Euler 流体作用量、黏性耗散、固体弹性能、界面自由能和相场可各自提供推导规则；热传输需明确热力学变量及能量/熵平衡。VOF 守恒输运、level-set 重初始化和经验湍流闭合仍可直接贡献方程与数值方法，不要求全部变分化；压力也并非在所有 formulation 中都是不可压缩乘子。
+
+建议未来在 `src/solver/variational/` 建立独立数学前端，按实际需要实现 `SF_functional`、`SF_derivative`、`SF_compiler` 和规则注册。模型特定泛函由 models 贡献；纯数学运算可复用 methods。Constraint 使用现有数学类型，不另建不兼容系统。Registry 仅在需要多条可扩展规则时承载规则查找，不能成为第二份 STATE/WHAT authority；不预建空目录、通用 Manager 或额外大体系。
+
+前端依赖 core 数学 IR 和无 Field 的数学规则，不能依赖 runtime binding、MPI/HYPRE、mesh 实例或具体求解器生命周期。数值 workspace 仍属于运行时实现，physical state、clock、phase registry 与 canonical COPY / contribution SUM 语义保持唯一。
 
 ## Authority ownership
 
@@ -327,7 +387,7 @@ TurbulenceTransport 保留当前一次/物理步的显式原位更新，不采�
 
 DNS 不贡献输运方程；Smagorinsky 仅贡献 mu_t 代数闭合及 TurbulenceClosure refresh，保持原缓存刷新位置，不产生 k/omega/epsilon 输运。全局 term recipes 只由声明 usesSpatialRecipes 的 provider 消费；RAS 的固定局部 Central2 不会误触发 flow diffusion recipe 默认选择。
 
-RAS 当前执行能力仅 single-fluid、serial、single patch、density explicit flow；pressure、MPI/multi-patch、IBM、Eulerian 和 implicit RAS 未放行。旧 single-fluid pressure service guard 保留；Eulerian 的 EeTurbulenceSolve 已是独立原生 provider callback；Eulerian core scheduler 与 assembly authority 均已原生化，AssemblyPlan 已删除。详细审计、诊断对照的基线来源及 18 项自审见 [single-fluid turbulence migration report](../docs/single-fluid-turbulence-migration.md)。
+RAS 当前执行能力仅 single-fluid、serial、single patch、density explicit flow；pressure、MPI/multi-patch、Eulerian 和 implicit RAS 未放行；IBM 仅开放后述显式静止黏性 Ghost/SST 组合。旧 single-fluid pressure service guard 保留；Eulerian 的 EeTurbulenceSolve 已是独立原生 provider callback；Eulerian core scheduler 与 assembly authority 均已原生化，AssemblyPlan 已删除。详细审计、诊断对照的基线来源及 18 项自审见 [single-fluid turbulence migration report](../docs/single-fluid-turbulence-migration.md)。
 
 ## State, workspace and parallel invariants
 
@@ -379,6 +439,59 @@ source HOW outer 明确包含 closure group → continuity → momentum → pres
 
 数值基线来源、独立矩阵 harness、输入/输出 hashes、phase subset/reorder、多层迭代与旧内核对照见 [Eulerian turbulence native migration](../docs/eulerian-turbulence-native-migration.md)。原 production turbulence 入口无法运行，报告不把恢复接线后的诊断执行冒称历史 production baseline。全局 compatibility DSL 仍为 level-set/mixture 等 consumer 保留；IBM 的 native contribution 接线见下一节。
 
+## 同步多实例与多 provider 时间组（2026-10-09）
+
+独立方程可以共同参与一个 compiled temporal group。Equation occurrence、numerical provider type、融合 numerical owner、temporal participant 是不同身份：两个 scalar 共用 provider 类型仍有独立操作和 workspace；NS 的 continuity/momentum/energy 仍合成一个 `flow.conservative` participant。`fusionKey` 只描述原数值融合，不承担跨 provider 的时间组合。
+
+`CompiledExecutionProgram::temporalParticipants` 冻结 identity、calls、targets、provider 和阶段操作；scalar 的 OpId 由操作类型与 occurrence 长度/内容组成，OpRegistry 的重复绑定检查不取消。WHAT/STATE/HOW/WHICH 仍是输入 authority：HOW 决定成员顺序，WHICH 必须提供 split-phase temporal capability。参与者集合不自动推断物理算法、不重排 RHS，也不把 Current/OldTime 静默替换为 Stage。
+
+```text
+Application::Execution::executeEquations
+  -> existing Time::Driver / SingleFluidStepper
+  -> realizeState
+  -> bindSingleFluidOperations
+       FlowOperations::temporalParticipant (only when required)
+       scalarParticipants (one numerical owner per scalar occurrence)
+       FlowOperations::bindStageSources (after all Stage views exist)
+       Time::bindStageGroup (bind callbacks in compiled participant order)
+  -> unchanged Run::PlanExecutor / OpRegistry
+```
+
+共同计划只有一个 StageLoop 和一次 clock commit：
+
+```text
+participant preparation
+one dt = min(driver limit, config maxDeltaT, participant proposals)
+all old-time snapshots
+StageLoop(recipe.stageCount):
+  Open(epoch/index/time)
+  all prepareStage (including each provider's boundary readiness)
+  Ready: Stage reads available
+  all evaluateRHS (no Stage writes)
+  RhsReady: Stage reads closed, advance available
+  all advanceStage (existing recipe mathematics)
+  Close
+validate all final publications
+publish all
+time.commit
+```
+
+`validateTemporalPlan()` 在 capability report 和 runtime binding 校验冻结 leaf/provider 顺序、stageCount、全部成员阶段及唯一 Commit；缺失、错位、重复 leaf 不是 Runnable。runtime epoch 检查 snapshot、index、recipe、RHS readiness、advance 和 publication。StageReader 在绑定时解析 storage/component view，不在 cell loop 查找字符串；只在共同 Reading phase 可读。复用 buffer 每次读表示当前 epoch，不是持久旧 stage snapshot。
+
+scalar physical arrays 由 application/STATE 持有，ScalarOperations 只持有 old/stage/RHS/increments。新非拥有式 scalarInstances 表按 occurrence 绑定 immutable BC/source data，并独立检查 target；weak_ptr 用于检测数据已过期。旧单 scalar raw pointer 仅兼容一个 occurrence，仍要求调用者保证生命周期。binding 表和 reader 不复制别的 provider 的 physical arrays 或 workspace。
+
+flow 保留原 `Time::Explicit` workspace、stage 系数、RHS 和 Q publication。`evaluateRHS()` 与 `executeStage()` 拆出可选预装配屏障，但旧 standalone fused-stage 路径仍有效。混合组中 Q 是原实现发布的 time-qualified Stage storage；所有 RHS 完成后才允许 advance。未新增永久 Q，未承诺任意运行异常的全状态事务回滚。scalar 最终 publication 前先校验所有成员，已能确定的 binding/plan/数据生命周期错误不提交半份 scalar 或 clock。
+
+现已实现的 WHICH：
+
+- `ScalarDiffusionCentral2`：多个均匀正交网格 scalar；一个常系数 diffusion，加 known source/有限常量/有限常系数乘共同 Stage scalar。真实双向耦合允许代数读环，因为它们都读取冻结的同一 Stage，不能被当作顺序更新。
+- `ScalarTransportUpwindCentral2`：`ddt(rhoC)+div(rhoU,rhoC/rho)=diffusion(rho*D,rhoC/rho)+source(Sc)`；读取 Stage rho/rhoU/rhoC，真实一阶 upwind convection、面平均 rho*D diffusion。此选择使用中心面 mass flux，未借用高阶 NS canonical mass flux；不能宣称任意可变密度下浓度恒定性与高阶 flow 严格兼容。
+- 显式 `linearScalarForce` / `linearScalarWork` source：compiled Stage source kernel 经稳定 reader 进入原 ConservativeRHS；动量力密度为 kappa*rhoC，能量功使用同一 Stage 速度。不是 application 的 step-end 修正。
+
+共同组当前支持 Euler/classicalRK4、serial single patch、无额外 auxiliary stage treatment 的原 conservative NS。纯 scalar 不安装 NS、Q 或 EOS。MPI/multi-patch、scalar implicit/SSPRK3、任意 nonlinear coupling、一般 AST/YAML、turbulence/IBM/interface 的新共同 stage treatment 均 Unsupported。已有其他模型自身原执行路径不改为此组，也不失去原有能力。新 provider 需提供真实阶段实现及 binder，不以空 callback 宣称支持。
+
+通用 PlanExecutor/Time::Driver 不认识 scalar、feedback 或 flow family；compiler 与 execution 不新增模型专属 runner、第二套 tableau/clock/physical registry。kernel 不调用 MPI，原 canonical COPY、GlobalDof SUM 及 FluxField/Residual solver ownership 不变。支持范围、数值参考、输出与冻结结果见 [本轮唯一迁移报告](../docs/multi-equation-stage-migration-report.md)。
+
 ## Current implementation and verification status
 
 实现状态与数值验证范围分别记录；已有 executable path 或结构测试不能代替该路径的 CFD baseline。
@@ -396,17 +509,9 @@ source HOW outer 明确包含 closure group → continuity → momentum → pres
 
 ## Next migration sequence
 
-上一阶段 native pressure CFD 验证与 single-fluid conservative pressure authority 迁移已完成。完整 13 项报告、19 项自审、数值与结构证据见 [native pressure migration report](../docs/native-pressure-migration.md)。MPI 同配置前后输出完全一致；串行与 MPI 的比较遵循既有 tolerance，不称为 bitwise identical。既有案例的 nonOrthogonalCorrectors=0，覆盖单 pass；更多 pass 仍 Unsupported。
+截至 2026-10-08，四契约、跨模块能力/状态版本检查、静止黏性 Ghost/SST 受限组合和 runtime binding 职责迁移已有实现；这些不等于完整 SST、所有 IBM、多相或分布式组合已通过物理验收。历史数值证据继续由各迁移报告保存，不改写为新能力证明。
 
-本轮显式 solution STATE 阶段已完成：原生 Sod、常密度 PISO、fixed-time SIMPLE/PIMPLE 与保守 PISO 每侧 20 次 run 调用（含 mesh 生成），32 个 VTS 比较项全部 hash 一致；字段统计、clock/dt、diagnostics、operation/stage context 序列一致。22 个契约/输入/并行测试、11 个输入组合、完整 build 和架构检查通过。详细 13 项报告及 12 项自审见 [explicit solution STATE migration](../docs/explicit-solution-state-migration.md)。本轮没有新增 ResolvedSimulationSystem 聚合字段；结构计数守卫同步到冻结源码中已存在的 12 个字段，NumericalSelection 是独立 source WHICH，未放宽 CFD 容差。
-
-后续顺序仅作为路线，不在本阶段执行：
-
-Eulerian turbulence 原生迁移已完成，历史完整 build、host 38/38 CTest 见 [中文迁移报告](../docs/eulerian-turbulence-native-migration.md)。IBM native contribution 的 authority 迁移见下节。
-
-1. 补齐 IBM 组合能力：RAS stage/壁距/边界、pressure predictor/block、Eulerian phase ports 与 distributed KKT；不以开放 enabled 伪装 numerical capability。
-2. level-set、mixture 等剩余 compatibility consumers；之后仅删除无生产消费者的全局 DSL。
-3. 用户自定义四模块 IO：复用同一 compiler、validator、explain。
+当前顺序为：先完成 turbulence、IBM、level-set、Eulerian–Eulerian 的选定能力与数值验证，再启动变分前端。模块完成以明确 capability matrix 与冻结基线为门槛，不以所有可能组合均支持为前提。随后依次推进有限规则前端、pressure/IBM 离散约束应用和其他变分物理模块。详细任务、依赖和验收见 [双数学入口实施路线](../docs/dual-mathematical-input-roadmap.md)，本节不维护第二份独立待办顺序。
 
 ## Native IBM contributions
 
@@ -418,4 +523,52 @@ BP 是 post-predictor momentum penalty 与 midpoint work，没有乘子；Peskin
 
 IBM 的 legacy Definition/HOW/policy/provider routing、空 ImmersedConstraintTransformer、C_IBM 前缀 matching 与独立 descriptor inventory 已删除；descriptor 只保留实际 method options/KKT capability 与 display summary。generic temporal compiler 不按 IBM 字符串选择 execution。
 
-原 ILW/J/Jᵀ、body/surface projection、rigid solve、KKT/HYPRE numerical helpers 保留。三种 KKT 有 structural native contracts，当前 canonical production inputs 新旧均因 recipe/lowering 缺口 fail-fast；不能把它们标为已验证 Runnable。Eulerian＋IBM、RAS/LES＋IBM、pressure/implicit＋IBM 的缺失 mathematical/stage/storage contracts 在编译/capability 阶段明确拒绝。Peskin lagged surface MPI 允许有限非负的 local partial diagonal（包括空支撑的零），Runtime SUM 后严格要求正性；单独验证合法空 rank、canonical lambda COPY 后移除该编译限制。force/mask 是 Eulerian owner 已完成的诊断量，输出 replica 使用 Runtime COPY，不是 SUM 或 average。物理 ILW 的法向和模板遵循 source mesh 的 communication mask；ILW 在重建前声明 conservative halo read，之后保持 physical BC → halo → immersed closure 的相对顺序。IBM 的 mass/spreading/load 使用统一的物理 nodal volume，内部 partition endpoint 不引入半体积，EMPTY 端点共同表示真实厚度。47/47 host CTest 与首差异定位已经完成，7 个串行冻结案例逐字节一致，8 个 MPI 案例全部运行至 endTime=5 且逐帧 output replica 冲突为零；完整时域差异、剩余 kernel 一阶矩/力矩性质与 RAS boundary 缺口见 [IBM parallel consistency validation](../docs/ibm-parallel-consistency-validation.md)。历史迁移 preservation 结果见 [IBM native contributions migration](../docs/ibm-native-contributions-migration.md)。
+原 ILW/J/Jᵀ、body/surface projection、rigid solve、KKT/HYPRE numerical helpers 保留。三种 KKT 有 structural native contracts，当前 canonical production inputs 新旧均因 recipe/lowering 缺口 fail-fast；不能把它们标为已验证 Runnable。Eulerian＋IBM、除后述静止黏性 Ghost/SST 外的 RAS/LES＋IBM、pressure/implicit＋IBM 的缺失 mathematical/stage/storage contracts 在编译/capability 阶段明确拒绝。Peskin lagged surface MPI 允许有限非负的 local partial diagonal（包括空支撑的零），Runtime SUM 后严格要求正性；单独验证合法空 rank、canonical lambda COPY 后移除该编译限制。force/mask 是 Eulerian owner 已完成的诊断量，输出 replica 使用 Runtime COPY，不是 SUM 或 average。物理 ILW 的法向和模板遵循 source mesh 的 communication mask；ILW 在重建前声明 conservative halo read，之后保持 physical BC → halo → immersed closure 的相对顺序。IBM 的 mass/spreading/load 使用统一的物理 nodal volume，内部 partition endpoint 不引入半体积，EMPTY 端点共同表示真实厚度。上一冻结版本 47/47 host CTest 与首差异定位已经完成，7 个串行冻结案例逐字节一致，8 个 MPI 案例全部运行至 endTime=5 且逐帧 output replica 冲突为零；完整时域差异、剩余 kernel 一阶矩/力矩性质与 RAS boundary 缺口见 [IBM parallel consistency validation](../docs/ibm-parallel-consistency-validation.md)。历史迁移 preservation 结果见 [IBM native contributions migration](../docs/ibm-native-contributions-migration.md)。
+
+## Surface transfer 的一阶矩契约
+
+`partitionOfUnity` 与 `linearReproducing` 是 WHICH 的两个显式 numerical selections；WHAT、STATE、HOW、原 J/Jᵀ/Schur/projection lifecycle 共用。新选择在原 geometry support 上由 owner raw moments 经 Runtime SUM 形成一个完整 affine Gram matrix，解出同一组 J/spreading 权重。typed selection 被冻结在 CompiledImmersedContract，runtime 不得另选 kernel；未知策略或不满秩支撑直接失败，不能 clip、正则化、扩大支撑或降阶 fallback。旧选择不增加 moment communication。
+
+物理坐标 x/X 与同一个力矩中心、marker area m、Eulerian physical nodal volume V 定义载荷与功率。常量重现和 `Σ w(x-X)=0` 一起保证 marker/Eulerian force、torque 一致；带权 adjoint 保证 power 一致。Peskin 的 consumed lagged force 与 next force 必须分别使用对应时间层。新权重可有符号，当前仅支持完整 3D affine basis（EMPTY 双平面可满足；coplanar 单层支撑拒绝）；不由力矩性质推导单调性或通用 KKT 可运行性。[专项报告](../docs/ibm-first-moment-report.md)分别记录数值实现、算子指标与完整 CFD 验证状态。
+
+## Native interface 与剩余多相能力
+
+Level-set WHAT 分离 `ddt(phi)+U·grad(phi)=0`、frozen-reference pseudo-time 与 normal/curvature algebraic relations；CSF 的 force/energy 数学成员绑定原融合 RHS 写集合，Ghost-fluid 仅声明 jump query。STATE alias 原模型数组。HOW 显式冻结 phi0、伪时间 Loop、geometry publication、physical commit。WHICH 在 reference preparation 固定伪时间 recipe，stage 消费该 workspace，不拥有第二份 dt/time；界面 port 不拥有循环。原 stage preparation/BC/halo/source 顺序保留。MPI 重初始化仍 Unsupported；旧 MPI 输运存在 phi/派生场 boundary replica 差异，迁移保持测试不能替代并行一致性证明。
+
+Homogeneous 按 partial-density component layout 声明原生 balances；mixture 推进 phaseMass，alpha 保持派生。它们没有内置 flat Definition/HOW producer，但无 generic-EOS flux / native mixture closure binding 时不能报告 Runnable。共享 flat DSL 保留于真实 compatibility consumers；死 prefix/forwarding API 已删除。
+
+`executionProgram` 输入完整 typed source HOW，`providerBindings` 提供明确 WHICH；整份 authored HOW 不继承默认 binding，unknown/conflict/unused binding 与 unsupported topology 必须明确失败。`targetKind: Workspace` 与 working `*`、correction `'` 不混淆。native preset 与 authored 已知契约经同一 compiler/runtime，回归比较 operation sequence 和完整字段。任意 mathematical YAML/custom storage capability 不由该入口自动推导。详见[中文迁移报告](../docs/native-remaining-migration-report.md)。
+
+## Scope、版本与跨模块能力验证
+
+HOW 是唯一调度 authority。显式 ExecutionProgram 按作者的 sibling 数组顺序编译；默认 recipe 主干保持既定顺序，模块使用 PlacementRequirement 在其指定 scope 内声明 before/after，composer 仅插入这些已声明节点。多个数值含义不同的可行顺序没有明确关系时要求显式 HOW。依赖不能自行选择 coupling，也不能展平 Loop/StageLoop 后跨 snapshot/publication/Commit/synchronization 排序。RAS/LES、IBM、level-set contribution 不再拥有全局绝对 order。完整 ordered fusion group 仍是部分现有 provider 的实现能力。
+
+STATE 描述真实 storageBinding/storageKey/location/component slice 与派生依赖；StateUse 声明 Current/Stage/OldTime/Frozen/Lagged，StateEffect 声明写入、cache invalidation、materialized publication 与 halo availability。owner current 不代表 halo current。U/p/T/h 的 Lazy view 依赖原版本失效机制，不引入 refresh operator；normal/curvature 等物化数组需要 publication。Eulerian coefficients 每 outer 冻结，Peskin force 合法滞后，level-set phi0 在整个 pseudo-time scope 冻结。普通 loop workspace 不泄漏，真实 timestep 数组由 provider 声明 stepWorkspaces。派生缓存环与 coupled unknown block 分开检查。
+
+这些是 provider 明确声明的数据流编译验证；未声明的 specialized accesses 不自动获得完整运行时 freshness 证明。实际 Field/model/storage/cache ownership 保持，验证不复制数值数组，不执行刷新或通信。
+
+WHICH provider 声明 capabilities 与 conditional requirements；通用 resolver 报告真实缺失 contract，不写模块配对黑名单。IBM descriptor 从 composition 冻结到 executable/compiled contract，provider 支持表及 AST 校验保持独立；runtime 只校验冻结 fluid-port 与实际 storage，不再根据 AST 猜 variant。BP/Brinkman 保持 penalty/work，不伪装 no-slip constraint。除后述已绑定静止黏性 Ghost/SST 外的 RAS＋IBM、phase IBM ports、production KKT 等缺口继续准确 Unsupported。数值内核与 canonical COPY/GlobalDof SUM 不变；实现与验收见[跨模块组合报告](../docs/generic-cross-module-composition.md)。
+
+
+## 静止黏性 immersed wall 的数值契约（2026-10-06）
+
+`ImmersedWallClosure` 是一次解析后冻结的 numerical selection：默认 EulerSlip 数学不变；StationaryNoSlipAdiabatic 是独立的约束二次 Ghost 重建，不能作为 Euler ILW 的自动降阶路径。它要求静止单流体、serial single patch、PerfectGas 五分量 conservative state、Central2 viscous gradients，Euler ILW 显式关闭。U 在局部壁面切平面为零，rho/p 零法向导数给出绝热 T；full-rank donor support 不成立或重建非物理时 fail-fast。曲壁是局部平面近似，不宣称 generic viscous ILW。
+
+IBM geometry lifetime 保存 donor indices/weights；physical Q 和 clocks 不复制。壁面上的数值零距离点属于边界，不作为 SST fluid-cell 计算点。`immersed.wallDistance` 是 Field 原数组的只读 derived STATE view，不触发刷新、不复制几何。已有 turbulence arrays 仍由 Manager 持有，`IImmersedTurbulenceBoundary` 只写原 k/omega/mu_t ghost arrays，没有 solve/schedule authority。
+
+SST port 的 k=0、omega=60 nu/(beta1 d1²)、mu_t=0 以真实第一流体支撑距离为依据。signed polynomial ghost 不是独立 physical unknown；原 positivity floors 只在 fluid 点执行，新 Ghost 值不被 floors 改写。既有 source/diffusion/in-place transport 数学、once-step 更新和 flow RK topology 保留。新组合读取 prepare 后的 physical velocity，发布 step-frozen mu_t，flow stage 只读取缓存；原未绑定壁面时的 dynamic-viscosity 查询方式保留。该原内核没有 convection，不能由此次 boundary capability 推断完整 SST RANS 已实现。
+
+WHICH 的 bound capability 使用 `(name, equation, fluidPort, boundary)` 精确匹配。带对象要求不能由无绑定字符串或另一个 wall/port/equation 满足。当前 wall=`immersed.ghost` 对应现有唯一 IB 实例，不是多壁面 registry，也不新增调度层。provider 仍独立验证 AST、原数组及方法支持范围。
+
+Plan 顺序继续为 prepare(boundary/halo/Ghost) -> dt -> once-step RAS -> flow snapshot -> RK stage boundary/operator -> commit/time commit；边界闭合不变成 WHAT 的伪输运方程。默认和 authored HOW 使用相同 lowering/provider。负例覆盖 old slip、混用 Euler ILW、MPI、顺序错误，以及 capability 存在但对象错误。局部解析 profile、实际黏性算子网格收敛与短时 CFD 是本轮证据；长期充分发展湍流、移动壁、MPI 新壁面和三维 CFD 验收没有被这些测试替代。详见 [中文报告](../docs/viscous-immersed-wall-sst-native-composition.md)。
+
+
+## Runtime binding 的稳定职责边界（2026-10-08）
+
+编译后由同一个 `RuntimeRequirements` 和 frozen `leaf.provider` 驱动 implementation binding。`SingleFluidStepper` 仅保持 bundle/compiled products、generic STATE realization、稳定 `OpRegistry`、`PlanExecutor` 与唯一 physical clock commit；不解析 equationMethod/providerContract，不持有模块数值 workspace，不在每 advance 重绑 callbacks。
+
+`bindSingleFluidOperations` 是一次性 composition entry，不是 scheduler。原 flow/RK/pressure workspace 由 `FlowOperations` 持有，transport、level-set、immersed 使用窄 bind functions 和原 ports。具体 binder 可以理解自己的数学实现、参数与 backing；通用 host/executor 不按模型名选择执行。原 boundary/publication/finalize/geometry/clock 的操作位置保持独立。
+
+callbacks 借用稳定 bundle/services/compiled objects，强引用实际 numerical owner；动态 dt limit 从 host 的稳定输入读取。phi0/temporal view 仍 alias 原 workspace，physical state 不复制。host 不可 copy/move，patch identity 在绑定之后不可替换。compiler 与 binder 共享纯 compiled-stage 校验；geometry/storage/service validation 不伪装为静态证明。
+
+设计与生命周期表见 [runtime binding architecture](../docs/runtime-binding-architecture.md)，具体验证范围与剩余能力见 [migration report](../docs/runtime-binding-migration-report.md)。这次收口不实现 SST convection、level-set MPI 修复、production KKT 或新组合能力。

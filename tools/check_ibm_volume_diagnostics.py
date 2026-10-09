@@ -17,6 +17,7 @@ PHYSICAL = ("rho", "p", "U", "MomentumX", "MomentumY", "MomentumZ", "TotalEnergy
 def datasets(result, time):
     entries = {}
     for path in sorted(result.glob("*.pvd")):
+        if path.name.startswith("._"): continue
         for item in ET.parse(path).findall(".//DataSet"):
             entries.setdefault(float(item.attrib["timestep"]), set()).add(result / item.attrib["file"])
     if time not in entries:

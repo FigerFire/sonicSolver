@@ -53,6 +53,11 @@ struct CompiledFormulaCall {
                        const LinearAlgebra::SolveResult& result) const;
 };
 
+/// Shared structural value lowering; no legacy execution request or solve mode.
+FormulaValueKernel compileFormulaValue(const Equation& equation,const FormulaExpr& expression,
+    const FormulaOperatorCatalog& providers,std::vector<std::string>& used,
+    const std::vector<std::string>& boundSymbols={});
+
 class FormulaCompiler {
 public:
     static CompiledFormulaCall compile(

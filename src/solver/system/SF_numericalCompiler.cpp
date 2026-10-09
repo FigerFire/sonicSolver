@@ -76,6 +76,11 @@ CompiledNumericalSystem compile(
     if (time.id()!=recipes.time.id())
         throw std::runtime_error("Compiled TemporalMethod differs from selected time recipe.");
     result.time.recipe=time;
+    for (const auto& call:program.steps) {
+        result.requiredHaloWidth=std::max(result.requiredHaloWidth,call.requiredHaloWidth);
+        for (const auto& workspace:call.numericalWorkspaces)
+            appendUnique(result.workspaceRequirements,workspace);
+    }
     const auto selectedFormulas=selectFormulas(program);
     const auto containsOperator=[](const auto& self,const FormulaExpr& expression,std::string_view name)->bool {
         if (expression.kind==FormulaExpr::Kind::Operator && expression.name==name) return true;
@@ -162,7 +167,7 @@ CompiledNumericalSystem compile(
                 const bool primitiveSource=isSource && selected.primitiveSourceRequired
                     && provider.primitiveSource;
                 if (provider.status!=BindingStatus::Resolved
-                    || (!provider.recipe && !primitiveSource))
+                    || (!provider.recipe && !primitiveSource && !provider.stageSource.evaluate))
                     throw std::runtime_error("Equation provider "
                         +std::string(provider.status==BindingStatus::Invalid
                             ? "Invalid: " : "Unsupported: ")
@@ -170,7 +175,7 @@ CompiledNumericalSystem compile(
                             ? "missing recipe for '"+occurrence+"'"
                             : provider.reason));
                 if (isSource && !selected.primitiveSourceRequired
-                    && !provider.conservativeSource)
+                    && !provider.conservativeSource && !provider.stageSource.evaluate)
                     throw std::runtime_error("Conservative source provider '"
                         +provider.id+"' has no compiled execution kernel.");
                 result.operators.emplace_back(formula.id,selected.execution,
@@ -179,6 +184,7 @@ CompiledNumericalSystem compile(
                     provider.owner,provider.compiledDataAvailable,
                     provider.primitiveSource,provider.conservativeSource,
                     provider.primitiveSpatial);
+                result.operators.back().stageSource=provider.stageSource;
                 appendUnique(result.providerRequirements,provider.id);
                 if (requested) {
                     bindRecipe(*requested,RecipeConsumerKind::EquationTerm,
@@ -315,8 +321,8 @@ void compileSystem(ResolvedSimulationSystem& result,const ExecutionProgram& exec
                     step.operatorBindings.push_back(term.provider);
             }
         }
-        if (step.temporalResidual) {
-            if (step.operatorBindings.empty())
+        if (step.temporalResidual && step.spatialTerms) {
+            if (step.spatialTerms && step.operatorBindings.empty())
                 throw std::runtime_error("ConservativeResidual has no bound spatial provider.");
             step.requirements.push_back("halo depth="
                 +std::to_string(result.numericalSystem.requiredHaloWidth));

@@ -4,6 +4,7 @@
 /// @brief IBM 约束拓扑构造的可替换窄接口。
 
 #include "SF_field.h"
+#include "core/config/types/SF_ibmConfigTypes.h"
 #include "SF_immersedConstraint.h"
 #include "geoProcessing/SF_STLGeometry.h"
 
@@ -32,16 +33,20 @@ public:
         const Field& field,
         const std::vector<GeoProcessing::Triangle>& triangles,
         const Vector3& center,
-        double supportRadius) = 0;
+        double supportRadius, FDM::IBMSurfaceNormalization normalization) = 0;
 
     /// @brief 返回本地 Eulerian owner edge 的每-marker raw 权重和。
     virtual const std::vector<double>& localNormalizations() const {
         throw std::runtime_error(
             "Surface constraint operator does not expose distributed normalization.");
     }
-    /// @brief 使用 Runtime 归并后的权重和刷新 canonical J 行。
+    /// @brief 线性重现的每-marker 4x4 raw Gram matrix；按行展开，只含 owner partials。
+    virtual const std::vector<double>& localMoments() const {
+        throw std::runtime_error("Surface operator does not implement linearReproducing moments.");
+    }
+    /// @brief 使用 Runtime 归并后的权重和/矩刷新 canonical J 行。
     virtual const FDM::ImmersedSurfaceSystem& normalizeDistributed(
-        const std::vector<double>&) {
+        const std::vector<double>&, const std::vector<double>&) {
         throw std::runtime_error(
             "Surface constraint operator does not support distributed normalization.");
     }

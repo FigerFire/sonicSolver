@@ -6,6 +6,7 @@
 /// Legacy operator/storage metadata remains an explicit migration boundary.
 
 #include "core/system/SF_formula.h"
+#include "core/interfaces/SF_immersedSystem.h"
 #include "core/system/SF_stateRegistry.h"
 
 #include <optional>
@@ -80,12 +81,15 @@ struct BoundaryClosureContract {
     bool atEverySpatialEvaluation = true;
     std::vector<std::string> order;
     Provenance origin;
+    std::vector<std::string> capabilities;
+    std::vector<CapabilityBinding> boundCapabilities;
 };
 
 /// @brief Composition 完成、algorithmic transformation 开始前的数学系统。
 ///
 /// 该对象不保存 timestep、RK stage、MPI schedule 或 runner identity。
 struct RawEquationSystem {
+    std::optional<FDM::ImmersedAlgorithmDescriptor> immersed;
     StateRegistry state;
     std::vector<EquationDescriptor> legacyEquations;
     SF::Equation::System legacyDefinitions;
@@ -136,8 +140,11 @@ enum class OperationStage {
 
 /// @brief Operation 需要的数值能力；不指名具体 implementation provider。
 enum class OperationCapability {
+    ScalarExplicit,
+    TemporalSynchronization,
     ConservativeExplicit,
     SingleFluidTurbulenceTransport,
+    LevelSetExecution,
     SingleFluidTurbulenceClosure,
     PressureSchedule,
     FixedTimeIteration,
@@ -192,6 +199,7 @@ struct CompiledEquation {
 
 /// @brief Transformation 后、solve planning 前唯一可执行方程 authority。
 struct ExecutableEquationSystem {
+    std::optional<FDM::ImmersedAlgorithmDescriptor> immersed;
     StateRegistry state;
     std::vector<EquationDescriptor> legacyEquations;
     SF::Equation::System legacyDefinitions;
@@ -213,7 +221,7 @@ bool hasEquation(const RawEquationSystem& system, std::string_view id);
 bool hasEquation(const ExecutableEquationSystem& system, std::string_view id);
 bool hasConstraint(const RawEquationSystem& system, std::string_view id);
 bool hasConstraint(const ExecutableEquationSystem& system, std::string_view id);
-bool hasEquationPrefix(const ExecutableEquationSystem& system, std::string_view prefix);
+
 
 /// @brief 按 stage 查找 executable operation；不存在返回 nullptr。
 ///

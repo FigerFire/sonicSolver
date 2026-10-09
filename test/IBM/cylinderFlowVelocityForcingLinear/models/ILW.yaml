@@ -1,0 +1,14 @@
+# Built-in ILW module.
+SonicFile:
+  object: solver
+  type: ILW
+ILW:
+  enabled: true
+  value: 3
+  angle: 32
+normalSearch:
+  angle: 32
+  minLayers: 8
+  maxLayers: 32
+  targetCandidates: 512
+  keepSamples: 256

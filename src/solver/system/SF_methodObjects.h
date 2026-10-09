@@ -85,4 +85,7 @@ inline CompiledExecutionProgram compileExecutionProgram(
 /// compiled by ITemporalMethod and take precedence for transient bodies.
 SolvePlanNode compileMethodProgram(const CompiledExecutionProgram& program, const ProviderRegistry* providers = nullptr);
 
+/// Validate phase barriers and one physical Commit before numerical mutation.
+std::string validateTemporalPlan(const CompiledSolvePlan&,int stages);
+
 } // namespace SF::System

@@ -3,6 +3,7 @@
 /*----------code by LPF, 2026.05.28-----------*/
 
 #pragma once
+#include "core/interfaces/SF_immersedTurbulenceBoundary.h"
 
 /// @file SF_turbulence.h
 /// @brief 湍流模型调度层与公共状态定义。
@@ -215,7 +216,7 @@ class Manager final : public FDM::ITransportModel {
 public:
     /// @brief 从强类型配置构造管理器。
     /// @param config 湍流配置值对象。
-    explicit Manager(FDM::TurbulenceConfig config);
+    explicit Manager(FDM::TurbulenceConfig config,const FDM::IImmersedTurbulenceBoundary* wall=nullptr);
 
     /// @brief 根据配置创建具体模型并初始化内部标量状态。
     /// @param field 主流场。
@@ -262,6 +263,7 @@ public:
     ScalarFields& scalarFields() { return state_; }
 
 private:
+    const FDM::IImmersedTurbulenceBoundary* wall_;
     FDM::TurbulenceConfig config_;
     ScalarFields state_;
     std::unique_ptr<IModel> model_;

@@ -31,7 +31,19 @@ public:
     void bindView(std::string_view symbol,StateViewKind kind,
         State::DistributedFieldView& field,int stage=-1);
     std::size_t size() const { return unknowns_.size(); }
+    /// @brief Scope-qualified reads; binding is stable, availability is per stage.
+    std::function<double(int,int)> stageReader(std::string_view symbol,int stages);
+    void beginStage(int index,int count,double time);
+    void stageReady();
+    void rhsReady();
+    void finishStage();
+    void requireStageRead(int index,double time) const;
+    void requireStageAdvance(int index,double time) const;
 private:
+    int activeStage_=-1;
+    double activeStageTime_=0;
+    enum class StagePhase { Closed, Preparing, Reading, Advancing };
+    StagePhase stagePhase_=StagePhase::Closed;
     friend StateRealization realizeState(const StateRegistry&,const RuntimeRequirements&,
         State::StateBundle&,const std::vector<CompiledStateView>&);
     struct ViewStorage {

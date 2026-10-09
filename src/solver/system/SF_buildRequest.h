@@ -34,6 +34,9 @@ struct PressureConstraintSpec {
 /// Startup composition request. Runtime/execution headers do not include this
 /// type, which keeps model contribution details out of the resolved contract.
 struct BuildRequest {
+    /// Explicit C++ composition can supply its entire mathematical system.
+    /// This only omits the default preset; selected flow providers retain their checks.
+    bool includeDefaultFluidPreset = true;
     PhysicsTemplateKind templateOrigin = PhysicsTemplateKind::SingleFluid;
     std::optional<SingleFluidPresetSpec> singleFluidPreset;
     std::optional<PressureConstraintSpec> pressureConstraint;
@@ -70,6 +73,9 @@ struct BuildRequest {
     /// 而不是静默假设 backend 存在。
     BuildCapabilities capabilities;
     EquationCompositionConfig composition;
+    /// Full authored HOW replaces preset occurrences; explicit WHICH is required.
+    std::optional<ExecutionProgram> authoredExecution;
+    std::vector<NumericalBinding> authoredNumerics;
     /// @brief Model/user provider values; generic numerical providers are added by build.
     std::vector<SourceTermProviderDescriptor> termProviders;
     /// @brief Equation occurrence numerical overrides; consumed during compilation.

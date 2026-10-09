@@ -28,6 +28,7 @@ add_library(SF_physics STATIC
     interfaceModel/levelSet/SF_surfaceTension.cpp
     interfaceModel/levelSet/SF_band.cpp
     interfaceModel/levelSet/SF_mass.cpp
+    multiphase/SF_multiphaseSystemContribution.cpp
     multiphase/SF_multiphase.cpp
     phaseSystem/SF_phaseState.cpp
     phaseSystem/SF_phaseBoundary.cpp

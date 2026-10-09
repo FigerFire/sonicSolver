@@ -21,10 +21,15 @@ void ImmersedForcingSystem::buildSurfaceSystem(
     const Vector3 center=bodyModel_->center(targetTime);
     surfaceSystem_=surfaceOperator_->build(
         field,bodyModel_->triangles(*geometry_,targetTime),center,
-        config_.forcing.surfaceSupportRadius);
+        config_.forcing.surfaceSupportRadius,config_.forcing.surfaceNormalization);
     surfaceNormalizations_=surfaceOperator_->localNormalizations();
     if (runtime_) runtime_->globalSum(surfaceNormalizations_);
-    surfaceSystem_=surfaceOperator_->normalizeDistributed(surfaceNormalizations_);
+    std::vector<double> moments;
+    if (config_.forcing.surfaceNormalization==FDM::IBMSurfaceNormalization::LinearReproducing) {
+        moments=surfaceOperator_->localMoments();
+        if (runtime_) runtime_->globalSum(moments);
+    }
+    surfaceSystem_=surfaceOperator_->normalizeDistributed(surfaceNormalizations_,moments);
     bodyModel_->prepareEquationView(surfaceSystem_,targetTime,dt);
     Checkpoint::graph(field,surfaceSystem_,runtime_,targetTime);
 }

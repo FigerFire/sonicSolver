@@ -106,7 +106,8 @@ FDM::ImmersedConstraintResult ImmersedForcingSystem::applyPeskinOriginal(
         }
         for (const auto& edge:point.interpolation) {
             if (edge.cell<0 || edge.cell>=total
-                || !std::isfinite(edge.value) || edge.value<0.0) {
+                || !std::isfinite(edge.value)
+                || (edge.value<0.0 && config_.forcing.surfaceNormalization==FDM::IBMSurfaceNormalization::PartitionOfUnity)) {
                 throw std::runtime_error(
                     "Peskin interpolation row contains an invalid edge.");
             }
@@ -180,7 +181,7 @@ FDM::ImmersedConstraintResult ImmersedForcingSystem::applyPeskinOriginal(
     Checkpoint::force("peskin-next-force",field,nextMultiplier,targetTime);
     laggedMultiplier_=std::move(nextMultiplier);
     finalizeDistributedResult(lastResult_);
-    Checkpoint::result(lastResult_,targetTime);
+    Checkpoint::result(lastResult_,targetTime,dt);
     Checkpoint::state("peskin-corrected",field,targetTime);
     field.invalidateThermodynamicCache();
     lastResult_.performed=true;

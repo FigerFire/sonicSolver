@@ -2,11 +2,50 @@
 /// @brief Resolved unknown runtime binding implementation.
 
 #include "SF_stateRealizer.h"
+#include <cmath>
 
 #include <algorithm>
 #include <stdexcept>
 
 namespace SF::System {
+void StateRealization::beginStage(int index,int count,double time) {
+    if (stagePhase_!=StagePhase::Closed || index<0 || index>=count || !std::isfinite(time))
+        throw std::runtime_error("Stage epoch already active or invalid index/time.");
+    activeStage_=index;activeStageTime_=time;stagePhase_=StagePhase::Preparing;
+}
+void StateRealization::stageReady() {
+    if (stagePhase_!=StagePhase::Preparing) throw std::runtime_error("Stage preparation barrier out of order.");
+    stagePhase_=StagePhase::Reading;
+}
+void StateRealization::rhsReady() {
+    if (stagePhase_!=StagePhase::Reading) throw std::runtime_error("Stage RHS barrier out of order.");
+    stagePhase_=StagePhase::Advancing;
+}
+void StateRealization::finishStage() {
+    if (stagePhase_!=StagePhase::Advancing) throw std::runtime_error("Stage close before RHS/advance completion.");
+    stagePhase_=StagePhase::Closed;activeStage_=-1;
+}
+void StateRealization::requireStageRead(int index,double time) const {
+    if (stagePhase_!=StagePhase::Reading || activeStage_!=index || activeStageTime_!=time)
+        throw std::runtime_error("Stage STATE read outside its readable index/time epoch.");
+}
+void StateRealization::requireStageAdvance(int index,double time) const {
+    if (stagePhase_!=StagePhase::Advancing || activeStage_!=index || activeStageTime_!=time)
+        throw std::runtime_error("Stage advance before complete RHS barrier or wrong index/time.");
+}
+std::function<double(int,int)> StateRealization::stageReader(std::string_view symbol,int stages) {
+    std::vector<State::DistributedFieldView*> fields;
+    for (int i=0;i<stages;++i) {
+        const auto& item=view(symbol,StateViewKind::Stage,i);
+        if (item.fields.size()!=1) throw std::runtime_error("Stage reader requires one bound patch: "+std::string(symbol));
+        fields.push_back(item.fields.front());
+    }
+    return [this,fields=std::move(fields)](int cell,int component) {
+        if (stagePhase_!=StagePhase::Reading || activeStage_<0)
+            throw std::runtime_error("Expired or unprepared Stage STATE view.");
+        return fields.at(activeStage_)->read(cell,component);
+    };
+}
 
 const RealizedUnknown& StateRealization::at(std::string_view id) const {
     const auto found = std::find_if(
@@ -18,6 +57,22 @@ const RealizedUnknown& StateRealization::at(std::string_view id) const {
             "Runtime state has no realized unknown '"+std::string(id)+"'.");
     }
     return *found;
+}
+
+namespace {
+std::vector<State::DistributedFieldView*> localFields(State::StateBundle& state,const std::string& storage) {
+    const auto candidates=state.distributed.select(storage,State::HaloSyncStage::None);
+    std::vector<State::DistributedFieldView*> result;
+    for (const auto* geometry:state.patches) {
+        State::DistributedFieldView* selected=nullptr;
+        for (auto* candidate:candidates) if (candidate && candidate->geometry==geometry) {
+            if (selected) throw std::runtime_error("Duplicate STATE storage on active patch: "+storage);
+            selected=candidate;
+        }
+        if (selected) result.push_back(selected);
+    }
+    return result;
+}
 }
 
 StateRealization realizeState(
@@ -39,6 +94,7 @@ StateRealization realizeState(
                 view.exchange=State::ExchangeKind::None;
                 view.read=[field=view.geometry,kind=unknown.derivation](int cell,int component) {
                     int i=0,j=0,k=0;field->getIJK(cell,i,j,k);
+                    if (kind==StateDerivation::WallDistance) return field->wallDistance(i,j,k);
                     const auto value=field->thermodynamicState(i,j,k);
                     switch (kind) {
                     case StateDerivation::Velocity:return value.velocity.at((std::size_t)component);
@@ -48,6 +104,7 @@ StateRealization realizeState(
                     case StateDerivation::DynamicViscosity:return value.dynamicViscosity;
                     case StateDerivation::KinematicViscosity:return value.dynamicViscosity/value.density;
                     case StateDerivation::ThermalConductivity:return value.thermalConductivity;
+                    case StateDerivation::WallDistance:break;
                     case StateDerivation::None:break;
                     }
                     throw std::runtime_error("Unsupported STATE derivation.");
@@ -68,8 +125,7 @@ StateRealization realizeState(
                 "Resolved unknown '"+unknown.id
                 +"' requires runtime storage but has no storage binding key.");
         }
-        realized.fields = state.distributed.select(
-            unknown.storageKey,State::HaloSyncStage::None);
+        realized.fields = localFields(state,unknown.storageKey);
         if (realized.fields.size() != state.patches.size()) {
             throw std::runtime_error(
                 "Resolved unknown '"+unknown.id+"' expects storage '"
@@ -93,7 +149,7 @@ StateRealization realizeState(
             || (descriptor.owner==StateViewOwner::NumericalProvider
                 && descriptor.kind==StateViewKind::Physical
                 && symbols.at(descriptor.symbol).storageBinding==StorageBinding::ProviderDistributed)) {
-            auto fields=state.distributed.select(descriptor.storage,State::HaloSyncStage::None);
+            auto fields=localFields(state,descriptor.storage);
             if (fields.size()!=state.patches.size())
                 throw std::runtime_error("Missing physical STATE storage: "+descriptor.storage);
             for (auto* field:fields) {

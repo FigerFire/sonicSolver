@@ -30,6 +30,7 @@ namespace SF {
 
     class Field {
     private:
+        void setupStorage(int nx,int ny,int nz,int ghost,int nVar);
         // 存储 RHO, RU, RV, RW, E
         std::vector<double> data; 
         
@@ -91,6 +92,8 @@ namespace SF {
         /// @param nx, ny, nz 内部物理网格点数(不含虚胞)。
         /// @param ghost 虚胞层数(每侧)。
         void setup(int nx, int ny, int nz, int ghost, int nVar = 0);
+        /// Geometry for equations whose physical arrays are held in named storage.
+        void setupGeometry(int nx, int ny, int nz, int ghost);
 
         /// @brief 绑定控制守恒变量布局和热力学闭合的 FluidStateModel。
         /// 已分配 Field 的变量数必须与方程组匹配；需要切换布局时先调用

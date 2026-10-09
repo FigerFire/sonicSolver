@@ -48,6 +48,7 @@ public:
 
     void addExecution(ExecutionScope value) { execution.push_back(std::move(value)); }
     void bindNumerics(NumericalBinding value) { numerics.push_back(std::move(value)); }
+    std::vector<PlacementRequirement> placement;
     std::vector<ExecutionScope> execution;
     std::vector<ExecutionScope> legacyExecution;
     std::vector<NumericalBinding> numerics;

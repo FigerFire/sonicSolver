@@ -88,7 +88,7 @@ int executeConservativeEquations(
     SF::Physics::Multiphase::MultiPhaseModel multiPhaseModel;
     std::unique_ptr<SF::Physics::InterfaceModels::Model> interfaceModel;
     const bool legacyMultiPhaseActive =
-        System::requiresProvider(system,"equation.legacy-mixture");
+        System::requiresProvider(system,"equation.mixture");
     const bool interfaceActive =
         System::requiresProvider(system,"equation.level-set");
     const bool usesHomogeneousThermodynamics =
@@ -240,7 +240,12 @@ int executeConservativeEquations(
                       caseConfig.multiPhase.phaseChange.model
                       + " -> partialDensity, rhoE source=0");
     }
-    SF::Turbulence::Manager turbulenceManager(solverConfig.turbulence);
+    const bool viscousImmersedWall=system.executableSystem.immersed
+        && system.executableSystem.immersed->wallClosure==FDM::ImmersedWallClosure::StationaryNoSlipAdiabatic;
+    if (viscousImmersedWall && ibm.algorithmDescriptor().wallClosure!=system.executableSystem.immersed->wallClosure)
+        throw std::runtime_error("Compiled viscous wall selection differs from the bound IBM implementation.");
+    SF::Turbulence::Manager turbulenceManager(solverConfig.turbulence,viscousImmersedWall && solverConfig.turbulence.enabled
+        && solverConfig.turbulence.model==FDM::TurbulenceModelKind::kOmegaSST?&ibm:nullptr);
     CompositeTransportProvider coupledTransport;
     auto& parallelCoordinator = parallel.coordinator();
     // A pressure-based serial case initializes an MPI-capable backend for
@@ -457,6 +462,7 @@ int executeConservativeEquations(
     if (interfaceActive) {
         auto* levelSet = interfaceModel->levelSetState();
         if (levelSet) {
+            stateBundle.distributed.add(Equation::Coupling::interfaceNormalView(*interfaceModel,field,localBlockId));
             stateBundle.distributed.add(State::workspaceView(
                 "levelSetCurvature", localBlockId, field,
                 levelSet->curvatures(), 1));

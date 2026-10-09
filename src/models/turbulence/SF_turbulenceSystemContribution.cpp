@@ -46,15 +46,15 @@ void addEulerian(System::SystemContribution& system,const SystemContributionSpec
             system.addEquation(eulerianTransportMathematics(second,phase,variable));
         }
     }
-    const auto contributeCalls=[&](const auto& members,const char* method,int order) {
+    const auto contributeCalls=[&](const auto& members,const char* method) {
         for (const auto& id:members) {
             System::ExecutionScope call;call.kind=System::ExecutionKind::EquationCall;
-            call.order=order;call.step={id,{id}};system.addExecution(std::move(call));
+            call.step={id,{id}};system.addExecution(std::move(call));
             system.bindNumerics({id,method,members});
         }
     };
-    contributeCalls(closures,"EulerianTurbulenceClosure",40);
-    if (transport) contributeCalls(inputs,"EulerianTurbulenceTransport",50);
+    contributeCalls(closures,"EulerianTurbulenceClosure");
+    if (transport) contributeCalls(inputs,"EulerianTurbulenceTransport");
     system.addClosure("mu_t from "+spec.model);
 }
 
@@ -87,15 +87,18 @@ void contribute(
                 System::FormulaExpr::symbol("Smagorinsky.eddyDynamicViscosity"),
                 {System::OriginKind::Model,spec.model},true});
             System::ExecutionScope call;
-            call.kind=System::ExecutionKind::EquationCall;call.order=1;
+            call.kind=System::ExecutionKind::EquationCall;
             call.step={"mu_t",{"mu_t"}};
             system.addExecution(std::move(call));
             system.bindNumerics({"mu_t","TurbulenceClosure"});
+            system.placement.push_back({{},"equation:mu_t",{}, {"first-of:equation:continuity|equation:momentum"}});
         }
         return;
     }
     if (!spec.eulerian) {
         system.requireState("rho");system.requireState("U");
+        system.placement.push_back({{},"equation:k",{},{"first-of:equation:continuity|equation:momentum"}});
+        system.placement.push_back({{},"equation:"+std::string(kEpsilon ? "epsilon" : "omega"),{"equation:k"},{"first-of:equation:continuity|equation:momentum"}});
         const std::string second=kEpsilon ? "epsilon" : "omega";
         for (const auto& id:std::vector<std::string>{"k",second,"mu_t"}) {
             System::StateSymbol symbol;
@@ -104,6 +107,10 @@ void contribute(
             symbol.storageBinding=System::StorageBinding::ProviderDistributed;
             symbol.storageKey=id;
             symbol.nameSpace="turbulence";
+            if (id=="mu_t") {
+                symbol.evaluation=System::StateEvaluation::Materialized;
+                symbol.dependencies={"k",second,"rho","U"};
+            }
             symbol.origin={System::OriginKind::Model,spec.model};
             symbol.restartEligible=false; // Manager has no restart reader for these arrays.
             symbol.initializationRequired=symbol.boundaryRequired=id!="mu_t";
@@ -113,7 +120,6 @@ void contribute(
             system.addEquation(transportMathematics(second,id));
             System::ExecutionScope call;
             call.kind=System::ExecutionKind::EquationCall;
-            call.order=id=="k" ? 1 : 2;
             call.step={id,{id}};
             system.addExecution(std::move(call));
             system.bindNumerics({id,"TurbulenceTransport",{"k",second}});

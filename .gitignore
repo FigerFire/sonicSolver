@@ -24,18 +24,14 @@ tools/*
 !tools/check_single_fluid_turbulence.py
 SonicSolver_*
 docs/
-!docs/
 docs/*
-!docs/single-fluid-turbulence-migration.md
 library/
 
 !test/test_nativeEulerian.cpp
 !test/eulerianEulerianCase/
 test/eulerianEulerianCase/result/
 !tools/check_eulerian_native.py
-!docs/eulerian-shared-pressure-migration.md
 !test/test_eulerianAssembly.cpp
-!docs/eulerian-assembly-authority-migration.md
 
 !test/test_eulerianTurbulence.cpp
 !test/test_eulerianTurbulenceKernel.cpp
@@ -65,3 +61,72 @@ test/IBM/cylinderFlowFictitiousDomainCrossingMPI2/result/
 test/IBM/cylinderFlowFictitiousDomainCrossingMPI4/result/
 !tools/check_ibm_operator_checkpoints.py
 !tools/check_ibm_volume_diagnostics.py
+
+!test/SF_surfaceMomentFixture.h
+!test/test_surfaceMoments.cpp
+!test/test_distributedSurfaceMoments.cpp
+!test/IBM/cylinderFlowPeskinLinear/
+test/IBM/cylinderFlowPeskinLinear/result/
+!test/IBM/cylinderFlowPeskinLinearMPI2/
+test/IBM/cylinderFlowPeskinLinearMPI2/result/
+!test/IBM/cylinderFlowPeskinLinearMPI4/
+test/IBM/cylinderFlowPeskinLinearMPI4/result/
+!test/IBM/cylinderFlowVelocityForcingLinear/
+test/IBM/cylinderFlowVelocityForcingLinear/result/
+!test/IBM/cylinderFlowVelocityForcingLinearMPI2/
+test/IBM/cylinderFlowVelocityForcingLinearMPI2/result/
+!test/IBM/cylinderFlowVelocityForcingLinearMPI4/
+test/IBM/cylinderFlowVelocityForcingLinearMPI4/result/
+
+# Frozen input mesh for the linear-reproducing regression; VTK previews are generated.
+!test/IBM/*Linear*/mesh/mesh.sfm
+test/IBM/*Linear*/mesh/*.vts
+test/IBM/*Linear*/mesh/*.vtm
+
+# Native interface/multiphase contracts and frozen kernel evidence; generated results stay local.
+!test/test_nativeLevelSet.cpp
+!test/test_nativeMultiphase.cpp
+!test/interface/
+test/interface/*
+!test/interface/nativeLevelSet/
+!tools/check_native_interface.py
+!test/interface/nativeLevelSet/mesh.sfm
+
+# Stationary viscous Ghost/SST inputs and contract regression; outputs remain local.
+!test/test_executionContract.cpp
+!test/test_viscousImmersedWall.cpp
+!test/IBM/cylinderFlowViscousGhost/
+!test/IBM/cylinderFlowSSTGhost/
+!test/IBM/cylinderFlowSSTGhostAuthored/
+test/IBM/cylinderFlowViscousGhost/result/
+test/IBM/cylinderFlowSSTGhost/result/
+test/IBM/cylinderFlowSSTGhostAuthored/result/
+test/IBM/*Ghost*/mesh/*.vts
+test/IBM/*Ghost*/mesh/*.vtm
+!tools/check_viscous_immersed_wall.py
+!test/IBM/cylinderFlowViscousGhost/mesh/mesh.sfm
+!test/IBM/cylinderFlowSSTGhost/mesh/mesh.sfm
+!test/IBM/cylinderFlowSSTGhostAuthored/mesh/mesh.sfm
+
+# Runtime binding lifetime/contract regression.
+!test/test_runtimeBinding.cpp
+
+# Keep build-required regression sources; generated results remain local.
+!test/test_*.cpp
+!test/SF_*.h
+!tools/check_*.py
+!tools/architecture_allowlist.json
+
+# Local environments, Python caches, editor backups and source archives.
+.venv/
+**/__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.bak
+*.backup
+*.swp
+*.swo
+*~
+*.tar.gz

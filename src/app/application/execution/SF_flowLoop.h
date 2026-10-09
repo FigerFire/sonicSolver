@@ -12,6 +12,13 @@
 
 namespace SF::Application::Execution {
 
+/// C++ contribution application entry after System::build. Uses the existing
+/// host/driver for any supported frozen provider; caller owns storage/services.
+int executeEquations(const FDM::SolverConfig& config,
+    const System::ResolvedSimulationSystem& system,State::StateBundle& bundle,
+    FDM::SolverServices services,const Time::RunControl& control,
+    const Time::DriverCallbacks& callbacks = {});
+
 /// @brief 运行一次完整的单场时间推进。
 ///
 /// 只拥有“时间循环”这一件事：把 RunControl 约束下的 step 上限、输出对齐、

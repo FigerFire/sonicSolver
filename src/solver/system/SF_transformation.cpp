@@ -178,6 +178,7 @@ bool hasUnknownId(
 
 ExecutableEquationSystemBuilder::ExecutableEquationSystemBuilder(
         const RawEquationSystem& raw) {
+    system_.immersed = raw.immersed;
     system_.state = raw.state;
     system_.legacyEquations = raw.legacyEquations;
     system_.legacyDefinitions = raw.legacyDefinitions;

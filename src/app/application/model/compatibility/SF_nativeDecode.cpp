@@ -2434,6 +2434,14 @@ void CaseAdapter::decodeIBMSection() {
     } catch (const std::exception& error) {
         fatalIBMConfig(error.what());
     }
+    const auto wall=foamUnquote(jsonValueAfterKey(block,"wallClosure"));
+    if (wall.empty() || wall=="eulerSlip")
+        caseConfig_.solver.ibm.wallClosure=FDM::ImmersedWallClosure::EulerSlip;
+    else if (wall=="stationaryNoSlipAdiabatic")
+        caseConfig_.solver.ibm.wallClosure=FDM::ImmersedWallClosure::StationaryNoSlipAdiabatic;
+    else fatalIBMConfig("Unknown immersed wallClosure: "+wall);
+    if (ibmMethod_!=FDM::IBMMethod::Ghost && !wall.empty())
+        fatalIBMConfig("wallClosure belongs to Ghost boundary; forcing does not implement this wall closure.");
     if (ibmMethod_ == FDM::IBMMethod::VariationalForcing) {
         const P* forcing = jsonBlockAfterKey(block, "forcing");
         if (!forcing) {
@@ -2682,8 +2690,12 @@ void CaseAdapter::decodeIBMSection() {
                 surfaceRequired("kernel");
             ibmForcingConfig_.surfaceQuadrature =
                 surfaceRequired("quadrature");
-            ibmForcingConfig_.surfaceNormalization =
-                surfaceRequired("normalization");
+            const auto normalization=FDM::normalizeToken(surfaceRequired("normalization"));
+            if (normalization=="partitionofunity")
+                ibmForcingConfig_.surfaceNormalization=FDM::IBMSurfaceNormalization::PartitionOfUnity;
+            else if (normalization=="linearreproducing")
+                ibmForcingConfig_.surfaceNormalization=FDM::IBMSurfaceNormalization::LinearReproducing;
+            else fatalIBMConfig("surfaceOperator normalization must be partitionOfUnity or linearReproducing.");
             ibmForcingConfig_.surfaceSpreading =
                 surfaceRequired("spreading");
             ibmForcingConfig_.surfaceSupportRadius = foamDoubleValue(
@@ -2695,16 +2707,13 @@ void CaseAdapter::decodeIBMSection() {
                        ibmForcingConfig_.surfaceQuadrature)
                     != "trianglecentroid"
                 || FDM::normalizeToken(
-                       ibmForcingConfig_.surfaceNormalization)
-                    != "partitionofunity"
-                || FDM::normalizeToken(
                        ibmForcingConfig_.surfaceSpreading) != "adjoint"
                 || !std::isfinite(
                     ibmForcingConfig_.surfaceSupportRadius)
                 || ibmForcingConfig_.surfaceSupportRadius <= 0.0) {
                 fatalIBMConfig(
                     "surfaceOperator requires kernel wendlandC2, quadrature "
-                    "triangleCentroid, normalization partitionOfUnity, "
+                    "triangleCentroid, normalization partitionOfUnity or linearReproducing, "
                     "spreading adjoint, and supportRadius > 0 m.");
             }
         }

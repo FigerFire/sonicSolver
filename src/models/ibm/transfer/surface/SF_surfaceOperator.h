@@ -25,15 +25,18 @@ public:
         const Field& field,
         const std::vector<GeoProcessing::Triangle>& triangles,
         const Vector3& center,
-        double supportRadius) override;
+        double supportRadius, FDM::IBMSurfaceNormalization normalization) override;
 
     /// @brief 应用 Runtime 已归并的 marker 权重和，刷新 system 内的 J 行。
     const FDM::ImmersedSurfaceSystem& normalizeDistributed(
-        const std::vector<double>& normalizations) override;
+        const std::vector<double>& normalizations, const std::vector<double>& moments) override;
     const std::vector<double>& localNormalizations() const override {
         return couplingGraph_.rawNormalizations();
     }
 
+    const std::vector<double>& localMoments() const override {
+        return couplingGraph_.rawMoments();
+    }
     const FDM::ImmersedSurfaceSystem& system() const { return system_; }
 
 private:

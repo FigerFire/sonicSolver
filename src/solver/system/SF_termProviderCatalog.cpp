@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <stdexcept>
+#include "solver/discretization/source/SF_scalarFeedback.h"
 
 namespace SF::System {
 const FormulaOperatorBinding* selectFormulaBinding(
@@ -113,6 +114,11 @@ ResolvedTermProvider TermProviderCatalog::resolve(
                     +"' compiled an empty conservative source kernel.");
             result.compiledDataAvailable=true;
         }
+        if (candidates.front()->compileStageSource) {
+            result.stageSource=candidates.front()->compileStageSource(context);
+            if (!result.stageSource.evaluate) throw std::runtime_error("Empty compiled Stage source.");
+            result.compiledDataAvailable=true;
+        }
         result.primitiveSpatial=candidates.front()->primitiveSpatial;
         result.recipe=candidates.front()->sourceRecipe
             ? candidates.front()->sourceRecipe
@@ -138,6 +144,18 @@ ResolvedTermProvider TermProviderCatalog::resolve(
 
 TermProviderCatalog TermProviderCatalog::builtIn() {
     TermProviderCatalog catalog;
+    for(bool work:{false,true}) {
+        TermProviderDescriptor p;p.id=work?"source.stage.scalar-work":"source.stage.scalar-force";
+        p.match=[work](const TermMatchContext& c) {
+            const auto& e=c.expression;
+            return c.equationMethod=="ConservativeResidual" && c.output==(work?"rhoE":"rhoU")
+                && e.name=="source" && e.arguments.size()==4
+                && e.arguments[0].kind==FormulaExpr::Kind::Symbol
+                && e.arguments[0].name==(work?"linearScalarWork":"linearScalarForce");
+        };
+        p.compileStageSource=[work](const auto& c){return Discretization::linearScalarFeedback(c.expression,work);};
+        catalog.add(std::move(p));
+    }
     catalog.add({"convection.primitiveUpwind1",
         [](const TermMatchContext& context) {
             return context.expression.kind==FormulaExpr::Kind::Operator

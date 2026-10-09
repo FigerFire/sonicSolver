@@ -16,6 +16,7 @@
 #include "models/physics/mrf/SF_frameProvider.h"
 #include "models/physics/heat/SF_wallFluxProvider.h"
 #include "models/physics/interfaceModel/levelSet/SF_levelSetSystemContribution.h"
+#include "models/physics/multiphase/SF_multiphaseSystemContribution.h"
 #include "models/ibm/SF_ibmSystemContribution.h"
 #include "models/turbulence/SF_turbulenceSystemContribution.h"
 
@@ -85,6 +86,20 @@ CaseInspection inspectCase(const CaseConfig& config) {
     // IBM algorithm selection is independent of halo depth. The final runtime
     // config is rebuilt below from the compiled numerical requirement.
     result.ibm = Runtime::makeIBMRuntimeConfig(config.solver,0);
+    if (result.ibm.enabled && result.ibm.wallClosure==FDM::ImmersedWallClosure::StationaryNoSlipAdiabatic) {
+        if (config.parallel.enabled || config.meshFiles.size()>1
+            || resolvePhysics(config)!=System::PhysicsTemplateKind::SingleFluid)
+            throw std::runtime_error("stationaryNoSlipAdiabatic currently requires a serial single-fluid patch; MPI/phase wall ports are Unsupported.");
+        if (result.ibm.method!=FDM::IBMMethod::Ghost || result.ibm.ilwEnabled)
+            throw std::runtime_error("stationaryNoSlipAdiabatic is the explicit quadratic Ghost closure; Euler ILW compatibility is not its numerical method. Set ILW off explicitly.");
+        if (config.solver.numerics.viscous!=FDM::ViscousScheme::Central2)
+            throw std::runtime_error("stationaryNoSlipAdiabatic currently validates only Central2 viscous gradients.");
+        if (!config.solver.numerics.viscousEnabled)
+            throw std::runtime_error("stationaryNoSlipAdiabatic requires active molecular viscous diffusion.");
+        if (config.solver.turbulence.enabled && config.solver.turbulence.model!=FDM::TurbulenceModelKind::kOmegaSST
+            && config.solver.turbulence.family!=FDM::TurbulenceFamily::DNS)
+            throw std::runtime_error("stationaryNoSlipAdiabatic turbulence port currently implements only SST.");
+    }
 
     // 数据依赖方向：CaseConfig -> ResolvedSimulationSystem。
     // 物理状态族直接从 case 的 physics/template 输入解析，不再由
@@ -92,6 +107,8 @@ CaseInspection inspectCase(const CaseConfig& config) {
     FDM::ImmersedAlgorithmDescriptor immersedDescriptor;
     System::BuildRequest systemRequest;
     systemRequest.templateOrigin = resolvePhysics(config);
+    systemRequest.authoredExecution=config.authoredExecution;
+    systemRequest.authoredNumerics=config.authoredNumerics;
     systemRequest.phaseNames =
         config.multiPhase.eulerianEulerian.phaseNames;
     systemRequest.referencePhase = config.multiPhase.eulerianEulerian.referencePhase;
@@ -101,7 +118,16 @@ CaseInspection inspectCase(const CaseConfig& config) {
         System::SystemContribution contribution;
         Physics::InterfaceModels::LevelSetContribution::contribute(
             contribution,{Physics::Multiphase::normalizeModelType(
-                config.multiPhase.levelSet.surfaceTensionModel)=="ghostfluid"});
+                config.multiPhase.levelSet.surfaceTensionModel)=="ghostfluid",
+                config.multiPhase.levelSet.advectionOrder,
+                config.multiPhase.levelSet.reinitializationOrder,
+                config.multiPhase.levelSet.reinitializationSteps,
+                config.multiPhase.levelSet.pseudoTimeStep,
+                config.multiPhase.levelSet.wenoEpsilon,
+                config.multiPhase.levelSet.wenoPower,
+                config.multiPhase.levelSet.signSmoothingFactor,
+                Physics::Multiphase::normalizeModelType(config.multiPhase.levelSet.surfaceTensionModel)=="csf",
+                config.multiPhase.levelSet.surfaceTension,config.multiPhase.levelSet.interfaceThickness});
         systemRequest.modelContributions.push_back(std::move(contribution));
     }
     systemRequest.homogeneousThermodynamics =
@@ -110,6 +136,13 @@ CaseInspection inspectCase(const CaseConfig& config) {
     systemRequest.legacyMixture =
         config.multiPhaseEnabled && config.multiPhase.enabled
         && Physics::Multiphase::isMixtureType(config.multiPhase.type);
+    if (systemRequest.homogeneousThermodynamics || systemRequest.legacyMixture) {
+        System::SystemContribution contribution;
+        if (systemRequest.homogeneousThermodynamics)
+            Physics::Multiphase::contributeHomogeneous(contribution,config.multiPhase);
+        else Physics::Multiphase::contributeMixture(contribution,config.multiPhase);
+        systemRequest.modelContributions.push_back(std::move(contribution));
+    }
     systemRequest.phaseChange = config.multiPhase.phaseChange.enabled;
     systemRequest.transportedLegacyAlpha =
         systemRequest.legacyMixture
@@ -159,6 +192,7 @@ CaseInspection inspectCase(const CaseConfig& config) {
         immersedDescriptor = result.ibm.method == FDM::IBMMethod::Ghost
             ? IBM::Descriptor::ghostCell()
             : IBM::Descriptor::variational(result.ibm.forcing);
+        immersedDescriptor.wallClosure=config.solver.ibm.wallClosure;
         System::SystemContribution contribution;
         IBM::SystemContribution::contribute(contribution,immersedDescriptor);
         systemRequest.modelContributions.push_back(std::move(contribution));

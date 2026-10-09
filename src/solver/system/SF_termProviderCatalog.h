@@ -34,6 +34,7 @@ struct TermProviderDescriptor {
     PrimitiveMomentumSpatialTerm primitiveSpatial = nullptr;
     std::string owner = "solver.discretization";
     std::function<ConservativeSourceKernel()> compileConservativeSource;
+    std::function<StageConservativeSource(const TermMatchContext&)> compileStageSource;
 };
 
 struct ResolvedTermProvider {
@@ -43,6 +44,7 @@ struct ResolvedTermProvider {
     std::optional<FDM::TermRecipe> recipe;
     PrimitiveMomentumSource primitiveSource;
     ConservativeSourceKernel conservativeSource;
+    StageConservativeSource stageSource;
     PrimitiveMomentumSpatialTerm primitiveSpatial = nullptr;
     std::string owner;
     bool compiledDataAvailable = false;

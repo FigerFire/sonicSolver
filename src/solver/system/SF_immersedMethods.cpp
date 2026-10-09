@@ -81,7 +81,7 @@ if (kkt) equations.push_back({"ibm.incompressibility",op("div",{s("U")}),E::cons
 return equations;
 
 }
-FDM::ImmersedAlgorithmDescriptor selectionFor(FDM::IBMForcingAlgorithm algorithm) {
+FDM::ImmersedAlgorithmDescriptor supportedSelection(FDM::IBMForcingAlgorithm algorithm) {
     using A=FDM::IBMForcingAlgorithm;
     FDM::ImmersedAlgorithmDescriptor d;d.algorithm=algorithm;
     switch (algorithm) {
@@ -108,13 +108,24 @@ FDM::ImmersedAlgorithmDescriptor selectionFor(FDM::IBMForcingAlgorithm algorithm
 }
 class ImmersedMethod final : public IProvider {
 public:
-    explicit ImmersedMethod(FDM::IBMForcingAlgorithm algorithm)
-        : selection_(selectionFor(algorithm)),id_(std::string("Immersed.")+FDM::toString(algorithm)) {}
+    explicit ImmersedMethod(FDM::IBMForcingAlgorithm algorithm,
+                            FDM::IBMSurfaceNormalization normalization=FDM::IBMSurfaceNormalization::PartitionOfUnity)
+        : selection_(supportedSelection(algorithm)),id_(std::string("Immersed.")+FDM::toString(algorithm)
+            +(normalization==FDM::IBMSurfaceNormalization::LinearReproducing?".linearReproducing":"")) {
+        selection_.surfaceNormalization=normalization;
+    }
     std::string_view id() const override {return id_;}
     std::string_view runtimeProvider() const override {return "ibm.constraint";}
     CompiledEquationCall compile(const ExecutableEquationSystem& system,const EquationCall& call,
                                 const NumericalBinding& binding) const override {
-        auto selection=selection_;
+        if (!system.immersed) throw std::runtime_error("Missing frozen immersed descriptor for selected provider.");
+        const auto selection=*system.immersed;
+        const bool supportedSolid=selection.solid==selection_.solid
+            || (selection_.algorithm==FDM::IBMForcingAlgorithm::DFMImplicitPrescribed && selection.solid==FDM::IBMSolidModel::CoupledRigid);
+        if (selection.algorithm!=selection_.algorithm || selection.enforcement!=selection_.enforcement
+            || selection.support!=selection_.support || selection.representation!=selection_.representation
+            || selection.surfaceNormalization!=selection_.surfaceNormalization || !supportedSolid)
+            throw std::runtime_error("Selected immersed provider does not support resolved descriptor properties: "+id_);
         auto expected=supportedMathematics(selection);
         const auto matches=[&](const auto& formulas) {
             return std::all_of(formulas.begin(),formulas.end(),[&](const auto& math) {
@@ -122,17 +133,7 @@ public:
                     && canonicalFormula(system.registry.at(math.id))==canonicalFormula(math);
             });
         };
-        // Match only exact mathematical variants implemented by this method.
-        // This never substitutes a different numerical algorithm for user AST.
-        if (!matches(expected) && selection.solid==FDM::IBMSolidModel::SelfPropelledRigid
-            && selection.enforcement!=FDM::IBMEnforcement::MonolithicKKT) {
-            selection.rigidMotionMode=FDM::IBMRigidMotionMode::Rotate;
-            expected=supportedMathematics(selection);
-        }
-        if (!matches(expected) && selection.algorithm==FDM::IBMForcingAlgorithm::DFMImplicitPrescribed) {
-            selection.solid=FDM::IBMSolidModel::CoupledRigid;
-            expected=supportedMathematics(selection);
-        }
+        if (!matches(expected)) throw std::runtime_error("Unsupported immersed mathematics for resolved descriptor: "+id_);
         std::vector<std::string> ids;std::vector<CompiledMathRef> members;
         const bool surface=selection.support==FDM::IBMConstraintSupport::Surface;
         const std::string lambda=surface?"Lambda_s":"lambda_b";
@@ -190,6 +191,9 @@ public:
             result.target.resources={{lambda,"ibm.surfaceMultiplier",0,3,ResourceAccessMode::Write,false,SynchronizationRequirement::WriteOwned}};
         } else if (kind==TargetKind::Working) result.target.workspace="ibm.pCorrection";
         result.equationMethod=id_;result.calls={{call.equation,call.target.symbol}};
+        result.capabilities={"velocity.immersed"};
+        result.stateUses={{"rho"},{"rhoU"},{"rhoE"},{"U"}};
+        result.stateEffects={{"rhoU",false,true},{"rhoE",false,true}};
         result.reads={"rho","rhoU","rhoE","U","geometry","targetTime","dt","U_b"};
         if (selection.enforcement==FDM::IBMEnforcement::BrinkmanPenalty) {
             result.reads.push_back("ibm.mask");result.reads.push_back("ibm.penaltyCoefficient");
@@ -197,7 +201,10 @@ public:
         if (selection.solid!=FDM::IBMSolidModel::Prescribed) {
             result.reads.insert(result.reads.end(),{"U_s","omega_s","U_deform","solid.externalForce","solid.externalTorque"});
         }
-        if (selection.enforcement==FDM::IBMEnforcement::ExplicitIBM) result.reads.push_back("ibm.laggedForceDensity");
+        if (selection.enforcement==FDM::IBMEnforcement::ExplicitIBM) {
+            result.reads.push_back("ibm.laggedForceDensity");
+            result.stateUses.push_back({"ibm.laggedForceDensity",StateVersion::Lagged});
+        }
         // One fused numerical call writes the complete mathematical block.
         result.writes={"ibm.forceDensity"};
         for (const auto& member:members) result.writes.push_back(member.target);
@@ -214,7 +221,7 @@ public:
         result.requirements={"complete post-predictor impulse/work block","targetTime = physical time + dt",
             "original multiplier/solid storage; no physical copy","owner COPY for multiplier, SUM for load"};
         result.providerContract=std::make_shared<const CompiledImmersedContract>(CompiledImmersedContract{
-            selection.algorithm,selection.enforcement,selection.support,selection.solid,selection.representation,selection.rigidMotionMode,kind,call.equation,call.target.symbol,members});
+            selection.algorithm,selection.enforcement,selection.support,selection.solid,selection.representation,selection.rigidMotionMode,selection.surfaceNormalization,kind,call.equation,call.target.symbol,members});
         return result;
     }
 private:
@@ -229,15 +236,20 @@ void addImmersedMethods(ProviderRegistry& registry) {
         ImmersedMethod(A::VelocityForcingFTS),ImmersedMethod(A::VelocityForcingBP),
         ImmersedMethod(A::DFMImplicitPrescribed),ImmersedMethod(A::DFMImplicitSelfPropelled),ImmersedMethod(A::DFMAugmentedLagrangian)};
     for (const auto& method:methods) registry.add(method);
+    using N=FDM::IBMSurfaceNormalization;
+    static const std::vector<ImmersedMethod> linearMethods={
+        ImmersedMethod(A::PeskinOriginal,N::LinearReproducing),ImmersedMethod(A::VelocityForcingFTS,N::LinearReproducing),
+        ImmersedMethod(A::DFMImplicitPrescribed,N::LinearReproducing),ImmersedMethod(A::DFMImplicitSelfPropelled,N::LinearReproducing),
+        ImmersedMethod(A::DFMAugmentedLagrangian,N::LinearReproducing)};
+    for (const auto& method:linearMethods) registry.add(method);
 }
 void validateImmersedComposition(const RawEquationSystem& raw) {
     const bool ghost=std::any_of(raw.boundaryClosures.begin(),raw.boundaryClosures.end(),
         [](const auto& closure) {return closure.provider=="ibm.boundary";});
     const bool correction=raw.registry.contains("ibm.momentum");
     if (!ghost && !correction) return;
-    if (hasConstraint(raw,"C_SHARED_PRESSURE"))
-        throw std::runtime_error(ghost?"Unsupported: phase-wise ghost-state boundary closure is unavailable."
-            :"Unsupported: phase-wise IBM fluid-port assembly is unavailable.");
+    if (!raw.state.contains("rhoU") && !ghost)
+        throw std::runtime_error("Unsupported immersed fluid port: participating STATE has no implemented conservative momentum target rhoU; phase-wise fluid-port assembly is unavailable.");
     for (const auto& closure:raw.boundaryClosures) {
         if (closure.provider!="ibm.boundary") continue;
         if (closure.reads!=std::vector<std::string>{"conservative","geometry","classification"}
@@ -258,6 +270,12 @@ void validateImmersedBindings(const CompiledSolvePlan& plan,const FDM::IImmersed
         }
         if (!*contract || !system) throw std::runtime_error("Native immersed occurrence has no matching bound IBM system.");
         const auto& c=**contract;const auto& d=system->algorithmDescriptor();
+        for (const auto& port:system->fluidPorts()) if (port.phaseIndex>=0
+            || port.momentumName!=c.fluid.momentumName || port.energyName!=c.fluid.energyName
+            || port.density!=c.fluid.density || port.velocity!=c.fluid.velocity
+            || port.momentumTarget!=c.fluid.momentumTarget || port.energyTarget!=c.fluid.energyTarget
+            || !port.coupleMechanicalWork || !port.constrainVelocity)
+            throw std::runtime_error("Unsupported bound immersed fluid port: no matching frozen conservative velocity/momentum/energy storage contract.");
         const auto& selection=system->methodSelection();
         const bool sameMembers=call.fusionMembers.size()==c.members.size()
             && std::equal(c.members.begin(),c.members.end(),call.fusionMembers.begin(),
@@ -271,13 +289,14 @@ void validateImmersedBindings(const CompiledSolvePlan& plan,const FDM::IImmersed
             && (!system->storageView(FDM::ImmersedStorageKind::SolidTranslation).value
                 || !system->storageView(FDM::ImmersedStorageKind::SolidRotation).value))
             throw std::runtime_error("IBM solid STATE has no original velocity alias.");
-        if (d.algorithm!=c.algorithm
+        if (d.surfaceNormalization!=c.surfaceNormalization || d.algorithm!=c.algorithm
             || (c.solid==FDM::IBMSolidModel::SelfPropelledRigid && c.enforcement!=FDM::IBMEnforcement::MonolithicKKT
                 && d.rigidMotionMode!=c.rigidMotionMode)
             || selection.enforcement!=c.enforcement || selection.support!=c.support
             || selection.solid!=c.solid || selection.representation!=c.representation
             || call.source.target.kind!=c.kind || call.target.kind!=c.kind || call.source.target.symbol!=c.target
             || call.equationMethod!=std::string("Immersed.")+FDM::toString(c.algorithm)
+                +(c.surfaceNormalization==FDM::IBMSurfaceNormalization::LinearReproducing?".linearReproducing":"")
             || call.backendProvider!="ibm.constraint" || call.source.equation!=c.equation || call.target.symbol!=c.target
             || !sameMembers || (c.enforcement==FDM::IBMEnforcement::MonolithicKKT
                 ?(!call.backendOperation.empty() || call.fragment.kind!=PlanNodeKind::BlockSolve

@@ -300,6 +300,7 @@ int executeMulti(
         if (interfaceActive) {
             auto* levelSet = interfaceModels[blockId]->levelSetState();
             if (levelSet) {
+                bundle.distributed.add(Equation::Coupling::interfaceNormalView(*interfaceModels[blockId],geometry,(int)blockId));
                 bundle.distributed.add(State::workspaceView(
                     "levelSetCurvature", (int)blockId, geometry,
                     levelSet->curvatures(), 1));

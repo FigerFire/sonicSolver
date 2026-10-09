@@ -5,6 +5,7 @@
 /// No equation destinations, execution order, loops or numerical recipes live here.
 
 #include "core/system/SF_formula.h"
+#include "core/system/SF_dataContract.h"
 #include <algorithm>
 #include <optional>
 #include <stdexcept>
@@ -40,7 +41,7 @@ enum class StorageBinding {
 };
 
 /// @brief Derived values are views of the physical authority, never a second state.
-enum class StateDerivation { None, Velocity, Pressure, Temperature, Enthalpy, DynamicViscosity, KinematicViscosity, ThermalConductivity };
+enum class StateDerivation { None, Velocity, Pressure, Temperature, Enthalpy, DynamicViscosity, KinematicViscosity, ThermalConductivity, WallDistance };
 
 /// @brief A base symbol; Working/Correction/Stage are compiler-created views.
 struct StateSymbol {
@@ -64,6 +65,9 @@ struct StateSymbol {
     std::string nameSpace;
     StateDerivation derivation = StateDerivation::None;
     Provenance origin;
+    StateVersion availableVersion=StateVersion::Current;
+    StateEvaluation evaluation=StateEvaluation::Direct;
+    std::vector<std::string> dependencies;
 };
 
 /// Active case base variables, independently of the available builtin catalog.

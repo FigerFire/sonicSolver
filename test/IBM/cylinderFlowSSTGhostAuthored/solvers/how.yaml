@@ -1,0 +1,40 @@
+{
+  "SonicFile": {
+    "object": "solver",
+    "type": "executionProgram"
+  },
+  "root": {
+    "kind": "Sequence",
+    "children": [
+      {
+        "kind": "EquationCall",
+        "equation": "k",
+        "target": "k"
+      },
+      {
+        "kind": "EquationCall",
+        "equation": "omega",
+        "target": "omega"
+      },
+      {
+        "kind": "EquationCall",
+        "equation": "continuity",
+        "target": "rho"
+      },
+      {
+        "kind": "EquationCall",
+        "equation": "momentum",
+        "target": "rhoU"
+      },
+      {
+        "kind": "EquationCall",
+        "equation": "energy",
+        "target": "rhoE"
+      },
+      {
+        "kind": "Commit",
+        "id": "physicalStep.commit"
+      }
+    ]
+  }
+}

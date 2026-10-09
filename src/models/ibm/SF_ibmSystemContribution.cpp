@@ -9,12 +9,22 @@ namespace SF::IBM::SystemContribution {
 using namespace SF::System;
 void contribute(System::SystemContribution& system,
                 const FDM::ImmersedAlgorithmDescriptor& immersed) {
+    system.immersed=immersed;
     system.recordContribution("model.ibm."+immersed.id,"immersed-boundary contribution");
     if (immersed.enforcement==FDM::IBMEnforcement::GhostCell) {
         system.requireProvider("ibm.boundary","bind stage-time ghost/ILW stencil closure");
         system.addBoundaryClosure({"immersed.ghost","ibm.boundary",{"conservative","geometry","classification"},
             {"conservative.ghost"},true,
             {"physical boundary","halo COPY","ghost/ILW reconstruction","ghost publication","halo COPY","spatial operator"},{}});
+        system.boundaryClosures.back().capabilities={"velocity.immersed"};
+        if (immersed.wallClosure==FDM::ImmersedWallClosure::StationaryNoSlipAdiabatic) {
+            system.boundaryClosures.back().boundCapabilities={{"meanflow.boundary.immersed.viscous","momentum","rhoU","immersed.ghost"}};
+            StateSymbol distance;distance.id="immersed.wallDistance";distance.name="stationary immersed wall distance";
+            distance.role=StateRole::Derived;distance.derivation=StateDerivation::WallDistance;
+            distance.storageKey="geometry.wallDistance";distance.initializationRequired=distance.boundaryRequired=distance.restartEligible=false;
+            distance.origin={OriginKind::Model,"immersed.ghost"};
+            system.addState(std::move(distance));
+        }
         return;
     }
     system.requireProvider("ibm.constraint","execute compiled immersed impulse/projection/block");
@@ -25,6 +35,7 @@ void contribute(System::SystemContribution& system,
         value.shape=components==1?ValueShape::Scalar:ValueShape::Vector;
         value.location=location;value.ownership=owner;value.storageBinding=binding;
         value.storageKey=std::move(storage);value.role=role;value.nameSpace="immersed";
+        if (id=="ibm.laggedForceDensity") value.availableVersion=StateVersion::Lagged;
         value.initializationRequired=false;value.boundaryRequired=false;
         value.restartEligible=false;value.outputEligible=false;
         system.addState(std::move(value));
@@ -53,9 +64,10 @@ void contribute(System::SystemContribution& system,
     auto formulas=mathematics(immersed);
     std::vector<std::string> members;
     for (const auto& formula:formulas) members.push_back(formula.id);
-    const auto method=std::string("Immersed.")+FDM::toString(immersed.algorithm);
+    const auto method=std::string("Immersed.")+FDM::toString(immersed.algorithm)
+        +(immersed.surfaceNormalization==FDM::IBMSurfaceNormalization::LinearReproducing?".linearReproducing":"");
     ExecutionScope group;
-    group.kind=ExecutionKind::Sequence;group.id="immersed.correction";group.order=70;
+    group.kind=ExecutionKind::Sequence;group.id="immersed.correction";
     for (auto formula:formulas) {
         const std::string target=formula.id=="ibm.momentum"?"rhoU":formula.id=="ibm.energy"?"rhoE"
             :formula.id=="ibm.translation"?"U_s":formula.id=="ibm.rotation"?"omega_s"
@@ -68,6 +80,7 @@ void contribute(System::SystemContribution& system,
         system.bindNumerics({formula.id,method,members});
         system.addEquation(std::move(formula));
     }
+    system.placement.push_back({{},"equation:ibm.momentum",{"equation:energy"},{"kind:Commit"}});
     system.addExecution(std::move(group));
     if (multiplier) system.addConstraint({"immersed.velocity","immersed velocity relation",
         immersed.enforcement==FDM::IBMEnforcement::ExplicitIBM

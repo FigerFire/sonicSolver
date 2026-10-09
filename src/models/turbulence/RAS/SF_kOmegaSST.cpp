@@ -54,9 +54,12 @@ double laminarKinematicViscosity(double rho, double laminarMu) {
     return std::max(laminarMu, 0.0) / std::max(rho, 1.0e-12);
 }
 
-double wallDistance(const Field& flow, int i, int j, int k) {
+double wallDistance(const Field& flow, int i, int j, int k,bool strict) {
     const double d = flow.wallDistance(i, j, k);
     if (std::isfinite(d) && d > 1.0e-14) return d;
+    if (strict) throw std::runtime_error("SST stationary immersed wall requires positive physical wall distance at ("
+        +std::to_string(i)+","+std::to_string(j)+","+std::to_string(k)+"), d="+std::to_string(d)
+        +", flag="+std::to_string(flow.CellFlag(i,j,k))+"; no far-field fallback.");
     return 1.0e20;
 }
 
@@ -82,8 +85,8 @@ double blendingF1(const Field& flow,
                   double kVal,
                   double omega,
                   double laminarMu,
-                  const SSTConstants& c) {
-    const double d = wallDistance(flow, i, j, k);
+                  const SSTConstants& c,bool strict) {
+    const double d = wallDistance(flow, i, j, k,strict);
     const double nu = laminarKinematicViscosity(rho, laminarMu);
     const double sqrtK = std::sqrt(std::max(kVal, 0.0));
     const double cd = crossDiffusionCD(flow, state, i, j, k, rho, omega, c);
@@ -101,8 +104,8 @@ double blendingF2(const Field& flow,
                   double kVal,
                   double omega,
                   double laminarMu,
-                  const SSTConstants& c) {
-    const double d = wallDistance(flow, i, j, k);
+                  const SSTConstants& c,bool strict) {
+    const double d = wallDistance(flow, i, j, k,strict);
     const double nu = laminarKinematicViscosity(rho, laminarMu);
     const double sqrtK = std::sqrt(std::max(kVal, 0.0));
     const double term1 = 2.0 * sqrtK / std::max(c.betaStar * omega * d, 1.0e-30);
@@ -184,11 +187,14 @@ void KOmegaSSTModel::applyBoundary(const Field& flow,
     for (int k = ng; k < nz + ng; ++k) {
         for (int j = ng; j < ny + ng; ++j) {
             for (int i = ng; i < nx + ng; ++i) {
+                if (wall_ && flow.CellFlag(i,j,k)!=FLUID_CELL) continue;
                 state.K(i, j, k) = clampPositive(state.K(i, j, k), config.coefficients.kFloor);
                 state.Omega(i, j, k) = clampPositive(state.Omega(i, j, k), config.coefficients.omegaFloor);
             }
         }
     }
+    if (wall_) wall_->applySST(flow,config.laminarDynamicViscosity,
+        state.values(ScalarSlot::K),state.values(ScalarSlot::Omega),state.values(ScalarSlot::EddyMu));
 }
 
 void KOmegaSSTModel::correct(const Field& flow,
@@ -216,7 +222,7 @@ void KOmegaSSTModel::correct(const Field& flow,
                 double muT  = eddyDynamicViscosity(flow, state, config, i, j, k);
                 double f1 = blendingF1(
                     flow, state, i, j, k, rho, kVal, wVal,
-                    config.laminarDynamicViscosity, c);
+                    config.laminarDynamicViscosity, c,wall_!=nullptr);
                 double sigmaK = f1 * c.sigmaK1 + (1.0 - f1) * c.sigmaK2;
                 double sigmaW = f1 * c.sigmaW1 + (1.0 - f1) * c.sigmaW2;
                 double beta = f1 * c.beta1 + (1.0 - f1) * c.beta2;
@@ -269,7 +275,7 @@ double KOmegaSSTModel::eddyDynamicViscosity(const Field& flow,
     double omegaVal = clampPositive(state.clamped(ScalarSlot::Omega, i, j, k), config.coefficients.omegaFloor);
     double f2 = blendingF2(
         flow, i, j, k, rho, kVal, omegaVal,
-        config.laminarDynamicViscosity, c);
+        config.laminarDynamicViscosity, c,wall_!=nullptr);
     double omegaMag = vorticityMagnitude(flow, i, j, k);
     return rho * c.a1 * kVal
          / std::max(c.a1 * omegaVal, omegaMag * f2);

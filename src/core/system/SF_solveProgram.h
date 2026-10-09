@@ -79,6 +79,8 @@ struct ExecutionScope {
 struct ExecutionProgram {
     /// Root is the single source execution authority; legacy entries are explicit migration debt.
     ExecutionScope root;
+    std::vector<PlacementRequirement> requirements;
+    bool explicitOrder=false;
     std::vector<ExecutionScope> legacyEntries;
     ExecutionProgram() = default;
     ExecutionProgram(std::initializer_list<EquationCall> legacySteps)
@@ -107,14 +109,7 @@ inline const char* toString(ExecutionKind value) {
 inline void orderExecution(ExecutionScope& scope) {
     std::stable_sort(scope.children.begin(),scope.children.end(),
         [](const ExecutionScope& a,const ExecutionScope& b) { return a.order < b.order; });
-    for (std::size_t i=0;i<scope.children.size();++i) {
-        auto& child=scope.children[i];
-        const auto address=scope.id+"/"+std::to_string(i);
-        if (child.id.empty()) child.id=address;
-        if (child.kind==ExecutionKind::EquationCall && child.step.occurrence.empty())
-            child.step.occurrence=address;
-        orderExecution(child);
-    }
+    for (auto& child:scope.children) orderExecution(child);
 }
 
 /// @brief A compiled reference to WHAT and its explicit HOW output. The
@@ -207,16 +202,48 @@ struct SolvePlanNode {
     bool legacyAdapter = false;
 };
 
+/// @brief Numerical owner participating in a common recipe, independent of fusion.
+struct TemporalParticipant {
+    std::string identity, provider;
+    std::vector<CompiledMathRef> calls;
+    std::vector<std::string> targets;
+    std::vector<OpId> preparation;
+    OpId stepSize, snapshot, prepareStage, rhs, advance, publish;
+};
+inline OpId instanceOperation(std::string_view type,std::string_view occurrence) {
+    return std::string(type)+"@"+std::to_string(occurrence.size())+":"+std::string(occurrence);
+}
+namespace TemporalOps {
+inline constexpr const char* Provider="execution.temporal";
+inline constexpr const char* Dt="time.group.dt";
+inline constexpr const char* Open="time.stage.open";
+inline constexpr const char* Ready="time.stage.ready";
+inline constexpr const char* RhsReady="time.stage.rhsReady";
+inline constexpr const char* Close="time.stage.close";
+inline constexpr const char* PublishReady="time.group.publishReady";
+}
+
 struct CompiledEquationCall {
     EquationCall source;
     CompiledTarget target;
     bool spatialTerms = false;
     bool primitiveSourceRequired = false;
     std::string residualWorkspace;
+    int requiredHaloWidth=0;
+    /// Numerical storage owned by this provider, described for explain only.
+    std::vector<std::string> numericalWorkspaces;
     std::vector<ExecutableOperation> operations;
     std::vector<FDM::TimeRecipeId> temporalCapabilities;
     std::string equationMethod;
     bool temporalResidual = false;
+    bool synchronousStages = false;
+    /// Provider-owned step setup; temporal recipes own stage topology/math.
+    std::vector<OpId> temporalPreparation;
+    OpId temporalStepSize;
+    OpId temporalSnapshot;
+    OpId temporalStagePrepare, temporalRhs, temporalAdvance, temporalPublish;
+    std::string temporalOwner;
+    std::vector<TemporalParticipant> temporalParticipants;
     /// @brief WHICH declares temporal storage; STATE does not select a time backend.
     std::string oldTimeWorkspace;
     std::string stageWorkspace;
@@ -229,6 +256,8 @@ struct CompiledEquationCall {
     std::vector<std::string> operatorBindings;
     std::vector<std::string> workspaceRequires;
     std::vector<std::string> workspaceProvides;
+    /// Provider-owned coefficients/correction arrays persist through inner loops of this step.
+    std::vector<std::string> stepWorkspaces;
     /// Method-owned numerical micro-topology. A nonempty fragment supersedes
     /// the compatibility backendOperation leaf.
     SolvePlanNode fragment;
@@ -239,6 +268,11 @@ struct CompiledEquationCall {
     std::string fusionKey;
     std::vector<CompiledMathRef> fusionMembers;
     /// @brief Provider-owned immutable implementation contract; generic HOW lowering never interprets it.
+    std::vector<StateUse> stateUses;
+    std::vector<StateEffect> stateEffects;
+    std::vector<std::string> capabilities;
+    std::vector<CapabilityBinding> boundCapabilities;
+    std::vector<CapabilityRequirement> capabilityRequirements;
     std::any providerContract;
 };
 
@@ -253,6 +287,7 @@ struct CompiledExecutionProgram {
     /// numerical stage topology for a transient equation body.
     SolvePlanNode temporalRoot;
     bool hasTemporalRoot = false;
+    std::vector<TemporalParticipant> temporalParticipants;
     /// Provider lifecycle decorates compiled scopes, never source HOW.
     SolvePlanNode loweredRoot;
 };

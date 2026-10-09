@@ -161,7 +161,7 @@ print_cli_commands() {
     fi
 
     echo "可运行的 CLI 指令："
-    echo "  ${command} --help"
+    echo "  ${command} help"
     echo "  ${command} check [CASE]"
     echo "  ${command} explain [CASE]"
     echo "  ${command} doctor [CASE]"
@@ -170,13 +170,16 @@ print_cli_commands() {
     echo "  ${command} why MODEL --with mpi"
     echo "  ${command} recipes"
     echo "  ${command} init [CASE] --recipe RECIPE"
-    echo "  ${command} cleanCase [CASE]"
-    echo "  ${command} postProcess [CASE]"
-    echo "  ${command} -cleanResult [CASE]"
-    echo "  ${command} -postProcessing [CASE]"
+    echo "  ${command} postProcessing [CASE]"
+    echo "  ${command} cleanResult [CASE]"
+    echo "  ${command} initialOutput [CASE]"
+    echo "  ${command} steps N [CASE]"
+    echo "  ${command} explainModel MODEL"
 
+    echo "终端环境与自动补全（将此行加入 ~/.bashrc 或 ~/.zshrc）："
+    echo "  source \"${SCRIPT_DIR}/etc/bashrc\""
     if [ -n "$SONIC_COMPLETION_DIR_INSTALLED" ]; then
-        echo "自动补全："
+        echo "也可单独加载自动补全："
         echo "  Bash: source \"${SONIC_COMPLETION_DIR_INSTALLED}/sonicSolver-completion.bash\""
         echo "  Zsh:  fpath=(\"${SONIC_COMPLETION_DIR_INSTALLED}\" \$fpath); autoload -Uz compinit && compinit"
     fi

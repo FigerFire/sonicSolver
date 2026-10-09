@@ -386,6 +386,15 @@ void printContributions(
 void printRawSystem(
         std::ostringstream& output,
         const ResolvedSimulationSystem& system) {
+    if (system.executableSystem.immersed) {
+        const auto& d=*system.executableSystem.immersed;
+        output << "\nFROZEN IBM SELECTION\n  implementation=" << (d.enforcement==FDM::IBMEnforcement::GhostCell ? "ghostCellIBM" : FDM::toString(d.algorithm))
+            << " enforcement=" << FDM::toString(d.enforcement) << " support=" << FDM::toString(d.support)
+            << " normalization=" << FDM::toString(d.surfaceNormalization)
+            << "\n  mathematical semantics: " << d.variational.stationaryFunctional
+            << "\n  fluid port: rho / U -> rhoU / rhoE; conservative five-variable implementation only"
+            << "\n  provider support and AST are validated independently of this selection.\n";
+    }
     output << "\nRAW EQUATION SYSTEM\n  Legacy compatibility descriptors:\n";
     if (system.rawSystem.legacyEquations.empty()) output << "  (none)\n";
     for (const auto& equation : system.rawSystem.legacyEquations) {
@@ -525,6 +534,8 @@ std::string describe(const ResolvedSimulationSystem& system) {
         for (const auto& write:boundary.writes) output << " " << write;
         output << "\n    order:";
         for (const auto& step:boundary.order) output << " -> " << step;
+        for (const auto& item:boundary.boundCapabilities) output << "\n    bound capability: " << item.name
+            << " equation=" << item.equation << " fluid-port=" << item.fluidPort << " boundary=" << item.boundary;
         output << "\n";
     }
     output << "\nIMMERSED / COMPILED BLOCK CONTRACTS\n";
@@ -535,6 +546,8 @@ std::string describe(const ResolvedSimulationSystem& system) {
         output << "  " << call.source.occurrence << ": " << FDM::toString(c.algorithm)
                << " / " << FDM::toString(c.enforcement) << " -> " << c.equation << " / " << c.target
                << " [" << call.backendProvider << "; complete predictor -> correction -> commit; targetTime=time+dt]\n";
+        if (c.support==FDM::IBMConstraintSupport::Surface)
+            output << "    surface transfer: " << FDM::toString(c.surfaceNormalization) << "; adjoint spreading\n";
         if (c.solid==FDM::IBMSolidModel::SelfPropelledRigid && c.enforcement!=FDM::IBMEnforcement::MonolithicKKT)
             output << "    virtual-fluid generalized mass; active rigid DOFs: "
                    << (c.rigidMotionMode==FDM::IBMRigidMotionMode::Rotate?"rotation":"translation") << "\n";
@@ -553,6 +566,17 @@ std::string describe(const ResolvedSimulationSystem& system) {
     output << "\nSTATE / BASE VARIABLES (active case symbols only)\n";
     for (const auto& symbol:system.executableSystem.state.symbols())
         output << unknownDescription(symbol);
+    for (const auto& symbol:system.executableSystem.state.symbols()) if (!symbol.dependencies.empty()) {
+        output << "    dependency " << symbol.id << (symbol.evaluation==StateEvaluation::Lazy ? " [lazy/versioned view]" : " [materialized]") << " <-";
+        for (const auto& dependency:symbol.dependencies) output << " " << dependency;
+        output << "\n";
+    }
+    for (const auto& placement:system.solvePlan.sourceProgram.requirements) {
+        output << "    HOW placement: " << placement.occurrence << " scope=" << (placement.scope.empty() ? "root" : placement.scope);
+        for (const auto& after:placement.after) output << " after=" << after;
+        for (const auto& before:placement.before) output << " before=" << before;
+        output << "\n";
+    }
     output << "\nSTATE VIEWS / COMPILED DEMANDS\n"
            << "  requested views (storage authority; no execution order):\n";
     for (const auto& view:system.solvePlan.compiledProgram.stateViews) {
@@ -592,6 +616,8 @@ std::string describe(const ResolvedSimulationSystem& system) {
     output << "\nWHICH / NUMERICS\n";
     output << "  time: " << FDM::toString(system.numericalSelection.recipes.time.id()) << "\n";
     for (const auto& binding:system.numericalSelection.bindings) {
+        for (const auto& parameter:binding.parameters)
+            output << "    " << binding.equation << "." << parameter.first << "=" << parameter.second << "\n";
         output << "  " << binding.equation;
         if (!binding.occurrence.empty()) output << "@" << binding.occurrence;
         output << " -> " << binding.method << "\n";
@@ -615,6 +641,16 @@ std::string describe(const ResolvedSimulationSystem& system) {
         for (const auto& member:call.fusionMembers) output << " " << member.equation << "->" << member.target;
         output << " } -> " << call.backendOperation << " provider=" << call.backendProvider
                << " temporal=" << call.temporalMethod << "\n";
+    }
+    if(!system.solvePlan.compiledProgram.temporalParticipants.empty()) {
+        output << "\nSYNCHRONOUS TEMPORAL GROUP\n"
+               << "  one dt / recipe / physical clock / terminal Commit\n"
+               << "  snapshots -> all prepare -> all RHS -> all advance -> validate all -> publish -> time.commit\n";
+        for(const auto& p:system.solvePlan.compiledProgram.temporalParticipants) {
+            output<<"  participant "<<p.identity<<" provider="<<p.provider<<"\n    calls:";
+            for(const auto& c:p.calls)output<<" "<<c.equation<<"->"<<c.target;
+            output<<"\n    phases: "<<p.snapshot<<" / "<<p.prepareStage<<" / "<<p.rhs<<" / "<<p.advance<<" / "<<p.publish<<"\n";
+        }
     }
     output << "\nCOMPILED OCCURRENCES / STORAGE / PROVIDERS\n";
     for (const auto& step:system.solvePlan.compiledProgram.steps) {
@@ -657,6 +693,9 @@ std::string describe(const ResolvedSimulationSystem& system) {
                 output << " " << provider;
             output << "\n";
         }
+        for (const auto& use:step.stateUses) output << "    STATE read: " << use.symbol << " version=" << toString(use.version) << (use.halo ? " halo-required" : " owner/view") << (use.perIteration ? " frozen-per-enclosing-iteration" : "") << "\n";
+        for (const auto& effect:step.stateEffects) output << "    STATE write: " << effect.symbol << (effect.publish ? " publication/snapshot" : " invalidates dependent materialized views") << (effect.halo ? " with halo publication" : " without halo publication") << "\n";
+        for (const auto& requirement:step.capabilityRequirements) output << "    capability: " << requirement.required << " when=" << requirement.when << " equation=" << requirement.equation << " fluid-port=" << requirement.fluidPort << " boundary=" << requirement.boundary << " : " << requirement.reason << "\n";
         output
                << "    output symbols:";
         for (const auto& symbol:step.writes)
@@ -688,7 +727,7 @@ std::string describe(const ResolvedSimulationSystem& system) {
         else if (step.equationMethod=="DirectEvaluation")
             output << "    execution: generic direct Equation method\n";
         else if (step.temporalResidual)
-            output << "    execution: fused conservative stage provider\n";
+            output << "    execution: selected temporal stage provider\n";
         else
             output << "    execution: registered relation provider\n";
     }
@@ -702,7 +741,8 @@ std::string describe(const ResolvedSimulationSystem& system) {
     output << "SYSTEM / STATE / BACKEND DETAILS\n"
 
            << "  template origin : "
-           << toString(system.classification.templateOrigin)
+           << (system.classification.defaultFluidPresetIncluded
+               ? toString(system.classification.templateOrigin) : "none (explicit contributions)")
            << "\n"
            << "  density behavior: "
            << system.classification.densityBehavior << "\n"

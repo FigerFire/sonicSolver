@@ -10,10 +10,12 @@ struct CompiledImmersedContract {
     FDM::IBMSolidModel solid;
     FDM::IBMRepresentation representation;
     FDM::IBMRigidMotionMode rigidMotionMode;
+    FDM::IBMSurfaceNormalization surfaceNormalization;
     TargetKind kind;
     std::string equation;
     std::string target;
     std::vector<CompiledMathRef> members;
+    FDM::ImmersedFluidPort fluid;
 };
 /// @brief 注册已有 impulse/projection/KKT 实现，不创建第二个 timestep。
 void addImmersedMethods(ProviderRegistry& registry);

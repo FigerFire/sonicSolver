@@ -12,6 +12,72 @@
 
 namespace SF::Discretization {
 
+/// Constant-coefficient nodal Central2. Geometry and stage neighbors are
+/// frozen runtime bindings; this operator never selects a temporal method.
+inline System::FormulaOperatorProvider central2ScalarDiffusion(double diffusivity) {
+    System::FormulaOperatorProvider provider;
+    provider.id="scalar.central2.diffusion";provider.mathematicalOperator="diffusion";
+    provider.matches=[](const System::FormulaExpr& expression) {
+        return expression.arguments.size()==2;
+    };
+    provider.compileValue=[diffusivity](const auto&) -> System::FormulaValueKernel {
+        return [diffusivity](const System::FormulaValues& values,int cell,int) {
+            double result=0;
+            for (int axis=0;axis<3;++axis) {
+                const double h=values.spacing(axis);
+                if (h==0) continue;
+                result+=diffusivity*(values.neighbor(cell,axis,-1)-2*values.neighbor(cell,axis,0)
+                    +values.neighbor(cell,axis,1))/(h*h);
+            }
+            return result;
+        };
+    };
+    return provider;
+}
+
+/// rhoC storage with concentration gradients and positive stage density.
+inline System::FormulaOperatorProvider conservativeScalarCentral2(double D) {
+    System::FormulaOperatorProvider p;p.id="scalar.conservative.central2";p.mathematicalOperator="diffusion";
+    p.matches=[](const auto&){return true;};
+    p.compileValue=[D](const auto&) -> System::FormulaValueKernel {
+        return [D](const auto& v,int cell,int) {
+            double result=0;
+            for(int axis=0;axis<3;++axis) {
+                const double h=v.spacing(axis);if(h==0)continue;
+                const double rho=v.boundReads[1](cell,0);
+                if(!std::isfinite(rho) || rho<=0)throw std::runtime_error("Scalar transport Stage density is not positive.");
+                const double center=v.boundReads[0](cell,0)/rho;
+                for(int sign:{-1,1}) {
+                    const double rn=v.boundNeighbor(1,cell,axis,sign,0);
+                    if(!std::isfinite(rn) || rn<=0)throw std::runtime_error("Scalar transport neighbor density is not positive.");
+                    const double cn=v.boundNeighbor(0,cell,axis,sign,0)/rn;
+                    result+=.5*D*(rho+rn)*(cn-center)/(h*h);
+                }
+            }
+            return result;
+        };
+    };return p;
+}
+/// A single face expression is reused with +/- divergence signs. This is an
+/// explicit scalar Upwind1 recipe, not a replacement for the NS flux recipe.
+inline double conservativeScalarAdvection(const System::FormulaValues& v,int cell) {
+    double divergence=0;
+    for(int axis=0;axis<3;++axis) {
+        const double h=v.spacing(axis);if(h==0)continue;
+        const double rho=v.boundReads[1](cell,0),m=v.boundReads[2](cell,axis);
+        if(!std::isfinite(rho) || rho<=0)throw std::runtime_error("Scalar transport density is not positive.");
+        const double c=v.boundReads[0](cell,0)/rho;
+        for(int sign:{-1,1}) {
+            const double rn=v.boundNeighbor(1,cell,axis,sign,0),mn=v.boundNeighbor(2,cell,axis,sign,axis);
+            if(!std::isfinite(rn) || rn<=0)throw std::runtime_error("Scalar transport neighbor density is not positive.");
+            const double cn=v.boundNeighbor(0,cell,axis,sign,0)/rn;
+            const double mass=.5*(m+mn);
+            const double left=sign>0?c:cn,right=sign>0?cn:c;
+            divergence+=sign*mass*(mass>=0?left:right)/h;
+        }
+    }return divergence;
+}
+
 struct FormulaCartesianGrid {
     int nx = 0;
     int ny = 0;

@@ -304,7 +304,7 @@ void begin(Workspace& workspace,
     recipe.requireProviderStages(providerStages);
     workspace.recipe = recipe;
     workspace.nextStage = 0;
-    workspace.patches.clear();
+    workspace.rhsReady = false;
     workspace.patches.resize(fields.size());
     if (recipe.backend() != System::ExplicitStageBackend::ForwardEuler) {
         for (size_t n = 0; n < fields.size(); ++n) {
@@ -318,6 +318,14 @@ void begin(Workspace& workspace,
         }
     }
     workspace.active = true;
+}
+
+void evaluateRHS(Workspace& workspace,int stageIndex,const std::vector<Field*>& fields,
+        std::vector<PatchWorkspace>& workspaces,State::StateBundle& state,const AssembleRHS& assemble) {
+    if (!workspace.active || workspace.nextStage!=stageIndex || workspace.rhsReady)
+        throw std::runtime_error("Flow RHS phase outside its active stage.");
+    assemble(fields,workspaces,state.time+workspace.recipe.stage(stageIndex).abscissa*state.dt);
+    workspace.rhsReady=true;
 }
 
 void executeStage(
@@ -337,9 +345,13 @@ void executeStage(
             "Explicit stage execution is inactive, out of range, or out of order.");
     }
     auto& storage = workspace.patches;
+    const auto assemble=[&](const auto& patches,auto& numerical,double time) {
+        if (!workspace.rhsReady) assembleRHS(patches,numerical,time);
+        workspace.rhsReady=false;
+    };
 
     if (workspace.recipe.backend() == System::ExplicitStageBackend::ForwardEuler) {
-        assembleRHS(fields, workspaces, state.time);
+        assemble(fields, workspaces, state.time);
         for (size_t index = 0; index < fields.size(); ++index) {
             Field* field = fields[index];
             if (!field) continue;
@@ -363,7 +375,7 @@ void executeStage(
         const auto& stage = workspace.recipe.stage(stageIndex);
         static constexpr const char* labels[] = {
             "SSP-RK3 stage 1", "SSP-RK3 stage 2", "SSP-RK3 final"};
-        assembleRHS(fields, workspaces,
+        assemble(fields, workspaces,
                     state.time + stage.abscissa * state.dt);
         for (size_t n = 0; n < fields.size(); ++n) {
             Field* field = fields[n];
@@ -383,7 +395,7 @@ void executeStage(
         validate(fields, labels[stageIndex]);
     } else if (workspace.recipe.backend() == System::ExplicitStageBackend::ClassicalRK4
                && stageIndex == 0) {
-        assembleRHS(fields, workspaces,
+        assemble(fields, workspaces,
                     state.time + workspace.recipe.stage(0).abscissa * state.dt);
         for (size_t n = 0; n < fields.size(); ++n) {
         if (fields[n]) snapshotRHS(*fields[n], workspaces[n].residual, storage[n].k1);
@@ -411,7 +423,7 @@ void executeStage(
     publish(fields);
     validate(fields, "RK4 stage 2");
     } else if (stageIndex == 1) {
-    assembleRHS(fields, workspaces,
+    assemble(fields, workspaces,
                 state.time + workspace.recipe.stage(1).abscissa * state.dt);
     for (size_t n = 0; n < fields.size(); ++n) {
         if (fields[n]) snapshotRHS(*fields[n], workspaces[n].residual, storage[n].k2);
@@ -438,7 +450,7 @@ void executeStage(
     publish(fields);
     validate(fields, "RK4 stage 3");
     } else if (stageIndex == 2) {
-    assembleRHS(fields, workspaces,
+    assemble(fields, workspaces,
                 state.time + workspace.recipe.stage(2).abscissa * state.dt);
     for (size_t n = 0; n < fields.size(); ++n) {
         if (fields[n]) snapshotRHS(*fields[n], workspaces[n].residual, storage[n].k3);
@@ -465,7 +477,7 @@ void executeStage(
     publish(fields);
     validate(fields, "RK4 stage 4");
     } else {
-    assembleRHS(fields, workspaces,
+    assemble(fields, workspaces,
                 state.time + workspace.recipe.stage(3).abscissa * state.dt);
     for (size_t n = 0; n < fields.size(); ++n) {
         if (fields[n]) snapshotRHS(*fields[n], workspaces[n].residual, storage[n].k4);

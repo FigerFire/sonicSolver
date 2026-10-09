@@ -143,6 +143,7 @@ IBM::IBMRuntimeConfig makeIBMRuntimeConfig(
         solverConfig.ibm.normalSearchTargetCandidates;
     config.normalSearchKeepSamples = solverConfig.ibm.normalSearchKeepSamples;
     config.method = solverConfig.ibm.method;
+    config.wallClosure = solverConfig.ibm.wallClosure;
     config.forcing = solverConfig.ibm.forcing;
     return config;
 }

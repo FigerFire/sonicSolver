@@ -76,6 +76,7 @@ struct CompiledSpatialBinding {
     bool compiledDataAvailable = false;
     PrimitiveMomentumSource primitiveSource;
     ConservativeSourceKernel conservativeSource;
+    StageConservativeSource stageSource;
     PrimitiveMomentumSpatialTerm primitiveSpatial = nullptr;
 
     CompiledSpatialBinding(std::string formula, std::string executionEquation,

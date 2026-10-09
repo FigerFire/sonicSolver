@@ -19,6 +19,7 @@
 namespace SF::System {
 
 struct CaseClassification {
+    bool defaultFluidPresetIncluded = true;
     PhysicsTemplateKind templateOrigin = PhysicsTemplateKind::SingleFluid;
     std::string densityBehavior;
     std::string thermodynamicCompressibility;

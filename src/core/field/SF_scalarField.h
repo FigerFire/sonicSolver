@@ -5,7 +5,7 @@
 #pragma once
 
 /// @file SF_scalarField.h
-/// @brief 与主流场同网格的通用标量场存储。
+/// @brief 与几何 patch 同网格的通用标量场存储；不要求流体 Q 或 EOS。
 
 #include "SF_field.h"
 

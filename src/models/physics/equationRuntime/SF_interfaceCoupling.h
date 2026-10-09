@@ -15,6 +15,7 @@
 #include "core/state/SF_state.h"
 
 #include <memory>
+#include "models/physics/interfaceModel/levelSet/SF_reinit.h"
 #include <vector>
 
 namespace SF {
@@ -28,9 +29,13 @@ void registerInterfaceState(
     const Field& field,
     State::VariableRegistry& registry);
 
+/// Non-owning alias of the existing vector cache, with no additional synchronization.
+State::DistributedFieldView interfaceNormalView(Physics::InterfaceModels::Model& model,
+    Field& field,int patchId);
+
 /// @brief 单 Field 的 OneFluid 界面方程生命周期适配器。
 class InterfaceEquationProvider final
-    : public FDM::IEquationSystemCoupling {
+    : public FDM::IEquationSystemCoupling, public FDM::ILevelSetOperations {
 public:
     InterfaceEquationProvider(
         Physics::InterfaceModels::Model& model,
@@ -41,7 +46,11 @@ public:
     void prepareRHS(Field& field, double dt) override;
     void assembleRHS(Field& field, Residual& residual, double dt) override;
     void preparePressureCorrection(Field& field) override;
-    void commitStep(Field& field, double dt) override;
+    void validateAdvection(int order,double epsilon,double power,bool csf,bool ghostFluid,double sigma,double width) const override;
+    void beginReinitialization(int order,double pseudoDt,double epsilon,double power,double signFactor) override;
+    State::DistributedFieldView referenceView() override;
+    void reinitializeStage() override;
+    void publishGeometry(double physicalDt) override;
     State::VariableRegistry* variables(Field&) override;
     const FDM::ITransportModel* transportModel(
         const Field&) const override;
@@ -51,6 +60,9 @@ public:
 private:
     void prepareInterfaceState(Field& field);
 
+    Field* field_=nullptr;
+    Physics::Multiphase::ReinitOptions pseudoOptions_;
+    Physics::Multiphase::Reinit::Workspace pseudoWorkspace_;
     Physics::InterfaceModels::Model& model_;
     State::VariableRegistry& variables_;
     FDM::IExecutionRuntime& runtime_;
@@ -58,7 +70,7 @@ private:
 
 /// @brief 多 patch OneFluid 界面方程生命周期和 canonical 标量同步。
 class MultiPatchInterfaceEquationProvider final
-    : public FDM::IEquationSystemCoupling {
+    : public FDM::IEquationSystemCoupling, public FDM::ILevelSetOperations {
 public:
     MultiPatchInterfaceEquationProvider(
         MultiBlockMesh& mesh,
@@ -73,7 +85,11 @@ public:
                      const std::vector<Residual*>& residuals, double dt) override;
     void preparePressureCorrection(
         const std::vector<Field*>& fields) override;
-    void commitStep(const std::vector<Field*>& fields, double dt) override;
+    void validateAdvection(int order,double epsilon,double power,bool csf,bool ghostFluid,double sigma,double width) const override;
+    void beginReinitialization(int order,double pseudoDt,double epsilon,double power,double signFactor) override;
+    State::DistributedFieldView referenceView() override;
+    void reinitializeStage() override;
+    void publishGeometry(double physicalDt) override;
     State::VariableRegistry* variables(Field& field) override;
     const FDM::ITransportModel* transportModel(
         const Field& field) const override;

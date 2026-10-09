@@ -44,6 +44,13 @@ StateSymbol builtinState(BuiltinState variable) {
     case BuiltinState::ThermalConductivity:
         symbol.id="conductivity";symbol.name="thermal conductivity";symbol.derivation=StateDerivation::ThermalConductivity;break;
     }
+    if (symbol.derivation==StateDerivation::Velocity) {
+        symbol.evaluation=StateEvaluation::Lazy;symbol.dependencies={"rho","rhoU"};
+    }
+    if (symbol.derivation==StateDerivation::Pressure || symbol.derivation==StateDerivation::Temperature
+        || symbol.derivation==StateDerivation::Enthalpy) {
+        symbol.evaluation=StateEvaluation::Lazy;symbol.dependencies={"rho","rhoU","rhoE"};
+    }
     symbol.shape=symbol.components==1 ? ValueShape::Scalar : ValueShape::Vector;
     if (!symbol.storageKey.empty()) symbol.storageBinding=StorageBinding::NamedDistributed;
     return symbol;
@@ -75,12 +82,24 @@ const StateSymbol& BuiltinStateCatalog::at(std::string_view id) const {
 }
 
 void BuiltinStateCatalog::require(StateRegistry& active,std::string_view id) const {
-    if (!active.contains(id)) active.add(at(id));
+    if (!active.contains(id)) {
+        auto symbol=at(id);
+        if (symbol.evaluation==StateEvaluation::Lazy && !active.contains("rho")) {
+            std::vector<std::string> densityComponents;
+            for (const auto& item:active.symbols()) if (item.id.rfind("partialDensity.",0)==0) densityComponents.push_back(item.id);
+            if (!densityComponents.empty()) {
+                symbol.dependencies.erase(std::remove(symbol.dependencies.begin(),symbol.dependencies.end(),"rho"),symbol.dependencies.end());
+                symbol.dependencies.insert(symbol.dependencies.end(),densityComponents.begin(),densityComponents.end());
+            }
+        }
+        active.add(std::move(symbol));
+    }
 }
 
 StateSymbol BuiltinStateCatalog::solution(std::string_view id) const {
     auto symbol=at(id);
     symbol.derivation=StateDerivation::None;
+    symbol.evaluation=StateEvaluation::Direct;symbol.dependencies.clear();
     symbol.initializationRequired=true;
     symbol.boundaryRequired=true;
     symbol.runtimeStorageRequired=true;

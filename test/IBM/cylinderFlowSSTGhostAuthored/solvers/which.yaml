@@ -1,0 +1,36 @@
+{
+  "SonicFile": {
+    "object": "solver",
+    "type": "providerBindings"
+  },
+  "bindings": [
+    {
+      "equation": "k",
+      "method": "TurbulenceTransport",
+      "inputs": [
+        "k",
+        "omega"
+      ]
+    },
+    {
+      "equation": "omega",
+      "method": "TurbulenceTransport",
+      "inputs": [
+        "k",
+        "omega"
+      ]
+    },
+    {
+      "equation": "continuity",
+      "method": "ConservativeResidual"
+    },
+    {
+      "equation": "momentum",
+      "method": "ConservativeResidual"
+    },
+    {
+      "equation": "energy",
+      "method": "ConservativeResidual"
+    }
+  ]
+}

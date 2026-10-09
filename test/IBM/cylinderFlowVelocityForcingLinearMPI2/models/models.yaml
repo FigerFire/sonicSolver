@@ -1,0 +1,10 @@
+# Physics model registry.
+SonicFile:
+  object: models
+  type: registry
+turbulence:
+  type: turbulence
+  file: models/turbulence.yaml
+cylinderSurface:
+  type: geometry
+  file: models/cylinderSurface.yaml

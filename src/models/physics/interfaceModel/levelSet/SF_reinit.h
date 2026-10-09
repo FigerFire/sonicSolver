@@ -34,6 +34,14 @@ public:
     /// @param field 参考网格。
     /// @param levelSet Level Set 场。
     /// @param options 重初始化设置。
+    struct Workspace {
+        std::vector<double> reference;
+        double signWidth=0.0;
+    };
+    static void begin(const Field& field,const LevelSetField& levelSet,
+                      const ReinitOptions& options,Workspace& workspace);
+    static void stage(const Field& field,LevelSetField& levelSet,
+                      const ReinitOptions& options,const Workspace& workspace);
     static void advance(const Field& field,
                         LevelSetField& levelSet,
                         const ReinitOptions& options);

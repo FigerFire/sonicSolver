@@ -9,15 +9,14 @@ _sonicSolver() {
         'doctor:print implementation diagnostics'
         'models:list available models'
         'why:explain model capability requirements'
-        'explain-model:explain one model descriptor'
+        'explainModel:explain one model descriptor'
         'recipes:list case recipes'
         'init:create a native case template'
-        'cleanCase:remove CASE/result contents'
-        'postProcess:open the unique result PVD'
-        '--help:show help'
-        '-h:show help'
-        '--initial-output:write initial fields'
-        '--steps:limit a run to N time steps'
+        'postProcessing:open the unique result PVD'
+        'help:show help'
+        'cleanResult:remove CASE/result contents'
+        'initialOutput:write initial fields'
+        'steps:limit a run to N time steps'
     )
     models=(ghostCell peskinOriginal dfmExplicitSelfPropelled
         dfmFractionalStepSelfPropelled dfmFractionalStepPrescribed
@@ -38,14 +37,14 @@ _sonicSolver() {
                 models)
                     _arguments '1:category:(ibm)' '--with[filter by capability]:backend:(mpi)'
                     ;;
-                why|explain-model)
+                why|explainModel)
                     _describe 'IBM model' models
                     ;;
                 init)
                     _arguments '1:case:_files -/' \
                         '--recipe[case recipe]:recipe:(compressibleSingleFluid compressibleFixedImmersedBody compressibleMovingBody selfPropelledBody levelSetSurfaceTension)'
                     ;;
-                run|check|explain|doctor|cleanCase|postProcess|--initial-output)
+                run|check|explain|doctor|cleanResult|postProcessing|initialOutput)
                     _files -/
                     ;;
                 *)

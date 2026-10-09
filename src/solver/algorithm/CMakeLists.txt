@@ -1,6 +1,13 @@
 add_subdirectory(time)
 
 add_library(SF_solverAlgorithm STATIC
+    time/SF_stageGroup.cpp
+    scalar/SF_scalarBinding.cpp
+    immersed/SF_immersedBinding.cpp
+    interface/SF_levelSetBinding.cpp
+    transport/SF_transportBinding.cpp
+    SF_flowOperations.cpp
+    SF_singleFluidBinding.cpp
     SF_singleFluidStepper.cpp
     SF_singleFluidStepper.h
     SF_pressureProviderBinding.cpp

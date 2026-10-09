@@ -3,6 +3,8 @@
 
 #include "SF_methodObjects.h"
 #include "SF_stateRealization.h"
+#include "SF_executionContract.h"
+#include "core/system/SF_operationIds.h"
 
 #include <algorithm>
 #include <stdexcept>
@@ -43,7 +45,20 @@ CompiledExecutionProgram compileExecutionProgram(
         const ITemporalMethod* temporalMethod) {
     CompiledExecutionProgram result;
     ExecutionScope root=program.root;
-    orderExecution(root);
+    if (!program.explicitOrder) {
+        orderExecution(root);
+        composeDefaultPlacement(program,root);
+    }
+    const auto address=[&](const auto& self,ExecutionScope& scope)->void {
+        for (std::size_t i=0;i<scope.children.size();++i) {
+            auto& child=scope.children[i];
+            if (child.id.empty()) child.id=scope.id+"/"+std::to_string(i);
+            if (child.kind==ExecutionKind::EquationCall && child.step.occurrence.empty()) child.step.occurrence=child.id;
+            self(self,child);
+        }
+    };
+    address(address,root);
+    validatePlacement(program,root);
     result.root=root;
     std::vector<const EquationCall*> steps;
     std::vector<const ExecutionScope*> parents;
@@ -80,7 +95,6 @@ CompiledExecutionProgram compileExecutionProgram(
             }))
             throw std::runtime_error("Numerical binding addresses no execution occurrence: "+binding.equation);
     }
-    std::vector<std::string> availableWorkspaces;
     for (const auto* step:steps) {
         const NumericalBinding* found=nullptr;
         int precedence=-1;
@@ -136,16 +150,11 @@ CompiledExecutionProgram compileExecutionProgram(
         } else if (compiled.backendOperation.empty()) {
             throw std::runtime_error("EquationMethod supplied neither a fragment nor backend OpId.");
         }
-        for (const auto& workspace:compiled.workspaceRequires) {
-            if (workspace.empty() || std::find(availableWorkspaces.begin(),
-                availableWorkspaces.end(),workspace)==availableWorkspaces.end())
-                throw std::runtime_error("EquationCall '"+step->equation
-                    +"' requires unavailable workspace '"+workspace+"'.");
+        if (compiled.stateEffects.empty() && compiled.temporalResidual
+            && compiled.publishesStageToPhysicalTarget && compiled.target.kind==TargetKind::Physical) {
+            for (const auto& written:compiled.writes) if (state.contains(written))
+                compiled.stateEffects.push_back({written,false,false});
         }
-        for (const auto& workspace:compiled.workspaceProvides)
-            if (std::find(availableWorkspaces.begin(),availableWorkspaces.end(),
-                    workspace)==availableWorkspaces.end())
-                availableWorkspaces.push_back(workspace);
         result.steps.push_back(std::move(compiled));
     }
     // Fusion is explicitly authored by a provider contract and remains local
@@ -205,8 +214,17 @@ CompiledExecutionProgram compileExecutionProgram(
         if (!temporalMethod || temporalMethod->id()!=time->id())
             throw std::runtime_error("Explicit calls require a selected temporal recipe.");
         const auto compatible=[&](const auto& self,const ExecutionScope& node)->bool {
-            if (node.kind==ExecutionKind::Loop || node.kind==ExecutionKind::StageLoop
-                ) return false;
+            if (node.kind==ExecutionKind::StageLoop) return false;
+            if (node.kind==ExecutionKind::Loop) {
+                const auto temporalInside=[&](const auto& walk,const ExecutionScope& scope)->bool {
+                    if (scope.kind==ExecutionKind::EquationCall)
+                        return std::any_of(result.steps.begin(),result.steps.end(),[&](const auto& call) {
+                            return call.source.occurrence==scope.step.occurrence && call.temporalResidual;
+                        });
+                    return std::any_of(scope.children.begin(),scope.children.end(),[&](const auto& child) { return walk(walk,child); });
+                };
+                if (temporalInside(temporalInside,node)) return false;
+            }
             if (node.kind==ExecutionKind::Commit && std::none_of(result.root.children.begin(),result.root.children.end(),
                     [&](const auto& child) { return &child==&node; })) return false;
             for (const auto& child:node.children) if (!self(self,child)) return false;
@@ -218,12 +236,67 @@ CompiledExecutionProgram compileExecutionProgram(
         fused.temporalResidual=true;
         fused.backendOperation=transient.front()->backendOperation;
         fused.backendProvider=transient.front()->backendProvider;
+        fused.temporalPreparation=transient.front()->temporalPreparation;
+        fused.temporalStepSize=transient.front()->temporalStepSize;
+        fused.temporalSnapshot=transient.front()->temporalSnapshot;
+        const bool phased=std::any_of(transient.begin(),transient.end(),[](const auto* call) {
+            return call->synchronousStages;
+        });
         for (auto* call:transient) {
-            if (call->backendOperation!=fused.backendOperation
-                || call->backendProvider!=fused.backendProvider)
+            if (!phased && (call->backendOperation!=fused.backendOperation
+                || call->backendProvider!=fused.backendProvider
+                || call->temporalPreparation!=fused.temporalPreparation
+                || call->temporalStepSize!=fused.temporalStepSize
+                || call->temporalSnapshot!=fused.temporalSnapshot))
                 throw std::runtime_error("Unsupported: temporal providers declare incompatible fusion backends.");
             fused.calls.insert(fused.calls.end(),call->calls.begin(),call->calls.end());
             call->temporalMethod=FDM::toString(time->id());
+        }
+        if (phased) {
+            std::vector<std::string> written;
+            for (const auto* call:transient) {
+                if (call->temporalStagePrepare.empty() || call->temporalRhs.empty()
+                    || call->temporalAdvance.empty() || call->temporalPublish.empty())
+                    throw std::runtime_error("Unsupported temporal participant: split phase capability missing.");
+                if (std::find(written.begin(),written.end(),call->target.symbol)!=written.end())
+                    throw std::runtime_error("Duplicate temporal physical target: "+call->target.symbol);
+                for (const auto& previous:written) {
+                    const auto& a=state.at(previous);const auto& b=state.at(call->target.symbol);
+                    if (a.storageBinding==b.storageBinding && a.storageKey==b.storageKey
+                        && a.componentOffset<b.componentOffset+b.components && b.componentOffset<a.componentOffset+a.components)
+                        throw std::runtime_error("Overlapping temporal physical storage: "+previous+" / "+b.id);
+                }
+                written.push_back(call->target.symbol);
+                const auto identity=call->temporalOwner.empty()?call->source.occurrence:call->temporalOwner;
+                auto found=std::find_if(fused.temporalParticipants.begin(),fused.temporalParticipants.end(),
+                    [&](const auto& p) {return p.identity==identity;});
+                if (found==fused.temporalParticipants.end()) {
+                    TemporalParticipant p;p.identity=identity;p.provider=call->backendProvider;
+                    p.preparation=call->temporalPreparation;p.stepSize=call->temporalStepSize;
+                    p.snapshot=call->temporalSnapshot;p.prepareStage=call->temporalStagePrepare;
+                    p.rhs=call->temporalRhs;p.advance=call->temporalAdvance;p.publish=call->temporalPublish;
+                    fused.temporalParticipants.push_back(std::move(p));found=fused.temporalParticipants.end()-1;
+                } else if (found->provider!=call->backendProvider || found->prepareStage!=call->temporalStagePrepare
+                    || found->rhs!=call->temporalRhs || found->advance!=call->temporalAdvance || found->publish!=call->temporalPublish)
+                    throw std::runtime_error("Conflicting temporal numerical owner: "+identity);
+                found->calls.insert(found->calls.end(),call->calls.begin(),call->calls.end());
+                found->targets.push_back(call->target.symbol);
+            }
+            if (result.root.children.empty() || result.root.children.back().kind!=ExecutionKind::Commit
+                || std::count_if(result.root.children.begin(),result.root.children.end(),[](const auto& n){return n.kind==ExecutionKind::Commit;})!=1)
+                throw std::runtime_error("Common temporal group requires one terminal physical Commit.");
+            result.temporalParticipants=fused.temporalParticipants;
+            // The shared physical clock belongs to the temporal group even
+            // when a participant still declares its standalone commit.
+            for(auto& call:result.steps)
+                call.operations.erase(std::remove_if(call.operations.begin(),call.operations.end(),
+                    [](const auto& op){return op.operation==OpIds::TimeCommit;}),call.operations.end());
+            for (const char* op:{TemporalOps::Dt,TemporalOps::Open,TemporalOps::Ready,TemporalOps::RhsReady,
+                    TemporalOps::Close,TemporalOps::PublishReady,OpIds::TimeCommit})
+                result.steps.front().operations.push_back({op,op,
+                    (std::string_view(op)==OpIds::TimeCommit || std::string_view(op)==TemporalOps::PublishReady)
+                        ?OperationStage::StepCommit:OperationStage::Prepare,
+                    {OperationCapability::TemporalSynchronization},{OriginKind::Generated,"common temporal recipe"}});
         }
         std::vector<SolvePlanNode> prefix,suffix;
         const bool mixed=transient.size()!=result.steps.size();
@@ -240,16 +313,22 @@ CompiledExecutionProgram compileExecutionProgram(
                 if (seenTemporal) seenSuffix=true;
 
             }
-            const auto flatCalls=[](const ExecutionScope& node) {
-                return node.kind==ExecutionKind::EquationCall || (node.kind==ExecutionKind::Sequence
-                    && !node.children.empty() && std::all_of(node.children.begin(),node.children.end(),[](const auto& c) {
-                        return c.kind==ExecutionKind::EquationCall;
-                    }));
+            const auto groupedCalls=[](const auto& self,const ExecutionScope& node)->bool {
+                if (node.kind==ExecutionKind::EquationCall) return true;
+                return (node.kind==ExecutionKind::Sequence || node.kind==ExecutionKind::Loop)
+                    && !node.children.empty() && std::all_of(node.children.begin(),node.children.end(),
+                        [&](const auto& child) { return self(self,child); });
+            };
+            const auto callCount=[](const auto& self,const ExecutionScope& node)->std::size_t {
+                if (node.kind==ExecutionKind::EquationCall) return 1;
+                std::size_t count=0;
+                for (const auto& child:node.children) count+=self(self,child);
+                return count;
             };
             if (result.root.kind!=ExecutionKind::Sequence || result.root.children.empty()
                 || result.root.children.back().kind!=ExecutionKind::Commit
                 || std::any_of(result.root.children.begin(),result.root.children.end()-1,[&](const auto& node) {
-                    return !flatCalls(node);
+                    return !groupedCalls(groupedCalls,node);
                 }))
                 throw std::runtime_error("Unsupported mixed temporal topology: requires ordered calls/groups and terminal Commit.");
             // A source group remains one root node even if it contains several
@@ -257,7 +336,7 @@ CompiledExecutionProgram compileExecutionProgram(
             std::size_t nextCall=0,temporalCount=0;
             for (const auto& node:result.root.children) {
                 if (node.kind==ExecutionKind::Commit) continue;
-                const auto count=node.kind==ExecutionKind::EquationCall?1:node.children.size();
+                const auto count=callCount(callCount,node);
                 const bool temporal=result.steps[nextCall].temporalResidual;
                 for (std::size_t i=0;i<count;++i)
                     if (result.steps[nextCall+i].temporalResidual!=temporal)
@@ -280,16 +359,29 @@ CompiledExecutionProgram compileExecutionProgram(
         }
         result.temporalRoot=temporalMethod->compileFragment(*time,fused,prefix);
         result.temporalRoot.children.insert(result.temporalRoot.children.end(),suffix.begin(),suffix.end());
+        if (phased) {
+            SolvePlanNode barrier;barrier.id=barrier.operation=TemporalOps::PublishReady;
+            barrier.name=barrier.id;barrier.kind=PlanNodeKind::Commit;barrier.provider=TemporalOps::Provider;
+            result.temporalRoot.children.push_back(barrier);
+            for (const auto& p:fused.temporalParticipants) {
+                SolvePlanNode publish;publish.kind=PlanNodeKind::Commit;publish.id=publish.name=publish.operation=p.publish;
+                publish.provider=p.provider;publish.occurrence=p.identity;publish.equationCalls=p.calls;
+                result.temporalRoot.children.push_back(std::move(publish));
+            }
+            barrier.id=barrier.name=barrier.operation=OpIds::TimeCommit;
+            result.temporalRoot.children.push_back(barrier);
+        }
         // Source commit positions survive temporal lowering. The provider owns
         // each commit's implementation; WHICH never invents a source commit.
         for (std::size_t i=0;i<result.root.children.size();++i) {
             if (result.root.children[i].kind!=ExecutionKind::Commit) continue;
             if (i+1!=result.root.children.size())
                 throw std::runtime_error("Unsupported: fused temporal provider requires a terminal Commit.");
-            result.temporalRoot.children.push_back(result.loweredRoot.children.back());
+            if (!phased) result.temporalRoot.children.push_back(result.loweredRoot.children.back());
         }
         result.hasTemporalRoot=true;
     }
+    validateDataFlow(state,result);
     if (time) realizeTemporalViews(state,result,time->stageCount());
     return result;
 }
@@ -374,6 +466,37 @@ SolvePlanNode compileMethodProgram(const CompiledExecutionProgram& program, cons
     if (next!=program.steps.size())
         throw std::runtime_error("Compiled HOW contains unconsumed method steps.");
     return result;
+}
+
+std::string validateTemporalPlan(const CompiledSolvePlan& plan,int stages) {
+    const auto& participants=plan.compiledProgram.temporalParticipants;
+    if(participants.empty())return {};
+    std::vector<std::pair<std::string,std::string>> expected,actual;
+    const auto add=[&](const auto& id,const auto& provider){expected.emplace_back(id,provider);};
+    for(const auto& p:participants)for(const auto& op:p.preparation)add(op,p.provider);
+    add(TemporalOps::Dt,TemporalOps::Provider);
+    for(const auto& p:participants)add(p.snapshot,p.provider);
+    add("<StageLoop>",std::to_string(stages));add(TemporalOps::Open,TemporalOps::Provider);
+    for(const auto& p:participants)add(p.prepareStage,p.provider);
+    add(TemporalOps::Ready,TemporalOps::Provider);
+    for(const auto& p:participants)add(p.rhs,p.provider);
+    add(TemporalOps::RhsReady,TemporalOps::Provider);
+    for(const auto& p:participants)add(p.advance,p.provider);
+    add(TemporalOps::Close,TemporalOps::Provider);add("</StageLoop>",std::string{});
+    add(TemporalOps::PublishReady,TemporalOps::Provider);
+    for(const auto& p:participants)add(p.publish,p.provider);
+    add(OpIds::TimeCommit,TemporalOps::Provider);
+    bool valid=true;
+    const auto walk=[&](const auto& self,const SolvePlanNode& n)->void {
+        if(n.kind==PlanNodeKind::StageLoop) actual.emplace_back("<StageLoop>",std::to_string(n.repetitions));
+        else if(!n.children.empty() && n.kind!=PlanNodeKind::Sequence)valid=false;
+        if(!n.operation.empty())actual.emplace_back(n.operation,n.provider);
+        for(const auto& c:n.children)self(self,c);
+        if(n.kind==PlanNodeKind::StageLoop)actual.emplace_back("</StageLoop>",std::string{});
+    };
+    walk(walk,plan.root);
+    if(!valid || actual!=expected)return "Invalid synchronous temporal plan: phase order, participant, StageLoop recipe or single terminal Commit differs from the compiled contract.";
+    return {};
 }
 
 } // namespace SF::System

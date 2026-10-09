@@ -35,6 +35,8 @@ struct ImmersedAlgorithmDescriptor {
     IBMEnforcement enforcement = IBMEnforcement::GhostCell;
     IBMSolidModel solid = IBMSolidModel::Prescribed;
     IBMRigidMotionMode rigidMotionMode = IBMRigidMotionMode::Motivation;
+    IBMSurfaceNormalization surfaceNormalization = IBMSurfaceNormalization::PartitionOfUnity;
+    ImmersedWallClosure wallClosure = ImmersedWallClosure::EulerSlip;
     bool monolithic = false;
     ImmersedVariationalDescriptor variational;
 };
@@ -49,6 +51,10 @@ struct ImmersedFluidPort {
     int phaseIndex = -1;
     bool constrainVelocity = true;
     bool coupleMechanicalWork = true;
+    std::string density = "rho";
+    std::string velocity = "U";
+    std::string momentumTarget = "rhoU";
+    std::string energyTarget = "rhoE";
 };
 
 /// @brief 统一 IBM 的正交选择轴。

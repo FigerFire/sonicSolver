@@ -21,7 +21,7 @@ FormulaValueKernel valueKernel(
         const Equation& formula,const FormulaExpr& expression,
         const FormulaOperatorCatalog& catalog,
         const std::vector<FormulaOperatorBinding>& bindings,
-        std::vector<std::string>& used) {
+        std::vector<std::string>& used,const std::vector<std::string>* slots=nullptr) {
     switch (expression.kind) {
         case Kind::Constant: {
             const double value=expression.constant;
@@ -29,12 +29,20 @@ FormulaValueKernel valueKernel(
         }
         case Kind::Symbol: {
             const auto name=expression.name;
+            if (slots) {
+                const auto found=std::find(slots->begin(),slots->end(),name);
+                if (found==slots->end()) throw std::runtime_error("Unbound AST value symbol: "+name);
+                const auto slot=static_cast<std::size_t>(found-slots->begin());
+                return [slot](const FormulaValues& values,int cell,int component) {
+                    return values.boundReads.at(slot)(cell,component);
+                };
+            }
             return [name](const FormulaValues& values,int cell,int component) {
                 return values.read(name,cell,component);
             };
         }
         case Kind::Negate: {
-            auto child=valueKernel(formula,expression.arguments[0],catalog,bindings,used);
+            auto child=valueKernel(formula,expression.arguments[0],catalog,bindings,used,slots);
             return [child=std::move(child)](const FormulaValues& values,int cell,int component) {
                 return -child(values,cell,component);
             };
@@ -43,8 +51,8 @@ FormulaValueKernel valueKernel(
         case Kind::Subtract:
         case Kind::Multiply:
         case Kind::Divide: {
-            auto left=valueKernel(formula,expression.arguments[0],catalog,bindings,used);
-            auto right=valueKernel(formula,expression.arguments[1],catalog,bindings,used);
+            auto left=valueKernel(formula,expression.arguments[0],catalog,bindings,used,slots);
+            auto right=valueKernel(formula,expression.arguments[1],catalog,bindings,used,slots);
             const auto kind=expression.kind;
             return [left=std::move(left),right=std::move(right),kind](
                     const FormulaValues& values,int cell,int component) {
@@ -191,6 +199,12 @@ FormulaExpr withoutDdt(const FormulaExpr& expression,
 }
 
 } // namespace
+
+FormulaValueKernel compileFormulaValue(const Equation& equation,const FormulaExpr& expression,
+        const FormulaOperatorCatalog& providers,std::vector<std::string>& used,
+        const std::vector<std::string>& boundSymbols) {
+    return valueKernel(equation,expression,providers,{},used,boundSymbols.empty()?nullptr:&boundSymbols);
+}
 
 void FormulaOperatorCatalog::add(FormulaOperatorProvider provider) {
     if (provider.id.empty() || provider.mathematicalOperator.empty()

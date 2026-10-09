@@ -306,6 +306,7 @@ def main() -> int:
             "src/solver/system/SF_numericalCompiler.cpp",
             "src/solver/system/SF_providerResolver.cpp",
             "src/solver/algorithm/SF_singleFluidStepper.cpp",
+            "src/solver/algorithm/SF_flowOperations.cpp",
             "src/solver/algorithm/pressure/SF_pressureOperators.cpp"]:
         content = (root / name).read_text(errors="replace")
         if re.search(r'\b(?:if|switch)\s*\([^\n]*\b(?:gravity|MRF|wallHeat)\b', content):
@@ -324,6 +325,10 @@ def main() -> int:
             "src/solver/system/SF_solvePlan.cpp",
             "src/solver/system/SF_systemBuilder.cpp",
             "src/solver/algorithm/SF_singleFluidStepper.cpp",
+            "src/solver/algorithm/SF_flowOperations.cpp",
+            "src/solver/algorithm/transport/SF_transportBinding.cpp",
+            "src/solver/algorithm/interface/SF_levelSetBinding.cpp",
+            "src/solver/algorithm/immersed/SF_immersedBinding.cpp",
             "src/solver/algorithm/eulerian/SF_eulerianStepper.cpp"]:
         content = (root / name).read_text(errors="replace")
         literals = [operation for operation in builtin_operations
@@ -364,7 +369,7 @@ def main() -> int:
     if "SolvePlanner::requiredOperations(plan)" not in provider_resolver:
         authority_errors.append(
             "Provider resolver does not derive operations from CompiledSolvePlan")
-    if "phase-wise IBM fluid-port assembly is unavailable" not in (
+    if "phase-wise fluid-port assembly is unavailable" not in (
             root / "src/solver/system/SF_immersedMethods.cpp").read_text():
         authority_errors.append(
             "Compiled IBM capability has no explicit Eulerian fluid-port unsupported diagnostic")
@@ -382,8 +387,8 @@ def main() -> int:
     for token in ["IBM", "ibm.", "Immersed"]:
         if token in (root / "src/solver/system/SF_methodObjects.cpp").read_text():
             authority_errors.append("Generic method compiler dispatches an IBM implementation: " + token)
-    if "native turbulence + IBM requires" not in provider_resolver:
-        authority_errors.append("IBM/turbulence lacks an explicit compiled coupling capability guard")
+    if "missingCapability(plan.compiledProgram,context,call,boundContext)" not in provider_resolver:
+        authority_errors.append("Provider resolution omitted generic execution-context capability validation")
     single_fluid_preset = (
         root / "src/solver/system/SF_singleFluidPreset.cpp"
     )
@@ -494,6 +499,8 @@ def main() -> int:
     ).read_text(errors="replace")
     pressure_leaf_sources = [
         root / "src/solver/algorithm/SF_singleFluidStepper.cpp",
+        root / "src/solver/algorithm/SF_flowOperations.cpp",
+        root / "src/solver/algorithm/SF_singleFluidBinding.cpp",
         root / "src/solver/algorithm/pressure/SF_pressureOperators.cpp",
         root / "src/solver/algorithm/pressure/SF_pressureOperators.h",
         root / "src/solver/algorithm/pressure/SF_fixedTimeMath.h",
@@ -1267,12 +1274,26 @@ def main() -> int:
     if not all(re.search(r"\b"+name+r"\s*\(",native_branch) for name in ("addEquation","addState","addExecution","bindNumerics")):
         authority_errors.append("single-fluid RAS must contribute all four native channels")
     # Inspect the registered lambda body, so a comment cannot satisfy the guard.
-    begin_body=cpp_body(stepper,"operations.bind(System::OpIds::FlowStepBegin,")
+    flow_binding=(root / "src/solver/algorithm/SF_flowOperations.cpp").read_text()
+    begin_body=cpp_body(flow_binding,"operations.bind(System::OpIds::FlowStepBegin,")
     if not begin_body or re.search(r"\bcorrectTransportModel\s*\(|transportModel\s*->\s*correct",begin_body):
         authority_errors.append("FlowStepBegin still schedules transport correction")
-    advance_body=cpp_body(stepper,"SingleFluidStepper::advance(")
-    if not re.search(r'bind\(System::OpIds::TurbulenceAdvance,\s*"flow.turbulence"',advance_body):
+    transport_binding=(root / "src/solver/algorithm/transport/SF_transportBinding.cpp").read_text()
+    if not all(token in transport_binding for token in ("binding.operation","binding.provider","BindingStatus::Resolved","correctTransport(")):
         authority_errors.append("native turbulence leaf has no frozen runtime owner binding")
+    # Inspect host bodies and includes, rather than accepting a comment or renamed class.
+    host_header=(root / "src/solver/algorithm/SF_singleFluidStepper.h").read_text()
+    host_code=re.sub(r"/\*.*?\*/|//[^\n]*","",stepper+host_header,flags=re.S)
+    if re.search(r"\b(?:providerContract|equationMethod|LevelSet|Turbulence|MonolithicKKT|PressureOperators|PatchWorkspace|Explicit::|prepareBoundaryState|correctionResult)\b",host_code):
+        authority_errors.append("public single-fluid host decodes concrete numerical implementation")
+    host_advance=cpp_body(stepper,"SingleFluidStepper::advance(")
+    if re.search(r"operations_\.(?:bind|clear|retain)\s*\(",host_advance):
+        authority_errors.append("public host rebuilds runtime bindings during advance")
+    composition=(root / "src/solver/algorithm/SF_singleFluidBinding.cpp").read_text()
+    composition_body=cpp_body(composition,"void bindSingleFluidOperations(")
+    if re.search(r"PlanExecutor::|providerContract|equationMethod|Time::Explicit::|advanceStage\(|evaluateRHS\(|stageIndex|stageCount",composition_body):
+        authority_errors.append("runtime binding composition acquired numerical scheduling/contract authority")
+
     temporal=(root / "src/solver/system/SF_methodObjects.cpp").read_text()
     temporal_body=cpp_body(temporal,"CompiledExecutionProgram compileExecutionProgram(")
     if re.search(r'"(?:k|omega|epsilon|TurbulenceTransport|kOmegaSST|kEpsilon|flow.turbulence)"',temporal_body):
@@ -1324,7 +1345,37 @@ def main() -> int:
             or "std::to_string(state.phaseIndex)" not in eulerian_runtime:
         authority_errors.append("Eulerian turbulence runtime lost selected owner or actual phase-slot alias")
 
+    # Migrated module composition cannot recreate a parallel flat WHAT/HOW path.
+    for relative_path in ["src/models/physics/interfaceModel/levelSet/SF_levelSetSystemContribution.cpp",
+                          "src/models/physics/multiphase/SF_multiphaseSystemContribution.cpp"]:
+        code=re.sub(r"/\*.*?\*/|//[^\n]*", "",(root / relative_path).read_text(),flags=re.S)
+        if re.search(r"\b(?:EquationDescriptor|TermKind|Definition|addLegacyExecution|legacyExecution|legacyEquations)\b",code):
+            authority_errors.append("native interface/multiphase contribution reintroduced flat authority: "+relative_path)
+    interface_runtime=(root / "src/models/physics/equationRuntime/SF_interfaceCoupling.cpp").read_text()
+    if "for (int step" in interface_runtime or "Reinit::advance" in interface_runtime:
+        authority_errors.append("interface operations regained hidden pseudo-time loop authority")
+
     # Native Eulerian assembly is AST/provider-owned; flat DSL remains scoped compatibility.
+    # Generic contracts must inspect declared capabilities, not module pair names.
+    for name in ("SF_methodObjects.cpp", "SF_executionContract.cpp", "SF_providerResolver.cpp"):
+        text=(root/"src/solver/system"/name).read_text()
+        if re.search(r"if\s*\([^;{}]*(?:turbulence[^;{}]*(?:IBM|ibm)|(?:IBM|ibm)[^;{}]*turbulence)", text):
+            authority_errors.append(name+" reintroduced a module-pair capability guard")
+    contract_compiler=(root/"src/solver/system/SF_methodObjects.cpp").read_text()
+    if "if (!program.explicitOrder) {" not in contract_compiler:
+        authority_errors.append("explicit HOW can be silently reordered")
+    if "validateDataFlow(state,result)" not in contract_compiler or "validatePlacement(program,root)" not in contract_compiler:
+        authority_errors.append("generic compilation omitted STATE/placement validation")
+    if "composeDefaultPlacement(program,root)" not in contract_compiler:
+        authority_errors.append("default HOW omitted scope-local relative placement")
+    for relative_path in ("src/models/turbulence/SF_turbulenceSystemContribution.cpp",
+                     "src/models/ibm/SF_ibmSystemContribution.cpp",
+                     "src/models/physics/interfaceModel/levelSet/SF_levelSetSystemContribution.cpp"):
+        if re.search(r"\.order\s*=", (root/relative_path).read_text()):
+            authority_errors.append("module regained absolute HOW ordering: "+relative_path)
+    if "selectionFor(" in (root/"src/solver/system/SF_immersedMethods.cpp").read_text():
+        authority_errors.append("IBM provider reintroduced resolved selection inference")
+
     native_eulerian=list((root / "src/solver/algorithm/eulerian").rglob("*.h")) \
         +list((root / "src/solver/algorithm/eulerian").rglob("*.cpp")) \
         +list((root / "src/solver/system").glob("SF_eulerian*.h")) \
@@ -1352,6 +1403,33 @@ def main() -> int:
         authority_errors.append("Eulerian runtime interprets mathematical formulas or lacks frozen contract binding")
     if (root / "src/solver/equation/SF_assemblyPlan.h").exists() or (root / "src/solver/equation/SF_assemblyPlan.cpp").exists():
         authority_errors.append("dead AssemblyPlan infrastructure was reintroduced")
+
+    scalar_method=(root/"src/solver/system/SF_scalarMethod.cpp").read_text()
+    scalar_binding=(root/"src/solver/algorithm/scalar/SF_scalarBinding.cpp").read_text()
+    for path,text in (("scalar method",scalar_method),("scalar binding",scalar_binding)):
+        code=re.sub(r"/\*.*?\*/|//[^\n]*", "",text,flags=re.S)
+        if re.search(r"Legacy::|FormulaCall|FlowOperations|ConservativeResidual|thermodynamicState\(|validateThermodynamicBinding\(|MPI_",code):
+            authority_errors.append(path+" regained legacy/flow/MPI authority")
+    if re.search(r"state_\.(?:time|step)\s*(?:\+=|=)|\+\+state_\.(?:time|step)",scalar_binding):
+        authority_errors.append("scalar provider acquired physical clock commit")
+    if any(token in scalar_binding for token in ("ScalarTimeLoop","ScalarSolverRunner","TimeScheme")):
+        authority_errors.append("scalar provider introduced a parallel lifecycle")
+    if "compileFormulaValue(" not in scalar_method or "Discretization::central2ScalarDiffusion(" not in scalar_method:
+        authority_errors.append("scalar provider bypasses shared AST lowering/discretization")
+    temporal=(root/"src/solver/system/SF_builtinProviders.cpp").read_text()
+    temporal_body=cpp_body(temporal,"SolvePlanNode explicitFragment(")
+    if any(token in temporal_body for token in ("OpIds::FlowStepPrepare","OpIds::FlowDtCompute","OpIds::FlowStepBegin")):
+        authority_errors.append("generic temporal fragment hardcodes flow lifecycle operations")
+
+    group=(root/"src/solver/algorithm/time/SF_stageGroup.cpp").read_text()
+    if any(token in group for token in ("ScalarOperations", "FlowOperations", "FormulaExpr", "ClassicalRK4", "ForwardEuler", "MPI_")):
+        authority_errors.append("common stage barriers acquired numerical/model/tableau authority")
+    if not all(token in group for token in ("requireStageRead", "requireStageAdvance", "validateTemporalPlan", "validatePublish", "TemporalOps::RhsReady")):
+        authority_errors.append("common temporal group lost phase/version/publication validation")
+    if "synchronousStages" not in method_source or "temporalParticipants" not in method_source:
+        authority_errors.append("compiler lost explicit temporal owner grouping")
+    if "values_.boundReads" not in scalar_binding or "scalarInstances" not in scalar_binding:
+        authority_errors.append("scalar instances lost stable Stage input/data binding")
 
     if not args.quiet:
         print(f"Architecture dependency check: {len(files)} source files")

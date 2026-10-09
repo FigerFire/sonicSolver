@@ -1,7 +1,10 @@
 add_library(SF_solverSystem STATIC
+    SF_scalarMethod.cpp
     SF_systemBuilder.cpp
     SF_eulerianRelations.cpp
     SF_eulerianCoupling.cpp
+    SF_multiphaseMethods.cpp
+    SF_levelSetMethods.cpp
     SF_immersedMethods.cpp
     SF_eulerianMethods.cpp
     SF_eulerianTurbulence.cpp
@@ -29,6 +32,7 @@ add_library(SF_solverSystem STATIC
     SF_formulaCompiler.h
     SF_formulaStorage.cpp
     SF_formulaStorage.h
+    SF_executionContract.cpp
     SF_executionComposition.cpp
     SF_builtinNumerics.cpp
     SF_legacyNumerics.cpp

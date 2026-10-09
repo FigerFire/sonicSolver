@@ -17,6 +17,12 @@ namespace SF::System {
 
 /// @brief Runtime views supplied by state realization without copying state.
 struct FormulaValues {
+    /// Compile-time symbol slots, bound once; no per-cell string lookup.
+    std::vector<std::function<double(int,int)>> boundReads;
+    std::function<double(std::size_t,int,int,int,int)> boundNeighbor;
+    /// Frozen orthogonal-stencil geometry/neighbor bindings supplied by a provider.
+    std::function<double(int)> spacing;
+    std::function<double(int,int,int)> neighbor;
     int ownedCells = 0;
     int components = 1;
     std::function<double(const std::string&,int,int)> read;

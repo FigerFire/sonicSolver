@@ -3,6 +3,7 @@
 #include "models/physics/fluidStateModel/SF_factory.h"
 #include "solver/system/SF_systemBuilder.h"
 #include "solver/system/SF_methodObjects.h"
+#include "solver/system/SF_builtinState.h"
 #include "solver/system/SF_pressureCoupling.h"
 #include "solver/system/SF_stateRealizer.h"
 #include "solver/run/SF_planExecutor.h"
@@ -14,6 +15,7 @@ namespace {
 void require(bool value,const char* message) { if (!value) throw std::runtime_error(message); }
 ExecutableEquationSystem equations(const SystemContribution& contribution) {
     ExecutableEquationSystem system;
+    for (auto variable:{BuiltinState::Density,BuiltinState::Momentum,BuiltinState::TotalEnergy,BuiltinState::Velocity}) system.state.add(builtinState(variable));
     for (const auto& state:contribution.states) system.state.add(state);
     for (const auto& equation:contribution.registeredEquations) system.registry.add(equation);
     return system;

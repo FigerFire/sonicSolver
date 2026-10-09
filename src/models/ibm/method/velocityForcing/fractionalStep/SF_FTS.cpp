@@ -268,7 +268,7 @@ FDM::ImmersedConstraintResult ImmersedForcingSystem::applyVelocityForcingFTS(
     }
     finalizeDistributedResult(result);
     Checkpoint::force("fts-force",field,multiplier_,targetTime);
-    Checkpoint::result(result,targetTime);
+    Checkpoint::result(result,targetTime,dt);
     Validation::requireConstraintResidual(
         result.maximumVelocityResidual,
         config_.forcing.constraintTolerance,"velocityForcingFTS");

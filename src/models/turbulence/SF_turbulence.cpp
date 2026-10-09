@@ -27,13 +27,13 @@ namespace Turbulence {
 
 namespace {
 
-std::unique_ptr<IModel> makeModel(const FDM::TurbulenceConfig& config) {
+std::unique_ptr<IModel> makeModel(const FDM::TurbulenceConfig& config,const FDM::IImmersedTurbulenceBoundary* wall) {
     if (!config.enabled) return nullptr;
 
     switch (config.family) {
         case FDM::TurbulenceFamily::RAS:
             if (config.model == FDM::TurbulenceModelKind::kOmegaSST) {
-                return std::make_unique<RAS::KOmegaSSTModel>();
+                return std::make_unique<RAS::KOmegaSSTModel>(wall);
             }
             return std::make_unique<RAS::KEpsilonModel>();
 
@@ -253,11 +253,14 @@ const std::vector<double>& ScalarFields::values(ScalarSlot slot) const {
     throw std::runtime_error("Unknown turbulence scalar slot.");
 }
 
-Manager::Manager(FDM::TurbulenceConfig config)
-    : config_(std::move(config)) {}
+Manager::Manager(FDM::TurbulenceConfig config,const FDM::IImmersedTurbulenceBoundary* wall)
+    : wall_(wall), config_(std::move(config)) {
+    if (wall_ && (config_.model!=FDM::TurbulenceModelKind::kOmegaSST || config_.laminarDynamicViscosity<=0))
+        throw std::runtime_error("Bound immersed turbulence wall implements only SST with positive molecular viscosity.");
+}
 
 bool Manager::initialize(const Field& field) {
-    model_ = makeModel(config_);
+    model_ = makeModel(config_,wall_);
     if (!model_) return false;
 
     state_.resizeLike(field);
@@ -289,6 +292,7 @@ double Manager::dynamicViscosity(const Field& field,
     int ii = clampToInterior(i, field.NG(), field.NG() + field.NX() - 1);
     int jj = clampToInterior(j, field.NG(), field.NG() + field.NY() - 1);
     int kk = clampToInterior(k, field.NG(), field.NG() + field.NZ() - 1);
+    if (wall_) return laminarMu+state_.EddyMu(ii,jj,kk);
     return laminarMu + std::max(model_->eddyDynamicViscosity(field, state_, config_, ii, jj, kk), 0.0);
 }
 

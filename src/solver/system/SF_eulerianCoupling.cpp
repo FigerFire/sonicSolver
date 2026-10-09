@@ -63,6 +63,8 @@ void applyEulerianExecution(ExecutionProgram& program,std::vector<NumericalBindi
     pressure.children.push_back(std::move(nonOrth));outer.children.push_back(std::move(pressure));
     outer.children.push_back(group("phase.enthalpy",energy));
     if (!turbulence.empty()) outer.children.push_back(group("phase.turbulence.transport",turbulence));
+    if (!closures.empty()) program.requirements.push_back({"EE.outer","phase.turbulence.closure",{}, {"phase.continuity","phase.momentum"}});
+    if (!turbulence.empty()) program.requirements.push_back({"EE.outer","phase.turbulence.transport",{"phase.enthalpy"},{}});
     program.root=scope(ExecutionKind::Sequence,"EE.step");
     program.root.children.push_back(std::move(outer));
     program.root.children.push_back(scope(ExecutionKind::Commit,"EE.commit"));

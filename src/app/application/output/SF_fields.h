@@ -17,11 +17,17 @@
 namespace SF {
 class MultiBlockMesh;
 namespace State { class VariableRegistry; }
+namespace State { struct StateBundle; }
+namespace System { class StateRegistry; }
 namespace Turbulence { class EquationSystem; }
 namespace Physics::InterfaceModels { class Model; }
 namespace Physics::Multiphase { class MultiPhaseModel; }
 namespace Physics::PhaseSystems { class PhaseSystem; }
 namespace Application::Output {
+
+/// Output views of registered physical arrays; no EOS or numerical refresh.
+std::vector<ResultWriter::ScalarField> registeredStateFields(
+    const System::StateRegistry&,State::StateBundle&,const Field& geometry);
 
 std::vector<ResultWriter::PieceLayout> buildMultiBlockVTKPieces(
     const MultiBlockMesh& mesh);

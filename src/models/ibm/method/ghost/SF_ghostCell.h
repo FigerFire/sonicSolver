@@ -27,6 +27,10 @@ public:
     void apply(Field& field,
                const WeightBuilder& weights,
                const IBMRuntimeConfig& config) const {
+        if (config.wallClosure==FDM::ImmersedWallClosure::StationaryNoSlipAdiabatic) {
+            applyViscousWall(field,weights.viscousPlans(),config.gamma);
+            return;
+        }
         const int requestedTaylorOrder = config.requestedTaylorOrder();
         for (const auto& w : weights.weights()) {
             double qFluid[5] = {

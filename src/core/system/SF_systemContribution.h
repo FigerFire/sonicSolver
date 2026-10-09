@@ -92,7 +92,8 @@ public:
     void addExecution(ExecutionScope value) { execution.push_back(std::move(value)); }
     void bindNumerics(NumericalBinding value) { numerics.push_back(std::move(value)); }
     /// @brief Migration boundary: declarations whose legacy backend still owns local topology.
-    void addLegacyExecution(ExecutionScope value) { legacyExecution.push_back(std::move(value)); }
+    std::optional<FDM::ImmersedAlgorithmDescriptor> immersed;
+    std::vector<PlacementRequirement> placement;
     std::vector<ExecutionScope> execution;
     std::vector<ExecutionScope> legacyExecution;
     std::vector<NumericalBinding> numerics;

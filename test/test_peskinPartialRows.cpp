@@ -10,11 +10,11 @@ class PartialSurface final : public SF::IBM::Forcing::ISurfaceConstraintOperator
 public:
     PartialSurface(bool contributes,int cell):contributes_(contributes),cell_(cell){}
     const SF::FDM::ImmersedSurfaceSystem& build(const SF::Field&,
-        const std::vector<SF::IBM::GeoProcessing::Triangle>&,const SF::Vector3&,double) override {
+        const std::vector<SF::IBM::GeoProcessing::Triangle>&,const SF::Vector3&,double,SF::FDM::IBMSurfaceNormalization) override {
         normalization_={contributes_?1.:0.};return system_;
     }
     const std::vector<double>& localNormalizations() const override {return normalization_;}
-    const SF::FDM::ImmersedSurfaceSystem& normalizeDistributed(const std::vector<double>& normalization) override {
+    const SF::FDM::ImmersedSurfaceSystem& normalizeDistributed(const std::vector<double>& normalization,const std::vector<double>&) override {
         if(normalization.size()!=1 || normalization[0]!=1) throw std::runtime_error("partial graph normalization failed");
         system_.points.clear();SF::FDM::ImmersedSurfacePoint marker;
         marker.globalConstraintId=SF::GlobalConstraintDofId::fromMarker(SF::GlobalMarkerId::fromSurfacePrimitive(7));
@@ -41,7 +41,7 @@ int main(int argc,char** argv) {
         forcing.representation=SF::FDM::IBMRepresentation::DiffuseKernel;
         forcing.enforcement=SF::FDM::IBMEnforcement::ExplicitIBM;
         forcing.surfaceKernel="wendlandC2";forcing.surfaceQuadrature="triangleCentroid";
-        forcing.surfaceNormalization="partitionOfUnity";forcing.surfaceSpreading="adjoint";forcing.surfaceSupportRadius=2.;
+        forcing.surfaceNormalization=SF::FDM::IBMSurfaceNormalization::PartitionOfUnity;forcing.surfaceSpreading="adjoint";forcing.surfaceSupportRadius=2.;
         SF::IBM::Forcing::ImmersedForcingSystem method;
         method.configure(geometry,config);method.setExecutionRuntime(&runtime);
         method.setSurfaceConstraintOperator(std::make_unique<PartialSurface>(parallel.rank()==0,cell));

@@ -6,11 +6,15 @@
 #include "core/interfaces/SF_log.h"
 
 #include <algorithm>
+#include <cerrno>
 #include <cstring>
+#include <cstdlib>
 #include <spawn.h>
 #include <stdexcept>
 #include <string>
 #include <system_error>
+#include <sys/wait.h>
+#include <unistd.h>
 #include <vector>
 
 extern char** environ;
@@ -42,20 +46,77 @@ std::vector<std::filesystem::path> pvdFiles(const std::filesystem::path& resultP
     return files;
 }
 
+#ifdef __APPLE__
+std::filesystem::path paraViewApplication()
+{
+    const char* environmentPath = std::getenv("PATH");
+    const std::string searchPath = environmentPath ? environmentPath : "";
+    std::size_t begin = 0;
+    do {
+        const auto end = searchPath.find(':', begin);
+        const auto directory = searchPath.substr(begin, end - begin);
+        const auto executable = std::filesystem::path(directory.empty() ? "." : directory)
+            / "paraview";
+        if (access(executable.c_str(), X_OK) == 0) {
+            auto path = std::filesystem::canonical(executable);
+            while (path != path.root_path()) {
+                if (path.extension() == ".app") return path;
+                path = path.parent_path();
+            }
+            throw std::runtime_error("PATH 中的 paraview 不属于 macOS .app: "
+                + executable.string());
+        }
+        if (end == std::string::npos) break;
+        begin = end + 1;
+    } while (true);
+    throw std::runtime_error("无法找到 paraview，请确认它已安装并位于 PATH");
+}
+#endif
+
 int spawnViewer(const std::filesystem::path& pvdPath)
 {
     const std::string file = pvdPath.string();
     pid_t processId = 0;
 
-    char command[] = "paraview";
     std::vector<char> fileArgument(file.begin(), file.end());
     fileArgument.push_back('\0');
+#ifdef __APPLE__
+    // LaunchServices owns the GUI lifetime. Closing a macOS window need not
+    // terminate the app, so the CLI waits only for the launch request, not -W.
+    char command[] = "/usr/bin/open";
+    char applicationOption[] = "-a";
+    // Resolve the selected PATH executable to its bundle, including versioned
+    // app names; a bundle identifier may not yet be registered with the OS.
+    std::string application = paraViewApplication().string();
+    char* arguments[] = {command, applicationOption, application.data(), fileArgument.data(), nullptr};
+#else
+    char command[] = "paraview";
     char* arguments[] = {command, fileArgument.data(), nullptr};
+#endif
     const int status = posix_spawnp(&processId, command, nullptr, nullptr, arguments, environ);
     if (status != 0) {
-        SF::broadcast("Fatal: 无法启动小写命令 paraview，请确认它已安装并位于 PATH: ",
-                      std::strerror(status));
-        return -1;
+        SF::broadcast("Fatal: 无法启动 ParaView: ", std::strerror(status));
+        return 1;
+    }
+
+    // Reap the process we created and retain launch/viewer failure diagnostics.
+    int exitStatus = 0;
+    pid_t waited;
+    do {
+        waited = waitpid(processId, &exitStatus, 0);
+    } while (waited == -1 && errno == EINTR);
+    if (waited == -1) {
+        SF::broadcast("Fatal: 无法获取 ParaView 启动进程状态: ", std::strerror(errno));
+        return 1;
+    }
+    if (WIFSIGNALED(exitStatus)) {
+        SF::broadcast("Fatal: ParaView 启动进程被信号终止: ", WTERMSIG(exitStatus));
+        return 128 + WTERMSIG(exitStatus);
+    }
+    if (!WIFEXITED(exitStatus) || WEXITSTATUS(exitStatus) != 0) {
+        const int code = WIFEXITED(exitStatus) ? WEXITSTATUS(exitStatus) : 1;
+        SF::broadcast("Fatal: ParaView 启动进程返回错误: ", code);
+        return code;
     }
 
     SF::broadcast("ParaView: ", pvdPath.string());

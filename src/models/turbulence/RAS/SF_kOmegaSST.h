@@ -22,6 +22,8 @@ namespace RAS {
 /// - 湍流标量扩散项 ∇·((μ + σ μ_t)∇φ)
 class KOmegaSSTModel final : public RASModelBase {
 public:
+    /// @brief 壁面在 composition 时稳定注入；不改变时间循环。
+    explicit KOmegaSSTModel(const FDM::IImmersedTurbulenceBoundary* wall=nullptr):wall_(wall) {}
     /// @brief 返回所属大类名。
     /// @return `"RAS"`。
     const char* familyName() const override { return "RAS"; }
@@ -68,6 +70,8 @@ public:
                                 const ScalarFields& state,
                                 const FDM::TurbulenceConfig& config,
                                 int i, int j, int k) const override;
+private:
+    const FDM::IImmersedTurbulenceBoundary* wall_;
 };
 
 } // namespace RAS

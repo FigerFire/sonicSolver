@@ -75,6 +75,11 @@ int main() {
             A::DFMFractionalStepPrescribed,A::VelocityForcingFTS,A::VelocityForcingBP,
             A::DFMImplicitPrescribed,A::DFMImplicitSelfPropelled,A::DFMAugmentedLagrangian})
         variants.push_back(configuration(algorithm));
+    for (auto algorithm:{A::PeskinOriginal,A::VelocityForcingFTS}) {
+        auto linear=configuration(algorithm);
+        linear.surfaceNormalization=SF::FDM::IBMSurfaceNormalization::LinearReproducing;
+        variants.push_back(linear);
+    }
     for (auto algorithm:{A::DFMExplicitSelfPropelled,A::DFMFractionalStepSelfPropelled}) {
         auto rotated=configuration(algorithm);rotated.rigidMotionMode=SF::FDM::IBMRigidMotionMode::Rotate;
         variants.push_back(rotated);
@@ -131,6 +136,14 @@ int main() {
             require(rejected,"Changed rigid DOFs bypassed frozen generalized-mass relation.");
             bound.descriptor.rigidMotionMode=descriptor.rigidMotionMode;
         }
+        if (descriptor.support==SF::FDM::IBMConstraintSupport::Surface) {
+            const auto original=bound.descriptor.surfaceNormalization;
+            bound.descriptor.surfaceNormalization=original==SF::FDM::IBMSurfaceNormalization::PartitionOfUnity
+                ?SF::FDM::IBMSurfaceNormalization::LinearReproducing:SF::FDM::IBMSurfaceNormalization::PartitionOfUnity;
+            rejected=false;try{validateImmersedBindings(resolved.solvePlan,&bound,false);}catch(const std::runtime_error&){rejected=true;}
+            require(rejected,"Runtime surface transfer bypassed frozen WHICH selection.");
+            bound.descriptor.surfaceNormalization=original;
+        }
         bound.descriptor.algorithm=algorithm==A::PeskinOriginal?A::VelocityForcingFTS:A::PeskinOriginal;
         rejected=false;try{validateImmersedBindings(resolved.solvePlan,&bound,false);}catch(const std::runtime_error&){rejected=true;}
         require(rejected,"Changed runtime IBM implementation bypassed frozen binding.");
@@ -148,13 +161,22 @@ int main() {
         auto missing=contribution;missing.execution[0].children.pop_back();fails(missing);
         auto reordered=contribution;std::swap(reordered.execution[0].children[0],reordered.execution[0].children[1]);fails(reordered);
         auto changed=contribution;changed.registeredEquations[0].rhs=FormulaExpr::constantValue(7);fails(changed);
+        auto badDescriptor=contribution;badDescriptor.immersed->enforcement=SF::FDM::IBMEnforcement::GhostCell;fails(badDescriptor);
         auto badStorage=contribution;badStorage.states[0].storageKey="newForceCopy";fails(badStorage);
         auto wrongTarget=contribution;wrongTarget.execution[0].children[0].step.target.symbol="rhoE";fails(wrongTarget);
         if (!kkt) {
             auto beforePredictor=request;
-            contribution.execution[0].order=-1;beforePredictor.modelContributions={contribution};
-            require(build(config,beforePredictor).runtime.report.status==RuntimeStatus::Unsupported,
-                "Pre-predictor IBM HOW was silently executed as the supported post-predictor implementation.");
+            beforePredictor.modelContributions={contribution};
+            beforePredictor.authoredExecution=resolved.solvePlan.sourceProgram;
+            beforePredictor.authoredNumerics=resolved.numericalSelection.bindings;
+            auto& declared=beforePredictor.authoredExecution->root.children;
+            const auto correction=std::find_if(declared.begin(),declared.end(),[](const auto& node){return node.id=="immersed.correction";});
+            std::iter_swap(declared.begin(),correction);
+            bool rejectedPlacement=false;
+            try {(void)build(config,beforePredictor);} catch (const std::runtime_error& error) {
+                rejectedPlacement=std::string(error.what()).find("placement violation")!=std::string::npos;
+            }
+            require(rejectedPlacement,"Pre-predictor IBM HOW escaped its declared placement.");
         }
     }
     SystemContribution ghost;SF::IBM::SystemContribution::contribute(ghost,SF::IBM::Descriptor::ghostCell());
@@ -176,6 +198,9 @@ int main() {
             }
             auto combined=request;combined.modelContributions={turbulence,immersed};
             const auto system=build(config,combined);
+            require(system.rawSystem.registry.contains("mu_t") || system.rawSystem.registry.contains("k"), "Composition lost turbulence mathematics.");
+            require(!system.solvePlan.compiledProgram.steps.empty(),"Combination has no native HOW.");
+            require(system.runtime.report.reason.find("turbulence.boundary.immersed")!=std::string::npos,"Missing concrete immersed boundary capability was not explained.");
             require(system.runtime.report.status==RuntimeStatus::Unsupported,
                 "Turbulence/IBM coupling lacks stage and wall contracts but was advertised as runnable.");
         }

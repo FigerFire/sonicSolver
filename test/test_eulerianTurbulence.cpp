@@ -60,7 +60,8 @@ int main() {
             auto parallel=request;parallel.parallel=true;const auto unsupported=build(config,parallel);
             require(unsupported.runtime.report.status==RuntimeStatus::Unsupported,"Serial phase transport advertised MPI capability.");
             const auto reject=[&](const ExecutionProgram& program,const ExecutableEquationSystem& equations,const std::vector<NumericalBinding>& numerics) {
-                bool failed=false;try {(void)compileExecutionProgram(equations,program,numerics,builtinProviders());} catch (const std::exception&) {failed=true;}
+                auto declared=program;declared.explicitOrder=true;
+                bool failed=false;try {(void)compileExecutionProgram(equations,declared,numerics,builtinProviders());} catch (const std::exception&) {failed=true;}
                 require(failed,"Invalid native Eulerian turbulence inherited a runnable kernel.");
             };
             auto bad=resolved.solvePlan.sourceProgram;bad.root.children[0].children.erase(bad.root.children[0].children.begin());

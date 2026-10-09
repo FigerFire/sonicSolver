@@ -132,9 +132,8 @@ double gradientNorm(const Field& field,
 
 } // namespace
 
-void Reinit::advance(const Field& field,
-                     LevelSetField& levelSet,
-                     const ReinitOptions& options) {
+void Reinit::begin(const Field& field,const LevelSetField& levelSet,
+                   const ReinitOptions& options,Workspace& workspace) {
     if (!levelSet.isCompatibleWith(field)) {
         throw std::runtime_error(
             "LevelSet reinit: LevelSetField dimensions do not match Field.");
@@ -160,46 +159,55 @@ void Reinit::advance(const Field& field,
     }
     HJWeno::requireStencil(field, options.order, "LevelSet reinit");
 
-    const double h = minimumSpacing(field);
-    const double signWidth = options.signSmoothingFactor * h;
-    const HJWenoWeightOptions weights{
-        options.wenoEpsilon, options.wenoPower};
-    const std::vector<double> phi0 = levelSet.values();
-    const int ng = field.NG();
+    workspace.signWidth=options.signSmoothingFactor*minimumSpacing(field);
+    workspace.reference=levelSet.values();
+}
 
-    for (int step = 0; step < options.pseudoSteps; ++step) {
-        if (options.prepareStage) options.prepareStage();
-        const std::vector<double> oldPhi = levelSet.values();
-        std::vector<double> newPhi = oldPhi;
+void Reinit::stage(const Field& field,LevelSetField& levelSet,
+                   const ReinitOptions& options,const Workspace& workspace) {
+    if (workspace.reference.size()!=levelSet.values().size() || workspace.signWidth<=0.0)
+        throw std::runtime_error("LevelSet reinitialization stage requires a frozen reference.");
+    const auto& phi0=workspace.reference;
+    const double signWidth=workspace.signWidth;
+    const HJWenoWeightOptions weights{options.wenoEpsilon,options.wenoPower};
+    const int ng=field.NG();
+    if (options.prepareStage) options.prepareStage();
+    const std::vector<double> oldPhi = levelSet.values();
+    std::vector<double> newPhi = oldPhi;
 
-        for (int k = ng; k < ng + field.NZ(); ++k) {
-            for (int j = ng; j < ng + field.NY(); ++j) {
-                for (int i = ng; i < ng + field.NX(); ++i) {
-                    if (field.CellFlag(i, j, k) != FLUID_CELL) continue;
+    for (int k = ng; k < ng + field.NZ(); ++k) {
+        for (int j = ng; j < ng + field.NY(); ++j) {
+            for (int i = ng; i < ng + field.NX(); ++i) {
+                if (field.CellFlag(i, j, k) != FLUID_CELL) continue;
 
-                    const int id = levelSet.getIdx(i, j, k);
-                    const double base = phi0[(size_t)id];
-                    const double signValue =
-                        base / std::sqrt(base * base + signWidth * signWidth);
-                    const double norm =
-                        gradientNorm(field, levelSet, oldPhi,
-                                     i, j, k, options.order, weights, signValue);
-                    const double value =
-                        oldPhi[(size_t)id]
-                        - options.pseudoTimeStep * signValue * (norm - 1.0);
-                    if (!std::isfinite(value)) {
-                        throw std::runtime_error(
-                            "LevelSet reinit: non-finite phi update at "
-                            + cellText(i, j, k) + ".");
-                    }
-                    newPhi[(size_t)id] = value;
+                const int id = levelSet.getIdx(i, j, k);
+                const double base = phi0[(size_t)id];
+                const double signValue =
+                    base / std::sqrt(base * base + signWidth * signWidth);
+                const double norm =
+                    gradientNorm(field, levelSet, oldPhi,
+                                 i, j, k, options.order, weights, signValue);
+                const double value =
+                    oldPhi[(size_t)id]
+                    - options.pseudoTimeStep * signValue * (norm - 1.0);
+                if (!std::isfinite(value)) {
+                    throw std::runtime_error(
+                        "LevelSet reinit: non-finite phi update at "
+                        + cellText(i, j, k) + ".");
                 }
+                newPhi[(size_t)id] = value;
             }
         }
-
-        levelSet.values().swap(newPhi);
-        levelSet.setMaterialPropertiesReady(false);
     }
+
+    levelSet.values().swap(newPhi);
+    levelSet.setMaterialPropertiesReady(false);
+}
+
+void Reinit::advance(const Field& field,LevelSetField& levelSet,const ReinitOptions& options) {
+    Workspace workspace;
+    begin(field,levelSet,options,workspace);
+    for (int step=0;step<options.pseudoSteps;++step) stage(field,levelSet,options,workspace);
 }
 
 } // namespace Multiphase

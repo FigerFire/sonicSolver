@@ -11,6 +11,8 @@
 namespace SF::FDM {
 /// @brief WENO stencil 接触 IBM 时采用的闭合方式。
 enum class IBMBoundaryScheme { LowOrder, ILW };
+/// @brief 显式选择壁面数学；黏性二次闭合不是 Euler ILW 的降阶 fallback。
+enum class ImmersedWallClosure { EulerSlip, StationaryNoSlipAdiabatic };
 /// @brief IBM 几何分类和 ILW 法向搜索配置。
 enum class IBMMethod { Ghost, VariationalForcing };
 
@@ -84,6 +86,16 @@ enum class IBMRigidMotionMode { Motivation, Rotate };
 /// @brief 约束校正对流体能量的离散处理。
 enum class IBMEnergyCoupling { MechanicalWork };
 
+/// @brief Surface transfer 的重现条件；选择属于 numerical recipe，不改变约束数学。
+enum class IBMSurfaceNormalization { PartitionOfUnity, LinearReproducing };
+inline const char* toString(IBMSurfaceNormalization selection) {
+    switch (selection) {
+        case IBMSurfaceNormalization::PartitionOfUnity: return "partitionOfUnity";
+        case IBMSurfaceNormalization::LinearReproducing: return "linearReproducing";
+    }
+    throw std::invalid_argument("Unknown IBM surface normalization.");
+}
+
 /// @brief 变分/DLM forcing 的显式用户配置。
 struct IBMForcingConfig {
     /// @brief 真正选择求解流程的算法键；其余枚举描述空间离散和耦合轴。
@@ -119,7 +131,7 @@ struct IBMForcingConfig {
         IBMRigidMotionMode::Motivation;
     std::string surfaceKernel;
     std::string surfaceQuadrature;
-    std::string surfaceNormalization;
+    IBMSurfaceNormalization surfaceNormalization = IBMSurfaceNormalization::PartitionOfUnity;
     std::string surfaceSpreading;
     double surfaceSupportRadius =
         std::numeric_limits<double>::quiet_NaN();
@@ -141,6 +153,7 @@ struct IBMForcingConfig {
 struct IBMConfig {
     bool enabled = false;
     IBMMethod method = IBMMethod::Ghost;
+    ImmersedWallClosure wallClosure = ImmersedWallClosure::EulerSlip;
     double normalAngleDegrees = 69.51268488527785;
     int normalSearchMinLayers = 1;
     int normalSearchMaxLayers = 0;
@@ -367,6 +380,9 @@ inline void validateIBMForcingSelection(const IBMForcingConfig& config) {
         config.constraintSupport == IBMConstraintSupport::Body
         || config.constraintSupport == IBMConstraintSupport::SurfaceAndBody;
 
+    (void)toString(config.surfaceNormalization);
+    if (!surface && config.surfaceNormalization == IBMSurfaceNormalization::LinearReproducing)
+        throw std::invalid_argument("linearReproducing is a surface transfer recipe; body masks have no interpolation row.");
     if (!surface && !body) {
         throw std::invalid_argument(
             "IBM forcing must select at least one constraint support domain.");

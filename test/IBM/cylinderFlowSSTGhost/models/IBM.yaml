@@ -1,0 +1,9 @@
+# Built-in IBM module.
+SonicFile:
+  object: solver
+  type: IBM
+IBM:
+  enabled: true
+  type: ghost
+  wallClosure: stationaryNoSlipAdiabatic
+  geometryFiles: [mesh/geometry/cylinder.STL]

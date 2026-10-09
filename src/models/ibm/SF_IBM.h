@@ -10,6 +10,7 @@
 #include "SF_field.h"
 #include "SF_ibmConfig.h"
 #include "SF_immersedSystem.h"
+#include "core/interfaces/SF_immersedTurbulenceBoundary.h"
 #include "geoProcessing/SF_STLGeometry.h"
 #include "method/ghost/SF_ghost.h"
 #include "method/SF_method.h"
@@ -23,7 +24,7 @@ namespace SF::IBM {
 ///
 /// 方法选择只有一个权威来源：`IBMRuntimeConfig::method`。几何加载、方法装配、
 /// capability 构造和启动日志分别位于 `common/`，避免 facade 再次膨胀。
-class IB final : public FDM::IImmersedSystem {
+class IB final : public FDM::IImmersedSystem, public FDM::IImmersedTurbulenceBoundary {
 public:
     /// @brief 从冻结的运行配置装配 IBM。
     bool setup(Field& field,
@@ -46,6 +47,8 @@ public:
     /// @param time 当前 RK/时间推进 stage 的物理时刻，单位 s。
     /// @param dt 当前物理步长，单位 s；初始化阶段允许为 0。
     void applyGhostCells(Field& field, double time, double dt);
+    void applySST(const Field& field,double laminarMu,std::vector<double>& k,
+                  std::vector<double>& omega,std::vector<double>& muT) const override;
 
     FDM::ImmersedConstraintResult applyConstraint(
         const std::vector<Field*>& fields, double targetTime, double dt);
@@ -63,6 +66,7 @@ public:
     Vector3 multiplier(const Field& field, int i, int j, int k) const;
 
 private:
+    const Field* wallField_ = nullptr;
     bool active_ = false;
     GeoProcessing::STLGeometry geometry_;
     GhostIBM::WeightBuilder ghostWeights_;
