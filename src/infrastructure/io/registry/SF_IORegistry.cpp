@@ -42,8 +42,8 @@ RegistryEntry IORegistry::parseEntry(const std::string& name,const Model::Parame
         result.type=name;result.selection=value.get<std::string>();
         return result;
     }
-    Model::Schema{{{"type","string",true},{"file","string"}},false}.validate(value,source+"/"+name);
-    result.type=value.at("type").get<std::string>();result.file=value.value("file",std::string());
+    Model::Schema{{{"type","string",true},{"file","string"},{"selection","string"}},false}.validate(value,source+"/"+name);
+    result.type=value.at("type").get<std::string>();result.file=value.value("file",std::string());result.selection=value.value("selection",std::string());
     return result;
 }
 std::string IORegistry::resolveFile(const std::string& object,const RegistryEntry& entry,const std::string& source) const {

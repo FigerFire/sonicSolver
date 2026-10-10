@@ -34,6 +34,8 @@ struct ObjectDescriptor {
     Parameters parameters=Parameters::object();
     /// @brief registry 的紧凑选择值，例如 multiPhase: eulerianEulerian。
     std::string selection;
+    /// @brief 输入来源仅用于诊断与 provenance，不参与 runtime dispatch。
+    std::string source;
 };
 /// @brief 文件、GUI、API 共用的中立输入。
 struct Description {

@@ -5,6 +5,7 @@
 #include <iomanip>
 #include <fstream>
 #include <set>
+#include <cmath>
 namespace SF {
 namespace {
 using P=Model::Parameters;
@@ -24,12 +25,63 @@ P expandBoundaryDefault(P value,const std::string& caseDir,const std::vector<std
     for(const auto& name:names)if(!value.contains(name))value[name]=fallback;
     return value;
 }
+// Native coefficients are mandatory; only historical input normalization uses defaults.
+ThermophysicalContract parseThermophysical(const Model::ObjectDescriptor& object) {
+    const auto& input=object.parameters;
+    const std::string source=object.source.empty()?object.category+"/"+object.name:object.source;
+    Model::Schema{{{"thermoDynamics","object",true},{"properties","object",true}},false}.validate(input,source);
+    const auto& selection=input.at("thermoDynamics");
+    if (selection.contains("energy")) throw std::runtime_error(source+": energy is WHAT; select it in equations registry.");
+    Model::Schema{{{"equationOfState","string",true},{"thermo","string"},{"transport","string"}},false}.validate(selection,source+"/thermoDynamics");
+    ThermophysicalContract t;t.native=true;t.source=source;
+    t.selection.equationOfState=selection.at("equationOfState").get<std::string>();
+    t.selection.thermo=selection.value("thermo",std::string());
+    t.selection.transport=selection.value("transport",std::string());
+    const auto& props=input.at("properties");
+    Model::Schema{{{"equationOfState","object",true},{"thermo","object"},{"transport","object"}},false}.validate(props,source+"/properties");
+    const auto number=[&](const P& p,const std::string& name,const std::string& group) {
+        if(!p.contains(name)||!p.at(name).is_number())throw std::runtime_error(source+": missing required numeric properties."+group+"."+name);
+        const double v=p.at(name).get<double>();
+        if(!std::isfinite(v))throw std::runtime_error(source+": nonfinite properties."+group+"."+name);
+        t.provenance[name]=source+"/properties."+group+"."+name;
+        return v;
+    };
+    const auto& eos=props.at("equationOfState");
+    if(t.selection.equationOfState=="perfectGas") {
+        Model::Schema{{{"gamma","number",true},{"R","number",true}},false}.validate(eos,source+"/properties.equationOfState");
+        t.gamma=number(eos,"gamma","equationOfState");t.gasConstant=number(eos,"R","equationOfState");
+    } else if(t.selection.equationOfState=="rhoConst") {
+        Model::Schema{{{"rho","number",true}},false}.validate(eos,source+"/properties.equationOfState");
+        t.selection.constantDensity=number(eos,"rho","equationOfState");
+    } else throw std::runtime_error(source+": unknown equationOfState '"+t.selection.equationOfState+"'.");
+    if(!t.selection.transport.empty()) {
+        if(!props.contains("transport"))throw std::runtime_error(source+": missing required properties.transport (mu/Pr).");
+        const auto& tr=props.at("transport");
+        Model::Schema{{{"mu","number",true},{"Pr","number",true}},false}.validate(tr,source+"/properties.transport");
+        t.dynamicViscosity=number(tr,"mu","transport");t.prandtl=number(tr,"Pr","transport");
+    } else if(props.contains("transport"))throw std::runtime_error(source+": properties.transport has no selected transport model.");
+    t.validate();
+    if(props.contains("thermo")) {
+        const auto& caloric=props.at("thermo");
+        Model::Schema{{{"cp","number"},{"cv","number"}},false}.validate(caloric,source+"/properties.thermo");
+        if(t.selection.equationOfState!="perfectGas"||t.selection.thermo!="hConst")
+            throw std::runtime_error(source+": explicit cp/cv validation requires perfectGas+hConst.");
+        for(const auto* name:{"cp","cv"})if(caloric.contains(name)) {
+            const double v=number(caloric,name,"thermo");const double expected=std::string(name)=="cp"?t.cp():t.cv();
+            if(v<=0.||std::abs(v-expected)>1.e-12*std::max(1.,std::abs(expected)))
+                throw std::runtime_error(source+": inconsistent cp/cv with gamma/R; cp-cv=R and gamma=cp/cv are required.");
+        }
+    }
+    return t;
+}
+
 // Typed native sections are stored in CaseAdapter::sections_;
 // native decoding lives in SF_nativeDecode.cpp.
 }
 CaseConfig CaseAdapter::build(const Model::Description& m) {
     native_=true;sections_={};
     EquationCompositionConfig composition;
+    std::optional<ThermophysicalContract> thermophysical;
     P nativeAlgorithmParameters=P::object();
     std::optional<System::ExecutionProgram> authoredExecution;
     std::vector<System::NumericalBinding> authoredNumerics;
@@ -220,35 +272,20 @@ CaseConfig CaseAdapter::build(const Model::Description& m) {
         {"thermophysical","Thermophysical"},{"phaseChange","PhaseChange"},
         {"turbulence","Turbulence"},{"IBM","ImmersedBoundary"},
         {"gravity","Gravity"},{"wallHeat","WallHeat"}};
-    for(const auto& role:typedRoles)
-        factories.add(role.first,{{},true},[role](const Model::ObjectDescriptor& o,Context& emit){emit(role.second,o.parameters);});
-    factories.add("thermoDynamics",{{{"thermoDynamics","object",true},
-        {"properties","object",true}},false},[&](const Model::ObjectDescriptor& object,Context& emit) {
-            const auto& selection = object.parameters.at("thermoDynamics");
-            if (selection.contains("energy")) throw std::runtime_error(
-                "thermoDynamics.yaml: energy selects an equation and is forbidden; use equations.yaml.");
-            Model::Schema{{{"equationOfState","string",true},{"thermo","string"},
-                {"transport","string"}},false}.validate(selection,"thermoDynamics");
-            composition.declared = true;
-            composition.thermoDynamics.equationOfState =
-                selection.at("equationOfState").get<std::string>();
-            if (selection.contains("thermo")) composition.thermoDynamics.thermo =
-                selection.at("thermo").get<std::string>();
-            if (selection.contains("transport")) composition.thermoDynamics.transport =
-                selection.at("transport").get<std::string>();
-            const auto& properties = object.parameters.at("properties");
-            if (composition.thermoDynamics.equationOfState == "rhoConst") {
-                if (!properties.contains("equationOfState")
-                    || !properties.at("equationOfState").contains("rho")) throw std::runtime_error(
-                    "rhoConst requires properties.equationOfState.rho.");
-                composition.thermoDynamics.constantDensity = properties.at("equationOfState")
-                    .at("rho").get<double>();
-                if (!(composition.thermoDynamics.constantDensity > 0.0)) {
-                    throw std::runtime_error("rhoConst density must be positive.");
-                }
-            }
-            emit("Thermophysical",object.parameters);
-        });
+    const auto bindThermophysical=[&](const Model::ObjectDescriptor& o,Context& emit) {
+        if (o.parameters.contains("thermoDynamics") || o.parameters.contains("properties")) {
+            if(thermophysical)throw std::runtime_error("Duplicate thermophysical authority: "+thermophysical->source+" and "+o.name);
+            thermophysical=parseThermophysical(o);
+            composition.declared=true;
+            composition.thermoDynamics=thermophysical->selection;
+        } else if(o.type=="thermoDynamics")throw std::runtime_error("thermoDynamics object requires selection and properties.");
+        emit("Thermophysical",o.parameters);
+    };
+    for(const auto& role:typedRoles) {
+        if(role.second=="Thermophysical")factories.add(role.first,{{},true},bindThermophysical);
+        else factories.add(role.first,{{},true},[role](const Model::ObjectDescriptor& o,Context& emit){emit(role.second,o.parameters);});
+    }
+    factories.add("thermoDynamics",{{},true},bindThermophysical);
     factories.add("multiPhase",{{},true},[](const Model::ObjectDescriptor& o,Context& emit) {
         auto parameters=o.parameters;
         if(!o.selection.empty()&&!parameters.contains("phaseSystem")) {
@@ -290,7 +327,8 @@ CaseConfig CaseAdapter::build(const Model::Description& m) {
     }
     // field 的语义名字就是它的解码入口；不再合成 <startTime>/<name> 伪文档。
     for(const auto& f:m.fields) {
-        if(f.initial.is_null())continue;
+        // Derived views can have boundary laws without an independent initial value.
+        if(f.initial.is_null()&&f.boundaries.empty())continue;
         Model::FieldDescriptor field=f;
         field.boundaries=expandBoundaryDefault(f.boundaries,caseDir_,meshFiles_);
         sections_.fields.push_back(std::move(field));
@@ -343,6 +381,55 @@ CaseConfig CaseAdapter::build(const Model::Description& m) {
     composition.outerCorrectors=result->solver.pressure.coupling.outerCorrectors;
     composition.pressureCorrectors=result->solver.pressure.coupling.pressureCorrectors;
     composition.nonOrthogonalCorrectors=result->solver.pressure.coupling.nonOrthogonalCorrectors;
+    const bool fluid=std::find(composition.equations.begin(),composition.equations.end(),"Momentum")!=composition.equations.end();
+    if (!thermophysical && !composition.declared && fluid && (!result->multiPhaseEnabled || Physics::Multiphase::isLevelSetType(result->multiPhase.type))) {
+        ThermophysicalContract t;t.selection={"perfectGas","hConst","const",0.};
+        t.source="legacy single-fluid normalization";
+        t.gamma=result->solver.numerics.idealGasGamma;t.gasConstant=result->solver.numerics.idealGasConstant;
+        t.dynamicViscosity=result->solver.numerics.dynamicViscosity;t.prandtl=result->solver.numerics.prandtl;
+        t.provenance={{"gamma","historical NumericsConfig default 1.4"},{"R","historical NumericsConfig default 287.05"},
+            {"mu",m.numerics.contains("transport")&&m.numerics.at("transport").contains("mu")?"legacy numerics.transport.mu":"historical mu default 0"},
+            {"Pr",m.numerics.contains("transport")&&m.numerics.at("transport").contains("Pr")?"legacy numerics.transport.Pr":"historical Pr default 0.72"}};
+        t.validate();thermophysical=t;
+    }
+    if(thermophysical) {
+        if(thermophysical->native && m.numerics.contains("transport")) {
+            const auto& legacy=m.numerics.at("transport");
+            for(const auto* name:{"mu","Pr"})if(legacy.contains(name)) {
+                const double v=legacy.at(name).get<double>();
+                const double expected=std::string(name)=="mu"?thermophysical->dynamicViscosity:thermophysical->prandtl;
+                if(!std::isfinite(v)||v!=expected)throw std::runtime_error("Native/legacy thermophysical parameter conflict: "+std::string(name));
+                thermophysical->provenance[name]+="; equal legacy numerics.transport."+std::string(name);
+            }
+        }
+        auto& n=result->solver.numerics;
+        if(thermophysical->selection.equationOfState=="perfectGas") {
+            n.idealGasGamma=thermophysical->gamma;n.idealGasConstant=thermophysical->gasConstant;
+        }
+        n.dynamicViscosity=thermophysical->dynamicViscosity;n.prandtl=thermophysical->prandtl;
+        result->solver.boundaries.thermalDynamicViscosity=n.dynamicViscosity;
+        result->solver.boundaries.thermalPrandtl=n.prandtl;
+        result->solver.turbulence.laminarDynamicViscosity=n.dynamicViscosity;
+        const bool selectedDiffusion=n.recipes.diffusion.has_value()
+            || (m.numerics.contains("diffusion") && m.numerics.at("diffusion").contains("default"));
+        // Native operator selection drives the old enable projection; transport
+        // coefficients no longer have to masquerade as numerical configuration.
+        const bool legacyDiffusionDisabled=m.numerics.contains("transport")
+            && m.numerics.at("transport").contains("enable")
+            && !m.numerics.at("transport").at("enable").get<bool>();
+        if (thermophysical->native && selectedDiffusion && !legacyDiffusionDisabled) n.viscousEnabled=true;
+        if (legacyDiffusionDisabled)
+            thermophysical->provenance["diffusion activation"]="legacy numerics.transport.enable=false; declared scheme remains inactive";
+        if (thermophysical->native && n.viscousEnabled) {
+            if (thermophysical->selection.transport.empty())
+                throw std::runtime_error(thermophysical->source+": diffusion requires a selected transport provider.");
+            if (thermophysical->selection.equationOfState=="perfectGas" && thermophysical->dynamicViscosity==0.)
+                throw std::runtime_error(thermophysical->source+": current viscous heat-flux provider requires positive conductivity; mu=0 with diffusion is unsupported.");
+        }
+        result->solver.thermophysical=std::make_shared<const ThermophysicalContract>(*thermophysical);
+        result->solver.boundaries.thermophysical=result->solver.thermophysical;
+        result->solver.validateThermophysicalProjection();
+    }
     result->composition=std::move(composition);
     result->authoredExecution=std::move(authoredExecution);
     result->authoredNumerics=std::move(authoredNumerics);

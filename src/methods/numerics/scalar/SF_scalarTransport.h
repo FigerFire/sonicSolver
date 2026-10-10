@@ -310,139 +310,15 @@ inline void applyEmptyBoundary(const Field& flow,
     }
 }
 
-inline SF::Boundary::ILW::BoundaryClosure::BoundaryNormal
-scalarILWNormalForAxis(const Field& flow,
-                       int i,
-                       int j,
-                       int k,
-                       int axis,
-                       const std::string& scalarName,
-                       const char* bcName) {
-    namespace Closure = SF::Boundary::ILW::BoundaryClosure;
-    Closure::BoundaryNormal normal;
-    normal.axis = axis;
-    const int ng = flow.NG();
-    if (axis == 0) {
-        if (i <= ng) normal.sign = -1;
-        else if (i >= flow.NX() + ng - 1) normal.sign = 1;
-    } else if (axis == 1) {
-        if (j <= ng) normal.sign = -1;
-        else if (j >= flow.NY() + ng - 1) normal.sign = 1;
-    } else if (axis == 2) {
-        if (k <= ng) normal.sign = -1;
-        else if (k >= flow.NZ() + ng - 1) normal.sign = 1;
-    }
-    if (normal.axis < 0 || normal.axis > 2 || normal.sign == 0) {
-        Closure::fatalClosure(
-            bcName, i, j, k,
-            "scalar '" + scalarName
-            + "' boundary point is not on the requested active boundary axis.");
-    }
-    return normal;
-}
-
-inline void nearestScalarILWInteriorCell(const Field& flow,
-                                         int i,
-                                         int j,
-                                         int k,
-                                         int& ri,
-                                         int& rj,
-                                         int& rk) {
-    nearestInteriorCell(flow, i, j, k, ri, rj, rk);
-}
-
-inline void applyILWFixedBoundary(const Field& flow,
-                                  ScalarField& scalar,
-                                  int i,
-                                  int j,
-                                  int k,
-                                  int axis,
-                                  double value,
-                                  int accuracyOrder) {
-    namespace Closure = SF::Boundary::ILW::BoundaryClosure;
-    const auto normal =
-        scalarILWNormalForAxis(flow, i, j, k, axis,
-                               scalar.name(), "scalarFixedValue");
-    auto getter = [&](const Field&, int gi, int gj, int gk) {
-        return scalar(gi, gj, gk);
-    };
-    auto writeGhost = [&](int gi, int gj, int gk,
-                          int ri, int rj, int rk) {
-        int refI = ri, refJ = rj, refK = rk;
-        nearestScalarILWInteriorCell(flow, ri, rj, rk, refI, refJ, refK);
-        std::array<double, Closure::kMaxAccuracyOrder> coeff{};
-        Closure::buildMultiDimScalarTaylorCoefficients(
-            flow, refI, refJ, refK, normal, accuracyOrder, getter,
-            "scalarFixedValue", coeff);
-        coeff[0] = value;
-        const int layer =
-            Closure::ghostLayer(gi, gj, gk, refI, refJ, refK, normal);
-        if (layer < 1 || layer > flow.NG()) {
-            Closure::fatalClosure("scalarFixedValue", gi, gj, gk,
-                                  "invalid ghost layer for scalar ILW fixedValue.");
-        }
-        const double h = Closure::normalSpacing(flow, refI, refJ, refK, normal);
-        scalar(gi, gj, gk) =
-            Closure::evaluateTaylor(
-                coeff, Closure::taylorOrder(accuracyOrder),
-                Closure::ghostDistance(layer, h));
-    };
-
-    if (isGhostCell(flow, i, j, k)) {
-        int ri = 0, rj = 0, rk = 0;
-        nearestScalarILWInteriorCell(flow, i, j, k, ri, rj, rk);
-        writeGhost(i, j, k, ri, rj, rk);
-        return;
-    }
-
-    scalar(i, j, k) = value;
-    forBoundaryGhostsAlongAxis(flow, i, j, k, axis, writeGhost);
-}
-
-inline void applyILWZeroGradientBoundary(const Field& flow,
-                                         ScalarField& scalar,
-                                         int i,
-                                         int j,
-                                         int k,
-                                         int axis,
-                                         int accuracyOrder) {
-    namespace Closure = SF::Boundary::ILW::BoundaryClosure;
-    const auto normal =
-        scalarILWNormalForAxis(flow, i, j, k, axis,
-                               scalar.name(), "scalarZeroGradient");
-    auto getter = [&](const Field&, int gi, int gj, int gk) {
-        return scalar(gi, gj, gk);
-    };
-    auto writeGhost = [&](int gi, int gj, int gk,
-                          int ri, int rj, int rk) {
-        int refI = ri, refJ = rj, refK = rk;
-        nearestScalarILWInteriorCell(flow, ri, rj, rk, refI, refJ, refK);
-        std::array<double, Closure::kMaxAccuracyOrder> coeff{};
-        Closure::buildMultiDimScalarTaylorCoefficients(
-            flow, refI, refJ, refK, normal, accuracyOrder, getter,
-            "scalarZeroGradient", coeff);
-        coeff[1] = 0.0;
-        const int layer =
-            Closure::ghostLayer(gi, gj, gk, refI, refJ, refK, normal);
-        if (layer < 1 || layer > flow.NG()) {
-            Closure::fatalClosure("scalarZeroGradient", gi, gj, gk,
-                                  "invalid ghost layer for scalar ILW zeroGradient.");
-        }
-        const double h = Closure::normalSpacing(flow, refI, refJ, refK, normal);
-        scalar(gi, gj, gk) =
-            Closure::evaluateTaylor(
-                coeff, Closure::taylorOrder(accuracyOrder),
-                Closure::ghostDistance(layer, h));
-    };
-
-    if (isGhostCell(flow, i, j, k)) {
-        int ri = 0, rj = 0, rk = 0;
-        nearestScalarILWInteriorCell(flow, i, j, k, ri, rj, rk);
-        writeGhost(i, j, k, ri, rj, rk);
-        return;
-    }
-
-    forBoundaryGhostsAlongAxis(flow, i, j, k, axis, writeGhost);
+/// @brief 独立标量与守恒变量复用同一 ILW 边界数学；geometry 只读，scalar 是唯一写目标。
+inline void applyILWBoundary(const Field& flow,ScalarField& scalar,
+                             int i,int j,int k,int axis,double value,int order,BCType law) {
+    namespace Closure=SF::Boundary::ILW::BoundaryClosure;
+    const auto constraint=law==FIXED_VALUE ? Closure::ScalarConstraint::Value
+        : law==SYMMETRY ? Closure::ScalarConstraint::Even : Closure::ScalarConstraint::NormalGradient;
+    Closure::writeScalarTaylor(flow,i,j,k,axis,order,constraint,law==FIXED_VALUE?value:0.,
+        [&](const Field&,int a,int b,int c) { return scalar(a,b,c); },
+        [&](int a,int b,int c,double v) { scalar(a,b,c)=v; },"scalar");
 }
 
 /// @brief 应用通用标量边界条件。
@@ -481,9 +357,7 @@ inline void applyBoundaryConditions(const Field& flow,
             switch (bc.type) {
             case FIXED_VALUE:
                 if (ilwEnabled && ilwAccuracyOrder > 0) {
-                    applyILWFixedBoundary(flow, scalar, i, j, k,
-                                          axis, bc.value,
-                                          ilwAccuracyOrder);
+                    applyILWBoundary(flow,scalar,i,j,k,axis,bc.value,ilwAccuracyOrder,bc.type);
                 } else {
                     applyFixedBoundary(flow, scalar, i, j, k, axis, bc.value);
                 }
@@ -491,9 +365,7 @@ inline void applyBoundaryConditions(const Field& flow,
             case ZERO_GRADIENT:
             case SYMMETRY:
                 if (ilwEnabled && ilwAccuracyOrder > 0) {
-                    applyILWZeroGradientBoundary(
-                        flow, scalar, i, j, k, axis,
-                        ilwAccuracyOrder);
+                    applyILWBoundary(flow,scalar,i,j,k,axis,0.,ilwAccuracyOrder,bc.type);
                 } else {
                     applyZeroGradientBoundary(flow, scalar, i, j, k, axis);
                 }

@@ -7,6 +7,7 @@
 #include <cctype>
 #include <fstream>
 #include <sstream>
+#include <stdexcept>
 
 namespace SF::IOPrivate {
 
@@ -330,9 +331,17 @@ bool foamIntegerTriple(const std::string& text,
     }
 }
 
-BCType foamBCTypeValue(const std::string& text, BCType fallback) {
+BCType foamBCTypeValue(const std::string& text, BCType fallback,
+                      bool velocityBoundary) {
     const std::string type = foamLower(foamUnquote(text));
-    if (type == "fixedvalue" || type == "fixed_value" || type == "noslip") {
+    if (type.empty()) return fallback;
+    if (type == "noslip" || type == "slip") {
+        if (!velocityBoundary)
+            throw std::runtime_error("Boundary law '"+type
+                +"' is only valid for velocity patches; scalar, thermal and initial conditions are independent.");
+        return type == "noslip" ? FIXED_VALUE : SYMMETRY;
+    }
+    if (type == "fixedvalue" || type == "fixed_value") {
         return FIXED_VALUE;
     }
     if (type == "zerogradient" || type == "zero_gradient") {
@@ -340,7 +349,7 @@ BCType foamBCTypeValue(const std::string& text, BCType fallback) {
     }
     if (type == "empty") return EMPTY;
     if (type == "symmetry" || type == "symmetryplane") return SYMMETRY;
-    return fallback;
+    throw std::runtime_error("Unknown boundary law '"+type+"'; no boundary fallback is applied.");
 }
 
 ThermalBCType foamThermalBCTypeValue(const std::string& text,
@@ -351,6 +360,8 @@ ThermalBCType foamThermalBCTypeValue(const std::string& text,
                                   return c == '_' || c == '-' || std::isspace(c);
                               }),
                type.end());
+    if (type == "noslip" || type == "slip")
+        throw std::runtime_error("slip/noSlip are velocity laws; choose the thermal boundary independently.");
     if (type == "fixedvalue" || type == "fixedtemperature") {
         return ThermalBCType::FixedTemperature;
     }

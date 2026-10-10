@@ -8,6 +8,9 @@ import hashlib
 import json
 import math
 from pathlib import Path
+import sys
+sys.path.insert(0,str(Path(__file__).resolve().parents[1]/"test"))
+from thermophysical_fixture import declare_historical_thermophysical_fixture
 import re
 import shutil
 import subprocess
@@ -53,6 +56,11 @@ def main() -> int:
     args = parser.parse_args()
 
     baseline = json.loads((args.case / "baseline.json").read_text())
+    working=Path(__file__).resolve().parents[1]/"test/t/piso-thermophysical-regression"
+    shutil.rmtree(working,ignore_errors=True)
+    shutil.copytree(args.case,working,ignore=shutil.ignore_patterns("result","._*"))
+    declare_historical_thermophysical_fixture(working)
+    args.case=working
     result_dir = args.case / "result"
     shutil.rmtree(result_dir, ignore_errors=True)
     run = subprocess.run(

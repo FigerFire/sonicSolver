@@ -8,6 +8,7 @@
 #include "SF_perfectGasEOS.h"
 #include "SF_phaseProperties.h"
 #include "SF_field.h"
+#include "core/config/SF_equationComposition.h"
 
 #include <memory>
 #include <algorithm>
@@ -30,6 +31,15 @@ makeSingleFluidPerfectGas(
     return std::make_shared<const SingleFluidStateModel>(
         std::make_shared<EOS::PerfectGasEOS>(gamma,gasConstant),
         dynamicViscosity,conductivity);
+}
+
+inline std::shared_ptr<const SingleFluidStateModel>
+makeSingleFluidPerfectGas(const ThermophysicalContract& thermophysical) {
+    thermophysical.validate();
+    if (thermophysical.selection.equationOfState!="perfectGas")
+        throw std::runtime_error(thermophysical.source+": single-fluid conservative provider requires perfectGas; no EOS substitution.");
+    return makeSingleFluidPerfectGas(thermophysical.gamma,thermophysical.gasConstant,
+        thermophysical.dynamicViscosity,thermophysical.prandtl);
 }
 
 /// @brief 用 rho/U 与显式 p 或 T 初值冷启动单流体守恒能量。

@@ -161,6 +161,10 @@ if(BUILD_TESTS)
     target_link_libraries(test_equationInstances PRIVATE SF_caseAdapter)
     add_test(NAME equationInstanceComposition COMMAND test_equationInstances)
 
+    add_executable(test_thermophysicalAuthority test/test_thermophysicalAuthority.cpp)
+    target_link_libraries(test_thermophysicalAuthority PRIVATE SF_application)
+    target_compile_definitions(test_thermophysicalAuthority PRIVATE SF_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+    add_test(NAME thermophysicalAuthority COMMAND test_thermophysicalAuthority)
     add_executable(test_nativeIoNoFoamRoundTrip
         test/test_nativeIoNoFoamRoundTrip.cpp)
     target_link_libraries(test_nativeIoNoFoamRoundTrip PRIVATE SF_caseAdapter)
@@ -315,6 +319,9 @@ if(BUILD_TESTS)
     add_executable(test_physicalILWPartition test/test_physicalILWPartition.cpp)
     target_link_libraries(test_physicalILWPartition PRIVATE SF_boundary)
     add_test(NAME physicalILWPartition COMMAND test_physicalILWPartition)
+    add_executable(test_physicalILWBoundary test/test_physicalILWBoundary.cpp)
+    target_link_libraries(test_physicalILWBoundary PRIVATE SF_physics)
+    add_test(NAME physicalILWBoundary COMMAND test_physicalILWBoundary)
 
     if(EXISTS "${CMAKE_SOURCE_DIR}/test/test_surfaceSchurProjection.cpp")
         add_executable(test_surfaceSchurProjection

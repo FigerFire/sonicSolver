@@ -12,7 +12,7 @@ output:
   jobName: Sod
   outputDir: result
 parallel:
-  enabled: true
+  enabled: false
   nProcs: 4
   split: [2, 2, 1]
   haloTolerance: 1e-05

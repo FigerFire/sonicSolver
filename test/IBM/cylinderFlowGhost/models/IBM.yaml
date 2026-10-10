@@ -5,4 +5,5 @@ SonicFile:
 IBM:
   enabled: true
   type: ghost
+  wallClosure: eulerSlip
   geometryFiles: [mesh/geometry/cylinder.STL]

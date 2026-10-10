@@ -172,7 +172,16 @@ ResolvedSimulationSystem build(
         const BuildRequest& request) {
     if (!request.unsupportedCompositionReason.empty())
         throw std::runtime_error(request.unsupportedCompositionReason);
+    config.validateThermophysicalProjection();
+    if (config.thermophysical && request.composition.declared) {
+        const auto& frozen=config.thermophysical->selection;
+        const auto& declared=request.composition.thermoDynamics;
+        if (declared.equationOfState!=frozen.equationOfState || declared.thermo!=frozen.thermo
+            || declared.transport!=frozen.transport || declared.constantDensity!=frozen.constantDensity)
+            throw std::runtime_error(config.thermophysical->source+": composition selection differs from frozen thermophysical binding.");
+    }
     ResolvedSimulationSystem result;
+
     ExecutionProgram executionProgram;
     std::vector<NumericalBinding> equationMethods;
     result.classification.templateOrigin = request.templateOrigin;
@@ -477,6 +486,7 @@ ResolvedSimulationSystem build(
         if (!std::isfinite(config.numerics.maxDeltaT) || config.numerics.maxDeltaT<=0)
             throw std::runtime_error("Scalar explicit fixed dt must be finite and positive.");
     }
+    result.numericalSystem.thermophysical=config.thermophysical;
     return result;
 }
 

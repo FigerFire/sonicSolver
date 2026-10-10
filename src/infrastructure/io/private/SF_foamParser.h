@@ -42,7 +42,10 @@ void appendUnique(std::vector<std::string>& values,
                   const std::string& value);
 bool foamIntegerTriple(const std::string& text,
                        std::array<int, 3>* values);
-BCType foamBCTypeValue(const std::string& text, BCType fallback);
+/// @brief 解析边界约束；slip/noSlip 仅允许在速度边界，展开为已有中立约束。
+/// @param velocityBoundary true 表示速度 patch，不用于初始条件或标量。
+BCType foamBCTypeValue(const std::string& text, BCType fallback,
+                      bool velocityBoundary = false);
 ThermalBCType foamThermalBCTypeValue(
     const std::string& text,
     ThermalBCType fallback);

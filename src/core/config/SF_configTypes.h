@@ -13,6 +13,7 @@
 ///   term 配方  -> core/config/types/SF_termRecipe.h
 
 #include "core/state/SF_valueTypes.h"
+#include "core/config/SF_equationComposition.h"
 
 #include "core/config/types/SF_ibmConfigTypes.h"
 #include "core/config/types/SF_turbulenceConfigTypes.h"
@@ -67,6 +68,7 @@ struct BoundaryConfig {
     std::vector<BCSetting<double>> pressure;
     std::vector<BCSetting<double>> density;
     std::vector<ThermalBCSetting> thermal;
+    std::shared_ptr<const SF::ThermophysicalContract> thermophysical;
     double thermalDynamicViscosity = 0.0;
     double thermalPrandtl = 0.72;
 };
@@ -90,6 +92,8 @@ struct SourceConfig {
 
 /// @brief Solver Algorithm 消费的完整强类型配置。
 struct SolverConfig {
+    /// @brief 原生/历史输入归一化一次后冻结；数值常量只读投影由此派生。
+    std::shared_ptr<const SF::ThermophysicalContract> thermophysical;
     NumericsConfig numerics;
     PressureCorrectionConfig pressure;
     InitialConditionConfig initial;
@@ -97,6 +101,18 @@ struct SolverConfig {
     IBMConfig ibm;
     SourceConfig sources;
     TurbulenceConfig turbulence;
+    void validateThermophysicalProjection() const {
+        if (!thermophysical) return; // Explicit low-level kernel configurations have no case binding.
+        const auto& t=*thermophysical;
+        t.validate();
+        if (numerics.dynamicViscosity!=t.dynamicViscosity || numerics.prandtl!=t.prandtl
+            || boundaries.thermalDynamicViscosity!=t.dynamicViscosity
+            || boundaries.thermalPrandtl!=t.prandtl
+            || turbulence.laminarDynamicViscosity!=t.dynamicViscosity
+            || (t.selection.equationOfState=="perfectGas"
+                && (numerics.idealGasGamma!=t.gamma || numerics.idealGasConstant!=t.gasConstant)))
+            throw std::runtime_error(t.source+": thermophysical projection drift; kernels cannot independently replace frozen parameters.");
+    }
 };
 
 /// @brief 所有配置块都缺失时的 typed 基线。

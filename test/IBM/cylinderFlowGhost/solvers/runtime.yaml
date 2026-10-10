@@ -3,7 +3,7 @@ SonicFile:
   object: solver
   type: runtime
 startTime: 0
-endTime: 5.0
+endTime: 1.0
 CFL: 0.3
 maxDeltaT: 0.01
 writeControl: runTime

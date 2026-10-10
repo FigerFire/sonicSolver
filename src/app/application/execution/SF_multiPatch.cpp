@@ -247,6 +247,18 @@ int executeMulti(
               + std::to_string(localFields.size())
               + " internal structured patch(es)");
 
+    State::StateBundle bundle;
+    bundle.patches = localFields;
+    if (System::requiresProvider(system,"thermodynamics.single-fluid")) {
+        if (!solverConfig.thermophysical)
+            throw std::runtime_error("Multi-patch single-fluid execution requires frozen thermophysical binding.");
+        solverConfig.validateThermophysicalProjection();
+        bundle.stateModel = Physics::FluidStateModel::makeSingleFluidPerfectGas(
+            *solverConfig.thermophysical);
+        for (Field* field : bundle.patches) {
+            if (field) field->setStateModel(bundle.stateModel);
+        }
+    }
     std::vector<ResultWriter::FieldPiece> pieces;
     pieces.reserve(mesh.size());
     for (size_t patchId = 0; patchId < mesh.size(); ++patchId) {
@@ -276,18 +288,6 @@ int executeMulti(
         else saveTime(caseConfig.time.startTime);
     }
 
-    State::StateBundle bundle;
-    bundle.patches = localFields;
-    if (System::requiresProvider(system,"thermodynamics.single-fluid")) {
-        bundle.stateModel = Physics::FluidStateModel::makeSingleFluidPerfectGas(
-            solverConfig.numerics.idealGasGamma,
-            solverConfig.numerics.idealGasConstant,
-            solverConfig.numerics.dynamicViscosity,
-            solverConfig.numerics.prandtl);
-        for (Field* field : bundle.patches) {
-            if (field) field->setStateModel(bundle.stateModel);
-        }
-    }
     bundle.time = caseConfig.time.startTime;
     for (size_t blockId = 0; blockId < mesh.size(); ++blockId) {
         auto& geometry = mesh.block(blockId).field;

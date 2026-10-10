@@ -21,6 +21,7 @@
 #include "core/mesh/SF_dimension.h"
 #include "methods/math/discrete/SF_polynomial.h"
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstdlib>
@@ -96,7 +97,8 @@ int taylorOrder(int accuracyOrder);
 /// @param j j 索引。
 /// @param k k 索引。
 /// @return 法向信息；无法定位时 sign=0。
-BoundaryNormal boundaryNormal(const Field& field, int i, int j, int k);
+BoundaryNormal boundaryNormal(const Field& field, int i, int j, int k,
+                              int axis = -1);
 
 /// @brief Mapped tangential halo is part of the same physical ILW stencil.
 inline bool readableStencilPoint(const Field& field,int i,int j,int k) {
@@ -106,9 +108,9 @@ inline bool readableStencilPoint(const Field& field,int i,int j,int k) {
 
 /// @brief 取法向局部网格间距。
 /// @param field 结构网格场。
-/// @param i 边界侧内点 i。
-/// @param j 边界侧内点 j。
-/// @param k 边界侧内点 k。
+/// @param i 实边界节点 i。
+/// @param j 实边界节点 j。
+/// @param k 实边界节点 k。
 /// @param normal 边界法向信息。
 /// @return 正法向网格距。
 double normalSpacing(const Field& field,
@@ -128,7 +130,7 @@ int ghostLayer(int gi, int gj, int gk,
                int ri, int rj, int rk,
                const BoundaryNormal& normal);
 
-/// @brief 从边界面到 ghost 中心的正距离。
+/// @brief 点式 SFM 的实边界节点到外侧 ghost 节点的正距离。
 /// @param layer ghost 层号。
 /// @param h 法向网格距。
 /// @return ghost 中心的局部法向坐标。
@@ -176,9 +178,9 @@ void fatalClosure(const char* bcName,
 /// 每个样本携带其在边界局部坐标系 `(s,a,b)` 中的坐标和标量值。
 ///
 /// @param field 结构网格场。
-/// @param i 边界侧内点 i。
-/// @param j 边界侧内点 j。
-/// @param k 边界侧内点 k。
+/// @param i 实边界节点 i。
+/// @param j 实边界节点 j。
+/// @param k 实边界节点 k。
 /// @param normal 边界法向信息。
 /// @param accuracyOrder ILW 精度阶，3/5/7/9。
 /// @param getter 标量取值函数，签名为 `(field,i,j,k)`。
@@ -257,10 +259,45 @@ int collectMultiDimSamples(
         }
     }
 
+    // Physical boundary nodes are constraints, not evolved samples. Shift the
+    // tangential window without reducing its order; mapped halos remain eligible.
+    auto tangentStart = [&](int axis) {
+        const int origin = axis == 0 ? i : axis == 1 ? j : k;
+        const int extent = axis == 0 ? field.NX() : axis == 1 ? field.NY() : field.NZ();
+        auto readableAt = [&](int index) {
+            for (int ns = 1; ns <= N; ++ns) {
+                int p[3] = {i,j,k};
+                p[normal.axis] -= normal.sign*ns;
+                p[axis] = index;
+                if (!readableStencilPoint(field,p[0],p[1],p[2])) return false;
+                if (index == field.NG() || index == field.NG()+extent-1) {
+                    int g[3] = {p[0],p[1],p[2]};
+                    g[axis] += index == field.NG() ? -1 : 1;
+                    if (!field.isCommunicationHalo(g[0],g[1],g[2])) return false;
+                }
+            }
+            return true;
+        };
+        int lower = origin, upper = origin;
+        while (readableAt(lower-1)) --lower;
+        while (readableAt(upper+1)) ++upper;
+        if (!readableAt(origin)) {
+            // A corner lies on another physical constraint: use its inward samples.
+            lower = field.NG()+1;
+            upper = field.NG()+extent-2;
+        }
+        if (upper-lower+1 < N)
+            fatalClosure("BoundaryClosure",i,j,k,
+                         "insufficient current tangential samples for selected ILW order.");
+        return std::max(lower,std::min(origin-half,upper-N+1))-origin;
+    };
+    const int startA = tangentStart(t1);
+    const int startB = useT2 ? tangentStart(t2) : 0;
+
     samples.reserve(useT2 ? (size_t)N * N * N : (size_t)N * N);
 
     /// 沿法向向内步进。
-    for (int ns = 0; ns < N; ++ns) {
+    for (int ns = 1; ns <= N; ++ns) {
         int si = i;
         int sj = j;
         int sk = k;
@@ -270,10 +307,10 @@ int collectMultiDimSamples(
 
         if (!Boundary::isPhysicalCell(field, si, sj, sk)) continue;
 
-        const double s = -(ns + 0.5) * h;  ///< 负值表示域内。
+        const double s = -ns * h;  ///< 负值表示域内。
 
         /// 沿第一切向偏移。
-        for (int na = -half; na <= half; ++na) {
+        for (int na = startA; na < startA+N; ++na) {
             int ai = si;
             int aj = sj;
             int ak = sk;
@@ -290,7 +327,7 @@ int collectMultiDimSamples(
             }
 
             /// 沿第二切向偏移。
-            for (int nb = -half; nb <= half; ++nb) {
+            for (int nb = startB; nb < startB+N; ++nb) {
                 int bi = ai;
                 int bj = aj;
                 int bk = ak;
@@ -317,9 +354,9 @@ int collectMultiDimSamples(
 /// 合成法向 Taylor 系数。样本不足或拟合失败时直接报错，不做隐式降维兜底。
 ///
 /// @param field 结构网格场。
-/// @param i 边界侧内点 i。
-/// @param j 边界侧内点 j。
-/// @param k 边界侧内点 k。
+/// @param i 实边界节点 i。
+/// @param j 实边界节点 j。
+/// @param k 实边界节点 k。
 /// @param normal 边界法向信息。
 /// @param getter 标量取值函数。
 /// @param bcName 边界类型名。
@@ -365,6 +402,68 @@ void buildMultiDimScalarTaylorCoefficients(
                      + ". No implicit dimension fallback is applied.");
     }
 }
+
+/// @brief 普通物理边界的 Taylor 约束；对称面的奇偶性不同于单个 Neumann 条件。
+enum class ScalarConstraint { Value, NormalGradient, Even, Odd };
+
+/// @brief 从当前内点一次构造 Taylor，发布实边界和沿当前 patch 法向的 ghost。
+/// @param prescribed Value 为边界值；NormalGradient 为外法向导数。
+template <typename Getter, typename Setter>
+void writeScalarTaylor(const Field& field, int i,int j,int k, int axis,int accuracyOrder,
+                       ScalarConstraint constraint,double prescribed,
+                       const Getter& getter,const Setter& setter,const char* bcName) {
+    const auto normal = boundaryNormal(field,i,j,k,axis);
+    if (normal.axis < 0 || normal.sign == 0)
+        fatalClosure(bcName,i,j,k,"point is not on the selected active physical boundary.");
+    int ri,rj,rk;
+    nearestInteriorCell(field,i,j,k,ri,rj,rk);
+    std::array<double,kMaxAccuracyOrder> coeff{};
+    buildMultiDimScalarTaylorCoefficients(
+        field,ri,rj,rk,normal,accuracyOrder,getter,bcName,coeff);
+    if (constraint == ScalarConstraint::Value) coeff[0] = prescribed;
+    else if (constraint == ScalarConstraint::NormalGradient) coeff[1] = prescribed;
+    else for (int d=0;d<=taylorOrder(accuracyOrder);++d) {
+        if ((constraint == ScalarConstraint::Even && d%2 == 1)
+            || (constraint == ScalarConstraint::Odd && d%2 == 0)) coeff[d] = 0.;
+    }
+    const double h = normalSpacing(field,ri,rj,rk,normal);
+    int inside[3]={ri,rj,rk};inside[normal.axis]-=normal.sign;
+    const double currentInside=getter(field,inside[0],inside[1],inside[2]);
+    // The first interior Taylor relation and the boundary law determine the
+    // missing value/first derivative. Higher derivatives retain WENO treatment.
+    if (constraint == ScalarConstraint::NormalGradient || constraint == ScalarConstraint::Even) {
+        coeff[0]=0.;
+        coeff[0]=currentInside-evaluateTaylor(coeff,taylorOrder(accuracyOrder),-h);
+    } else {
+        coeff[1]=0.;
+        coeff[1]=(currentInside-evaluateTaylor(coeff,taylorOrder(accuracyOrder),-h))/(-h);
+    }
+    auto writeGhost = [&](int gi,int gj,int gk,int,int,int) {
+        const int layer=ghostLayer(gi,gj,gk,ri,rj,rk,normal);
+        if (layer < 1 || layer > field.NG())
+            fatalClosure(bcName,gi,gj,gk,"invalid ghost layer for selected physical boundary.");
+        setter(gi,gj,gk,evaluateTaylor(coeff,taylorOrder(accuracyOrder),ghostDistance(layer,h)));
+    };
+    if (i!=ri || j!=rj || k!=rk) writeGhost(i,j,k,ri,rj,rk);
+    else {
+        setter(i,j,k,coeff[0]);
+        forBoundaryGhostsAlongAxis(field,i,j,k,normal.axis,writeGhost);
+    }
+}
+
+/// @brief 以 primitive velocity 重构边界，再按目标点密度写回 rhoU。
+inline double velocityDensity(const Field& field,int i,int j,int k) {
+    const double rho=field(i,j,k,RHO);
+    if (!std::isfinite(rho) || rho<=0.)
+        fatalClosure("velocity",i,j,k,"velocity reconstruction requires finite positive density.");
+    return rho;
+}
+struct VelocityComponentGetter {
+    int component;
+    double operator()(const Field& field,int i,int j,int k) const {
+        return field(i,j,k,RU+component)/velocityDensity(field,i,j,k);
+    }
+};
 
 /// @brief 默认 Field 变量取值器。
 struct FieldVariableGetter {

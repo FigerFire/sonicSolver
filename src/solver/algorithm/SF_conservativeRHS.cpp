@@ -162,11 +162,15 @@ void assembleAllPatches(
                 +"' has no compiled execution kernel.");
         boundSources.push_back(term.conservativeSource);
     }
+    config.validateThermophysicalProjection();
+    const auto* thermo=config.thermophysical.get();
     const SF::Equation::Compressible::AssemblyContext assembly{
         &convectionRecipe,diffusionRecipe,&boundSources,
         state.dt,config.numerics.ibmBoundary,config.numerics.ilwOrder,
-        config.numerics.dynamicViscosity,config.numerics.prandtl,
-        config.numerics.idealGasGamma,config.numerics.idealGasConstant,
+        thermo?thermo->dynamicViscosity:config.numerics.dynamicViscosity,
+        thermo?thermo->prandtl:config.numerics.prandtl,
+        thermo?thermo->gamma:config.numerics.idealGasGamma,
+        thermo?thermo->gasConstant:config.numerics.idealGasConstant,
         nullptr,state.stateModel.get()};
 
     for (size_t index = 0; index < fields.size(); ++index) {

@@ -9,12 +9,16 @@ import subprocess
 import tempfile
 import xml.etree.ElementTree as ET
 from pathlib import Path
+import sys
+sys.path.insert(0,str(Path(__file__).resolve().parents[1]/"test"))
+from thermophysical_fixture import declare_historical_thermophysical_fixture
 
 
 def run_case(solver: Path, source: Path, directory: Path, cells: int):
     case = directory / f"poiseuille-{cells}"
     shutil.copytree(source, case, ignore=shutil.ignore_patterns(
         "result", "mesh.sfm", "mesh.vtm", "mesh.vts", "._*", ".DS_Store"))
+    declare_historical_thermophysical_fixture(case)
     mesh = case / "mesh/blockMeshDict"
     mesh.write_text(mesh.read_text().replace("(16 16 1)",
                                              f"({cells} {cells} 1)"))

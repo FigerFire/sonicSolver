@@ -6,6 +6,7 @@ namespace SF::Application::ModelLoader {
 namespace {
 using Array=ResultWriter::ScalarField;
 std::vector<Array> fluidFields(const Field& field,double gamma) {
+    if (field.NVar()==0) return {};
     Array density{"Density",[&field](int i,int j,int k) {
         return field.hasStateModel()?field.thermodynamicState(i,j,k).density:field(i,j,k,RHO);
     }};
@@ -26,7 +27,10 @@ std::vector<Array> fluidFields(const Field& field,double gamma) {
 void configureOutput(ResultWriter& writer,const CaseConfig& config) {
     const auto description=config.modelDescription;
     const double gamma=config.solver.numerics.idealGasGamma;
-    writer.setFieldProvider([description,gamma](const Field& field,const std::vector<Array>& extra) {
+    const auto thermophysical=config.solver.thermophysical;
+    writer.setFieldProvider([description,gamma,thermophysical](const Field& field,const std::vector<Array>& extra) {
+        if (thermophysical && thermophysical->native && thermophysical->selection.equationOfState=="perfectGas" && !field.hasStateModel())
+            throw std::runtime_error(thermophysical->source+": native fluid output requires attached thermodynamic model.");
         auto arrays=fluidFields(field,gamma);
         arrays.insert(arrays.end(),extra.begin(),extra.end());
         if(!description)return arrays;

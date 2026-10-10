@@ -6,6 +6,7 @@
 #include <sstream>
 #include <regex>
 #include <iomanip>
+#include <limits>
 namespace SF::Serialization {
 namespace {
 Model::Parameters convert(const YAML::Node& node,const std::string& path) {
@@ -76,7 +77,7 @@ std::string yamlScalar(const Model::Parameters& value) {
     if(value.is_boolean())return value.get<bool>()?"true":"false";
     if(value.is_number_integer()||value.is_number_unsigned())return value.dump();
     if(value.is_number_float()) {
-        std::ostringstream out;out<<std::setprecision(15)<<value.get<double>();return out.str();
+        std::ostringstream out;out<<std::setprecision(std::numeric_limits<double>::max_digits10)<<value.get<double>();return out.str();
     }
     const auto text=value.get<std::string>();
     static const std::regex plain(R"(^[A-Za-z_][A-Za-z0-9_./+-]*$)");

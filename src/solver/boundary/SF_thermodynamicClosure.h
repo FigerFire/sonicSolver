@@ -63,13 +63,15 @@ void updateEnergyFromPressure(Field& field,
 /// @param thermalSettings IO读取的温度/热流边界条件。
 /// @param dynamicViscosity 常动力粘度。
 /// @param prandtl Prandtl 数。
-/// @param useILW true时当前会 fail-fast，避免隐藏降阶热边界。
+/// @param useILW true时按显式 ILW 阶数重构温度或外法向热梯度。
+/// @param ilwOrder ILW=3/5/7/9；不允许隐式降阶。
 void updateEnergyFromThermalBoundary(
     Field& field,
     const std::vector<ThermalBCSetting>& thermalSettings,
     double dynamicViscosity,
     double prandtl,
-    bool useILW = false);
+    bool useILW = false,
+    int ilwOrder = 0);
 
 } // namespace Boundary
 } // namespace SF

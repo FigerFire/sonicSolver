@@ -222,83 +222,19 @@ void updateEnergyFromPressure(Field& field,
                               int ilwOrder) {
     for (const auto& bc : pSettings) {
         forBoundarySettingPoints(field, bc, [&](int i, int j, int k, int axis) {
+            if (useILW && bc.type != EMPTY) {
+                using namespace ILW::BoundaryClosure;
+                const auto constraint = bc.type == FIXED_VALUE ? ScalarConstraint::Value
+                    : bc.type == SYMMETRY ? ScalarConstraint::Even : ScalarConstraint::NormalGradient;
+                writeScalarTaylor(field,i,j,k,axis,ilwOrder,constraint,
+                    bc.type == FIXED_VALUE ? bc.value : 0.,PressureGetter{},
+                    [&](int a,int b,int c,double p) { setEnergyFromPressure(field,a,b,c,p); },
+                    "pressure");
+                return;
+            }
             switch (bc.type) {
                 case FIXED_VALUE: {
-                    if (useILW) {
-                        auto applyFixed = [&](int gi, int gj, int gk,
-                                              int ri, int rj, int rk) {
-                            int refI = ri, refJ = rj, refK = rk;
-                            nearestBoundaryInteriorCell(field, ri, rj, rk,
-                                                        refI, refJ, refK);
 
-                            const ILW::BoundaryClosure::BoundaryNormal normal =
-                                ILW::BoundaryClosure::boundaryNormal(
-                                    field, gi, gj, gk);
-                            if (normal.sign == 0 || normal.axis < 0) {
-                                ILW::BoundaryClosure::fatalClosure(
-                                    "pressureFixedValue", gi, gj, gk,
-                                    "point is not on an active structured "
-                                    "physical boundary.");
-                            }
-                            std::array<double,
-                                       ILW::BoundaryClosure::kMaxAccuracyOrder>
-                                coeff{};
-                            ILW::BoundaryClosure::
-                                buildMultiDimScalarTaylorCoefficients(
-                                    field, refI, refJ, refK, normal, ilwOrder,
-                                    ILW::BoundaryClosure::PressureGetter{},
-                                    "pressureFixedValue", coeff);
-                            coeff[0] = bc.value;
-
-                            const int layer = ILW::BoundaryClosure::ghostLayer(
-                                gi, gj, gk, refI, refJ, refK, normal);
-                            if (layer < 1 || layer > field.NG()) {
-                                ILW::BoundaryClosure::fatalClosure(
-                                    "pressureFixedValue", gi, gj, gk,
-                                    "invalid ghost layer for pressure "
-                                    "closure.");
-                            }
-                            const double h =
-                                ILW::BoundaryClosure::normalSpacing(
-                                    field, refI, refJ, refK, normal);
-                            const double pGhost =
-                                ILW::BoundaryClosure::evaluateTaylor(
-                                    coeff,
-                                    ILW::BoundaryClosure::taylorOrder(ilwOrder),
-                                    ILW::BoundaryClosure::ghostDistance(layer,
-                                                                        h));
-                            setEnergyFromPressure(field, gi, gj, gk, pGhost);
-                        };
-
-                        const ILW::BoundaryClosure::BoundaryNormal normal =
-                            ILW::BoundaryClosure::boundaryNormal(field, i, j,
-                                                                 k);
-                        const bool isNormalGhost = [&]() -> bool {
-                            const int ng = field.NG();
-                            if (normal.axis == 0)
-                                return i < ng || i >= field.NX() + ng;
-                            if (normal.axis == 1)
-                                return j < ng || j >= field.NY() + ng;
-                            if (normal.axis == 2)
-                                return k < ng || k >= field.NZ() + ng;
-                            return false;
-                        }();
-
-                        if (isNormalGhost && normal.sign != 0) {
-                            int ri = 0, rj = 0, rk = 0;
-                            nearestBoundaryInteriorCell(field, i, j, k,
-                                                        ri, rj, rk);
-                            applyFixed(i, j, k, ri, rj, rk);
-                            break;
-                        }
-
-                        if (normal.sign != 0) {
-                            setEnergyFromPressure(field, i, j, k, bc.value);
-                        }
-                        forBoundaryGhostsAlongAxis(
-                            field, i, j, k, axis, applyFixed);
-                        break;
-                    }
 
                     auto applyFixed = [&](int gi, int gj, int gk,
                                           int ri, int rj, int rk) {
@@ -317,79 +253,7 @@ void updateEnergyFromPressure(Field& field,
                 }
                 case ZERO_GRADIENT:
                 case SYMMETRY: {
-                    if (useILW) {
-                        auto applyZeroGradient = [&](int gi, int gj, int gk,
-                                                     int ri, int rj, int rk) {
-                            int refI = ri, refJ = rj, refK = rk;
-                            nearestBoundaryInteriorCell(field, ri, rj, rk,
-                                                        refI, refJ, refK);
 
-                            const ILW::BoundaryClosure::BoundaryNormal normal =
-                                ILW::BoundaryClosure::boundaryNormal(
-                                    field, gi, gj, gk);
-                            if (normal.sign == 0 || normal.axis < 0) {
-                                ILW::BoundaryClosure::fatalClosure(
-                                    "pressureZeroGradient", gi, gj, gk,
-                                    "point is not on an active structured "
-                                    "physical boundary.");
-                            }
-
-                            std::array<double,
-                                       ILW::BoundaryClosure::kMaxAccuracyOrder>
-                                coeff{};
-                            ILW::BoundaryClosure::
-                                buildMultiDimScalarTaylorCoefficients(
-                                    field, refI, refJ, refK, normal, ilwOrder,
-                                    ILW::BoundaryClosure::PressureGetter{},
-                                    "pressureZeroGradient", coeff);
-                            coeff[1] = 0.0;
-
-                            const int layer = ILW::BoundaryClosure::ghostLayer(
-                                gi, gj, gk, refI, refJ, refK, normal);
-                            if (layer < 1 || layer > field.NG()) {
-                                ILW::BoundaryClosure::fatalClosure(
-                                    "pressureZeroGradient", gi, gj, gk,
-                                    "invalid ghost layer for pressure "
-                                    "closure.");
-                            }
-                            const double h =
-                                ILW::BoundaryClosure::normalSpacing(
-                                    field, refI, refJ, refK, normal);
-                            const double pGhost =
-                                ILW::BoundaryClosure::evaluateTaylor(
-                                    coeff,
-                                    ILW::BoundaryClosure::taylorOrder(ilwOrder),
-                                    ILW::BoundaryClosure::ghostDistance(layer,
-                                                                        h));
-                            setEnergyFromPressure(field, gi, gj, gk, pGhost);
-                        };
-
-                        const ILW::BoundaryClosure::BoundaryNormal normal =
-                            ILW::BoundaryClosure::boundaryNormal(field, i, j,
-                                                                 k);
-                        const bool isNormalGhost = [&]() -> bool {
-                            const int ng = field.NG();
-                            if (normal.axis == 0)
-                                return i < ng || i >= field.NX() + ng;
-                            if (normal.axis == 1)
-                                return j < ng || j >= field.NY() + ng;
-                            if (normal.axis == 2)
-                                return k < ng || k >= field.NZ() + ng;
-                            return false;
-                        }();
-
-                        if (isNormalGhost && normal.sign != 0) {
-                            int ri = 0, rj = 0, rk = 0;
-                            nearestBoundaryInteriorCell(field, i, j, k,
-                                                        ri, rj, rk);
-                            applyZeroGradient(i, j, k, ri, rj, rk);
-                            break;
-                        }
-
-                        forBoundaryGhostsAlongAxis(
-                            field, i, j, k, axis, applyZeroGradient);
-                        break;
-                    }
 
                     auto applyZeroGradient = [&](int gi, int gj, int gk,
                                                  int ri, int rj, int rk) {
@@ -477,15 +341,10 @@ void updateEnergyFromThermalBoundary(
     const std::vector<ThermalBCSetting>& thermalSettings,
     double dynamicViscosity,
     double prandtl,
-    bool useILW) {
+    bool useILW,
+    int ilwOrder) {
     if (thermalSettings.empty()) return;
-    if (useILW) {
-        std::cerr << "[SF FATAL] thermal boundary conditions with ILW are not "
-                  << "implemented yet. Disable ILW or remove 0/T boundary "
-                  << "settings to avoid hidden low-order thermal closure."
-                  << std::endl;
-        std::exit(1);
-    }
+
 
     for (const auto& bc : thermalSettings) {
         const auto& allSets = field.getAllSets();
@@ -495,6 +354,9 @@ void updateEnergyFromThermalBoundary(
                       << "' is not a mesh set." << std::endl;
             std::exit(1);
         }
+        // The global set identity survives decomposition, but a patch can
+        // have no local members. There is then no thermal face to reconstruct.
+        if (setIt->second.empty()) continue;
 
         const int axis = (bc.type == ThermalBCType::Empty)
             ? Geometry::boundaryAxisForSet(field, bc.name)
@@ -514,6 +376,31 @@ void updateEnergyFromThermalBoundary(
             field.getIJK(idx, i, j, k);
             if (!Geometry::isPhysicalPoint(field, i, j, k)) continue;
 
+            if (useILW && bc.type != ThermalBCType::Empty) {
+                using namespace ILW::BoundaryClosure;
+                ScalarConstraint constraint=ScalarConstraint::NormalGradient;
+                double prescribed=0.;
+                if (bc.type == ThermalBCType::FixedTemperature) {
+                    constraint=ScalarConstraint::Value;
+                    prescribed=bc.value;
+                    if (prescribed<=0.)
+                        throw std::runtime_error("ILW fixedTemperature requires positive temperature.");
+                } else if (bc.type == ThermalBCType::HeatFlux) {
+                    int si=i,sj=j,sk=k;
+                    nearestThermalInsideSample(field,i,j,k,axis,si,sj,sk);
+                    const double kappa=field.hasStateModel()
+                        ? field.thermodynamicState(si,sj,sk).thermalConductivity
+                        : thermalConductivity(dynamicViscosity,prandtl);
+                    if (!std::isfinite(kappa) || kappa<=0.)
+                        throw std::runtime_error("ILW heatFlux requires positive finite thermal conductivity.");
+                    // Preserve the existing heatFlux convention: k*dT/dn=value.
+                    prescribed=bc.value/kappa;
+                }
+                auto temperature=[](const Field& f,int a,int b,int c) { return temperatureAt(f,a,b,c); };
+                writeScalarTaylor(field,i,j,k,axis,ilwOrder,constraint,prescribed,temperature,
+                    [&](int a,int b,int c,double t) { setEnergyFromTemperature(field,a,b,c,t); },"thermal");
+                continue;
+            }
             switch (bc.type) {
                 case ThermalBCType::FixedTemperature: {
                     if (bc.value <= 0.0) {
@@ -614,6 +501,9 @@ void updateEnergyFromThermalBoundary(
                 }
             }
         }
+        // Intersecting patches use the explicitly ordered thermal laws. The
+        // next patch must see this patch's energy publication, not cached T.
+        field.invalidateThermodynamicCache();
     }
 }
 

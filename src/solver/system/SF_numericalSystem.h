@@ -113,6 +113,7 @@ struct CompiledRecipeBinding {
 };
 
 struct CompiledNumericalSystem {
+    std::shared_ptr<const SF::ThermophysicalContract> thermophysical;
     FDM::NumericalRecipeSet recipes;
     CompiledTimeIntegration time;
     TimeStepPolicy dt;

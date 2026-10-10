@@ -3,6 +3,9 @@
 import argparse
 import json
 from pathlib import Path
+import sys
+sys.path.insert(0,str(Path(__file__).resolve().parents[1]/"test"))
+from thermophysical_fixture import declare_historical_thermophysical_fixture
 import shutil
 import subprocess
 import tempfile
@@ -20,12 +23,14 @@ def main():
         def case(name,states=None,algorithm=None,eos=None,equations=None):
             target=root/name
             shutil.copytree(args.case,target,ignore=shutil.ignore_patterns('result','._*','.DS_Store'))
+            declare_historical_thermophysical_fixture(target)
             if states is not None:
                 (target/'state/state.yaml').write_text('SonicFile:\n  object: state\n  type: registry\nuse: ['+', '.join(states)+']\n')
             if algorithm is not None:
                 (target/'algorithms/algorithms.yaml').write_text('SonicFile:\n  object: algorithms\n  type: registry\n'+algorithm+(': {pressureCorrectors: 1}\n' if algorithm=='SIMPLE' else ': {}\n'))
             if eos is not None:
-                (target/'models/thermoDynamics.yaml').write_text('SonicFile:\n  object: models\n  type: thermoDynamics\nthermoDynamics:\n  equationOfState: '+eos+'\n  thermo: hConst\n  transport: const\nproperties:\n  equationOfState:\n    rho: 1.0\n')
+                eos_properties=('    rho: 1.0\n' if eos=='rhoConst' else '    gamma: 1.4\n    R: 287.05\n')
+                (target/'models/thermoDynamics.yaml').write_text('SonicFile:\n  object: models\n  type: thermoDynamics\nthermoDynamics:\n  equationOfState: '+eos+'\n  thermo: hConst\n  transport: const\nproperties:\n  equationOfState:\n'+eos_properties+'  transport:\n    mu: 0.01\n    Pr: 0.72\n')
             if equations is not None:
                 (target/'equations/equations.yaml').write_text('SonicFile:\n  object: equations\n  type: registry\nuse: ['+', '.join(equations)+']\n')
             return target
@@ -62,11 +67,11 @@ def main():
                      ['Continuity','Momentum','Energy'])
         model=caloric/'models/thermoDynamics.yaml'
         model.write_text(model.read_text().replace('thermo: hConst','thermo: janaf'))
-        check('unimplemented caloric closure',caloric,'JANAF caloric provider')
+        check('unimplemented caloric closure',caloric,"Unsupported caloric provider 'janaf'")
         transport=case('missing-transport')
         model=transport/'models/thermoDynamics.yaml'
         model.write_text(model.read_text().replace('transport: const','transport: sutherland'))
-        check('unimplemented transport closure',transport,'Sutherland transport provider')
+        check('unimplemented transport closure',transport,"Unsupported transport provider 'sutherland'")
         # Canonical physical IDs remain unchanged; unknown catalogue metadata is not guessed.
         check('unknown STATE',case('unknown',['U','p','custom']),
               'Solution STATE has no metadata: custom')

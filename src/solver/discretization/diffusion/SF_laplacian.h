@@ -48,6 +48,7 @@ inline void laplacian(Field& field, Residual& residual, double mu, double Pr,
 /// @param field  物理场
 /// @param mu     动力粘度
 /// @param Pr     普朗特数 (默认 0.72)
+// Compatibility-only short form: native production passes gamma/R explicitly.
 inline void laplacian(Field& field, Residual& residual, double mu, double Pr = 0.72) {
     laplacian(field, residual, mu, Pr, 1.4, 287.05);
 }
@@ -98,6 +99,7 @@ inline void laplacian(Field& field, Residual& residual, double mu, double Pr,
 /// @param field  物理场
 /// @param mu     动力粘度
 /// @param Pr     普朗特数 (默认 0.72)
+// Compatibility-only short form: native production passes gamma/R explicitly.
 inline void laplacian(Field& field, Residual& residual, double mu, double Pr = 0.72) {
     laplacian(field, residual, mu, Pr, 1.4, 287.05);
 }

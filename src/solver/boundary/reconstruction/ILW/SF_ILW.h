@@ -100,7 +100,7 @@ void forBoundaryGhosts(Field& field, int i, int j, int k, Fn&& fn) {
 ///
 /// 用于按当前 patch 法向应用 ILW 边界条件，避免角点处跨 patch 写入 ghost。
 template <typename Fn>
-void forBoundaryGhostsAlongAxis(Field& field,
+void forBoundaryGhostsAlongAxis(const Field& field,
                                 int i, int j, int k,
                                 int axis,
                                 Fn&& fn) {
@@ -137,28 +137,28 @@ void forBoundaryGhostsAlongAxis(Field& field,
 
 /// @brief 固定值标量边界调度。
 void setFixedValueScalar(Field& field, int i, int j, int k,
-                         double bcValue, int vIdx, int accuracyOrder);
+                         double bcValue, int vIdx, int accuracyOrder, int axis);
 
 /// @brief 固定值Vector3边界调度。
 void setFixedValueVector3(Field& field, int i, int j, int k,
                           const SF::Vector3& bcValue, int vIdx,
-                          int accuracyOrder);
+                          int accuracyOrder, int axis);
 
 /// @brief 零梯度标量边界调度。
 void setZeroGradientScalar(Field& field, int i, int j, int k, int vIdx,
-                           int accuracyOrder);
+                           int accuracyOrder, int axis);
 
 /// @brief 零梯度Vector3边界调度。
 void setZeroGradientVector3(Field& field, int i, int j, int k, int vIdx,
-                            int accuracyOrder);
+                            int accuracyOrder, int axis);
 
 /// @brief 对称标量边界调度。
 void setSymmetryScalar(Field& field, int i, int j, int k, int vIdx,
-                       int accuracyOrder);
+                       int accuracyOrder, int axis);
 
 /// @brief 对称Vector3边界调度。
 void setSymmetryVector3(Field& field, int i, int j, int k, int vIdx,
-                        int accuracyOrder);
+                        int accuracyOrder, int axis);
 
 /// @brief empty标量边界调度。
 void setEmptyScalar(Field& field, int i, int j, int k, int vIdx, int axis);

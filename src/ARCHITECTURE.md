@@ -572,3 +572,74 @@ Plan 顺序继续为 prepare(boundary/halo/Ghost) -> dt -> once-step RAS -> flow
 callbacks 借用稳定 bundle/services/compiled objects，强引用实际 numerical owner；动态 dt limit 从 host 的稳定输入读取。phi0/temporal view 仍 alias 原 workspace，physical state 不复制。host 不可 copy/move，patch identity 在绑定之后不可替换。compiler 与 binder 共享纯 compiled-stage 校验；geometry/storage/service validation 不伪装为静态证明。
 
 设计与生命周期表见 [runtime binding architecture](../docs/runtime-binding-architecture.md)，具体验证范围与剩余能力见 [migration report](../docs/runtime-binding-migration-report.md)。这次收口不实现 SST convection、level-set MPI 修复、production KKT 或新组合能力。
+
+## 普通物理壁面条件与重构的独立选择（2026-10-10）
+
+速度 `noSlip` 声明静止壁面 U=0；速度 `slip` 声明静止平面壁面的 U_n=0、dU_t/dn=0。这两个名字是边界定律的便捷输入，分别展开成已有 FixedValue(0) / Symmetry 中立约束，由同一 Linear 或显式 ILW3/5/7/9 重构执行。它们不创建 solver、时间方法、额外状态或特殊 runtime path；相同展开输入必须产生相同数值执行与结果。
+
+rho、p、T 仍独立声明各自的边界条件。速度壁面不自动选择绝热/固定温度/热流，也不修改压力条件、EOS、黏性、coupling、时间或 IBM 算法。slip/noSlip 用于标量/温度或 initial condition，以及给静止壁面附非零速度，必须显式拒绝；移动壁面应使用已实现且明确的其他数学契约。通用数学表达与某个 numerical provider 的实现能力不同：例如当前 constant-density pressure provider 支持展开的 noSlip，尚未实现 slip 的法向/切向装配，继续准确报 Unsupported。
+
+多 patch 的全局 thermal set 可以有零本地成员，该 patch 不进行法向推断或写入；不存在的 set 身份仍报错。pressure→thermal 和有交点的 ordered thermal patches 之间必须失效 EOS 缓存，让消费者读取已发布的原守恒数组，不创建第二份温度 authority。physical boundary→halo→IBM→halo→operator 的调度顺序与 canonical COPY / residual SUM 不变。
+
+这条契约服务普通结构化物理边界，不将 IBM 曲面 Euler ILW 声称为通用黏性壁面 ILW。现有曲面壁面选择及支持范围继续由其独立数学契约校验。实际测试设置与证据见 [slip/noSlip 解耦报告](../docs/slip-noslip-boundary-composition.md)。
+
+## 热物性选择、参数与执行绑定（2026-10-10）
+
+EOS、caloric closure 和 transport 属于 `models/`，与 WHAT 中的 Energy equation、STATE 的能量变量、HOW 的时间推进、WHICH 的空间离散分别选择。`hConst` 不增加 Energy equation，也不推进 T；`const` 不选择 CENTRAL2。用户仍须显式提供方程与离散。rhoConst 的 U/p provider 不需要 PerfectGas 能量模型；geometry-only scalar 不需要 EOS。
+
+```text
+models/thermoDynamics.yaml
+  selection + required parameters + provenance
+        ↓ strict native validation / once-only historical normalization
+shared_ptr<const ThermophysicalContract>
+        ├─ MeshRuntimeConfig / Init (before conservative energy initialization)
+        ├─ FluidStateModel factory (single and participating patches)
+        ├─ boundary / ILW / IBM initialization
+        ├─ molecular transport / RAS coefficients
+        └─ CompiledNumericalSystem → explain / numerical consumers / output
+```
+
+这份冻结值是 case 热物性的唯一可编辑输入所产生的 authority。SolverConfig、BoundaryConfig 和 CompiledNumericalSystem 共享同一个 const 对象；NumericsConfig、mesh、IBM 和 turbulence 中的标量是 kernel 所需的只读投影。进入 compiler/runtime 时校验投影不能漂移，native boundary/output 在缺少所需 FluidStateModel 时 fail-fast。Field/StateBundle 的 physical state、clock 与 PatchWorkspace ownership 不变。
+
+当前 native 单流体支持 perfectGas + hConst + const，gamma/R 显式必填；选择 const 时 mu/Pr 显式必填。cp/cv 由 gamma/R 推导，可选输入仅用于一致性校验。热导率为 `mu * cp / Pr`。rhoConst 显式提供 rho；未选择 caloric 时不要求 cp/cv/gamma/R。JANAF、Sutherland、未知模型和不支持的 EOS/STATE/energy 组合在 kernel 前拒绝，不能改用 PerfectGas。当前黏性热通量核要求正 conductivity；mu=0 可用于无 diffusion 的系统，不能伪装成该核已支持零导热。
+
+旧 `numerics.transport.enable=false` 的显式停用语义仍保留并显示来源；声明了备用 diffusion scheme 不等于强行启用该项。不含旧开关的 native 输入由实际 diffusion 选择派生 enable 投影。
+
+旧配置仍可声明 `numerics.transport.mu/Pr`；解析一次后冻结，gamma=1.4、R=287.05、mu=0、Pr=0.72 的历史默认来源会显示在 explain 中。native 与 legacy 同时声明同一参数时必须相等，并保留两个来源；冲突报错。历史短参数 diffusion overload 仅用于显式低层兼容调用，native production 使用完整参数或已绑定模型。
+
+标准 native 文件示例：
+
+```yaml
+SonicFile:
+  object: models
+  type: thermoDynamics
+thermoDynamics:
+  equationOfState: perfectGas
+  thermo: hConst
+  transport: const
+properties:
+  equationOfState:
+    gamma: 1.32
+    R: 310
+  transport:
+    mu: 2.1e-5
+    Pr: 0.81
+```
+
+`properties: {}` 不是有效的 native 热物性声明；需要显式补齐参数。CLI init 生成完整的默认声明，而不是让 reader 猜测参数。Thermophysical / thermophysical 的同义 selection 入口使用相同校验；历史 temperature-only contribution 仍独立存在，不等同于 EOS selection。
+
+### Canonical case IO
+
+|语义|目录|SonicFile.object|
+|---|---|---|
+|STATE registry|state/|state|
+|WHAT equation registry|equations/|equations|
+|algorithm registry|algorithms/|algorithms|
+|HOW/WHICH/runtime、旧 flow equationSystem、普通边界 ILW|solvers/|solver|
+|EOS/caloric/transport、IBM、turbulence、物理 source|models/|models|
+|field declaration、初值、边界|fields/|fields|
+|mesh declaration|mesh/|mesh|
+
+温度等 derived view 可以只声明边界而不声明独立初值；configuration decoding 不得因缺少 T 初值而丢弃 thermal boundary。p 初始化和 T 初始化应共享同一套显式边界。
+
+CaseIO writer 在写入任何文件前计算全部目标路径，拒绝 safeFileName 或大小写碰撞、保留 registry 名、重复 category/name、重复 registry、非法父目录和目标目录冲突。solver/model 的同名对象位于不同目录，不覆盖彼此。Reader 按 registry reference 解析，不搜索猜测文件；历史明确引用的旧目录布局可读，canonical writer 不再生成该布局。重复 referenced file（含规范化路径或 symlink 指向同一文件）和 object/type 不匹配会拒绝。短 registry selection 写出后保持，浮点参数按 max_digits10 写出，避免读回改变系数。

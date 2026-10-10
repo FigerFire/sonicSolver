@@ -63,6 +63,7 @@ MeshRuntimeConfig makeMeshRuntimeConfig(
         const FDM::SolverConfig& solverConfig,
         int requiredTermHaloWidth) {
     MeshRuntimeConfig config;
+    solverConfig.validateThermophysicalProjection();
     config.initialConditions = solverConfig.initial;
     config.idealGasGamma = solverConfig.numerics.idealGasGamma;
     config.idealGasConstant = solverConfig.numerics.idealGasConstant;

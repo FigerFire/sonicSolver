@@ -54,6 +54,7 @@ void addObject(Model::Description& model,Model::ObjectDescriptor object,const st
         return current.name==object.name&&current.category==object.category;
     });
     if(duplicate!=model.objects.end())throw std::runtime_error(source+": duplicate "+object.category+" object "+object.name);
+    object.source=source;
     model.objects.push_back(std::move(object));
 }
 std::string safeFileName(std::string value) {
@@ -68,9 +69,13 @@ std::string semanticType(const std::string& type) {
         {"Gravity","gravity"},{"WallHeat","wallHeat"},{"File","geometry"}};
     const auto found=legacy.find(type);return found==legacy.end()?type:found->second;
 }
-bool solverModule(const Model::ObjectDescriptor& object) {
+std::string canonicalCategory(const Model::ObjectDescriptor& object) {
     const auto type=semanticType(object.type);
-    return object.category=="solver"||type=="IBM"||type=="ILW"||type=="equationSystem";
+    if(type=="IBM") return "models"; // Physical contribution; old explicit solver references remain readable.
+    if(type=="ILW" || type=="equationSystem") return "solver";
+    if(object.category!="models" && object.category!="solver")
+        throw std::runtime_error("Unsupported object category '"+object.category+"' for "+object.name);
+    return object.category;
 }
 
 std::optional<Model::FieldDescriptor> builtinField(
@@ -233,9 +238,13 @@ Model::Description read(const std::string& path) {
     const fs::path directory=fs::is_directory(path)?fs::path(path):fs::path(path).parent_path();
     Model::Description model;model.caseDir=directory.string();model.name=directory.filename().string();
     const auto registry=nativeRegistry();
+    std::set<std::filesystem::path> loadedFiles;
     std::function<void(const std::string&,const std::string&,const std::string&,const std::string&,const std::string&)> dispatch;
     dispatch=[&](const std::string& relative,const std::string& entryName,const std::string& expectedObject,const std::string& expectedType,const std::string& selection) {
         const auto full=(directory/relative).lexically_normal();
+        const auto identity=fs::weakly_canonical(full);
+        if(!loadedFiles.insert(identity).second)
+            throw std::runtime_error(relative+": duplicate referenced file (object "+entryName+").");
         const auto document=Serialization::readSonicFile(full.string());
         const auto shown=fs::relative(full,directory).string();
         model.comments[shown]=document.comments;
@@ -271,16 +280,35 @@ Model::Description read(const std::string& path) {
 
 void write(const Model::Description& model,const std::string& directory) {
     const auto dir=std::filesystem::path(directory);
+    struct PendingFile { std::string relative; Sonic document; bool compact; };
+    std::vector<PendingFile> pending;
+    std::map<std::string,std::string> destinations;
+    // Resolve the entire output set before creating directories or truncating any file.
     auto writeFile=[&](const std::string& relative,const std::string& object,const std::string& type,
-                       const P& body,bool compactConditions=false) {
+                       const P& body,bool compactConditions=false,const std::string& origin=std::string()) {
+        const auto destination=(dir/relative).lexically_normal();
+        const auto identity=lower(std::filesystem::weakly_canonical(destination).string());
+        const auto owner=object+"/"+type+" ("+relative+")"+(origin.empty()?"":" "+origin);
+        const auto [it,inserted]=destinations.emplace(identity,owner);
+        if(!inserted)throw std::runtime_error("Output path collision: "+owner+" conflicts with "+it->second);
+        if(std::filesystem::is_directory(destination))
+            throw std::runtime_error("Output file path is a directory: "+destination.string());
+        for(auto parent=destination.parent_path();!parent.empty();parent=parent.parent_path()) {
+            if(std::filesystem::exists(parent)&&!std::filesystem::is_directory(parent))
+                throw std::runtime_error("Output parent is not a directory: "+parent.string());
+            if(parent==parent.root_path())break;
+        }
         const auto found=model.comments.find(relative);
-        Serialization::writeSonicFile({object,type,(dir/relative).string(),body,
-            found==model.comments.end()?std::vector<std::string>{}:found->second},(dir/relative).string(),compactConditions);
+        pending.push_back({relative,{object,type,destination.string(),body,
+            found==model.comments.end()?std::vector<std::string>{}:found->second},compactConditions});
     };
     writeFile("case.yaml","case","registry",{{"formatVersion",model.formatVersion},{"name",model.name}});
     writeFile("mesh/mesh.yaml","mesh","registry",model.mesh);
     P fieldRegistry=P::object();
-    for(const auto& field:model.fields)fieldRegistry[field.name]=FieldIO::encodeRegistry(field);
+    for(const auto& field:model.fields) {
+        if(fieldRegistry.contains(field.name))throw std::runtime_error("Duplicate field registry name: "+field.name);
+        fieldRegistry[field.name]=FieldIO::encodeRegistry(field);
+    }
     writeFile("fields/fields.yaml","fields","registry",fieldRegistry);
     P internal=P::object();
     for(const auto& field:model.fields) {
@@ -304,25 +332,40 @@ void write(const Model::Description& model,const std::string& directory) {
     writeFile("solvers/numerics.yaml","solver","numerics",model.numerics);
     writeFile("solvers/algorithm.yaml","solver","algorithm",model.solver);
     P modelRegistry=P::object();
-    std::set<std::string> usedSolverNames,usedModelNames;
+    std::map<std::string,std::string> usedSolverNames{
+        {"runtime","reserved solvers/runtime.yaml"},{"numerics","reserved solvers/numerics.yaml"},
+        {"algorithm","reserved solvers/algorithm.yaml"}},usedModelNames;
     for(const auto& object:model.objects) {
+        const auto origin="name="+object.name+" category="+object.category+" source="+
+            (object.source.empty()?"in-memory description":object.source);
         if (object.type=="stateRegistry" || object.type=="equationRegistry" || object.type=="algorithmRegistry") {
             const std::string category=object.type=="stateRegistry"?"state":object.type=="equationRegistry"?"equations":"algorithms";
-            writeFile(category+"/"+category+".yaml",category,"registry",object.parameters);
+            if(object.category!=category)throw std::runtime_error("Registry category mismatch: "+object.name+" expected "+category);
+            writeFile(category+"/"+category+".yaml",category,"registry",object.parameters,false,origin);
             continue;
         }
         const auto type=semanticType(object.type);
-        const bool solver=solverModule(object);
+        const bool solver=canonicalCategory(object)=="solver";
         auto& used=solver?usedSolverNames:usedModelNames;
-        if(!used.insert(object.name).second)throw std::runtime_error("Duplicate registry object: "+object.name);
-        const std::string relative="models/"+safeFileName(object.name)+".yaml";
+        const auto [previous,inserted]=used.emplace(object.name,origin);
+        if(!inserted)throw std::runtime_error("Duplicate/reserved "+std::string(solver?"solver":"models")+
+            " registry object: "+origin+" conflicts with "+previous->second);
+        const std::string relative=std::string(solver?"solvers/":"models/")+safeFileName(object.name)+".yaml";
         P body=object.parameters.is_null()?P::object():object.parameters;
         if(!object.expression.empty())body={{"expression",object.expression},{"parameters",body}};
-        writeFile(relative,solver?"solver":"models",type,body);
+        writeFile(relative,solver?"solver":"models",type,body,false,origin);
+        if(pending.back().document.comments.empty()&&!object.source.empty()) {
+            const auto old=std::filesystem::path(object.source).lexically_relative(model.caseDir).string();
+            const auto found=model.comments.find(old);
+            if(found!=model.comments.end())pending.back().document.comments=found->second;
+        }
         P entry={{"type",type},{"file",relative}};
+        if(!object.selection.empty())entry["selection"]=object.selection;
         if(solver)solverRegistry[object.name]=std::move(entry);else modelRegistry[object.name]=std::move(entry);
     }
     writeFile("solvers/solvers.yaml","solver","registry",solverRegistry);
     writeFile("models/models.yaml","models","registry",modelRegistry);
+    for(const auto& file:pending)
+        Serialization::writeSonicFile(file.document,(dir/file.relative).string(),file.compact);
 }
 } // namespace SF::CaseIO

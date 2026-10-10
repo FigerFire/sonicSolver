@@ -8,6 +8,9 @@ import argparse
 import math
 import os
 from pathlib import Path
+import sys
+sys.path.insert(0,str(Path(__file__).resolve().parents[1]/"test"))
+from thermophysical_fixture import declare_historical_thermophysical_fixture
 import re
 import shutil
 import subprocess
@@ -47,6 +50,7 @@ def prepare(solver, source, parent, name, split, preset='PISO', steps=2,
     case = parent / name
     shutil.copytree(source, case, ignore=shutil.ignore_patterns(
         'result', '._*', '.DS_Store', '*.sfm', '*.vts', '*.vtm'))
+    declare_historical_thermophysical_fixture(case)
     mesh = case / 'mesh/blockMeshDict'
     text = mesh.read_text()
     text = re.sub(r'\((?:80 80|16 16) 1\)', f'({cells} {cells} 1)', text)
@@ -71,6 +75,8 @@ def prepare(solver, source, parent, name, split, preset='PISO', steps=2,
     runtime = case / 'solvers/runtime.yaml'
     text = runtime.read_text()
     text = re.sub(r'endStep:.*', f'endStep: {steps}', text)
+    if steps<=8:
+        text=re.sub(r'endTime:.*','endTime: 1.0',text)
     text = re.sub(r'writeInterval:.*', f'writeInterval: {steps}', text)
     # Same grid, initial condition, physical timestep controls for every partition.
     text = text.replace('createMesh: false', 'createMesh: true')

@@ -9,6 +9,9 @@ import subprocess
 import tempfile
 import xml.etree.ElementTree as ET
 from pathlib import Path
+import sys
+sys.path.insert(0,str(Path(__file__).resolve().parents[1]/"test"))
+from thermophysical_fixture import declare_historical_thermophysical_fixture
 
 
 def values(root, name):
@@ -32,6 +35,7 @@ def main():
             args.case, case,
             ignore=shutil.ignore_patterns("result", "._*", ".DS_Store",
                                           "mesh.sfm", "mesh.vtm", "mesh.vts"))
+        declare_historical_thermophysical_fixture(case)
         generated = subprocess.run(
             [str(args.solver.resolve()), "run", str(case)],
             capture_output=True, text=True, timeout=120)

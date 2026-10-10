@@ -10,6 +10,9 @@ import subprocess
 import tempfile
 import xml.etree.ElementTree as ET
 from pathlib import Path
+import sys
+sys.path.insert(0,str(Path(__file__).resolve().parents[1]/"test"))
+from thermophysical_fixture import declare_historical_thermophysical_fixture
 
 
 def invoke(solver, action, case, trace=False):
@@ -56,6 +59,7 @@ def prepare(solver, source, parent, name, preset, outer, corrections,
     if semantic.exists():
         semantic.write_text("SonicFile:\n  object: algorithms\n  type: registry\n"
                             + f"{preset}: {{}}\n")
+    declare_historical_thermophysical_fixture(case)
     runtime = case / "solvers/runtime.yaml"
     if steps is not None:
         runtime.write_text(runtime.read_text()

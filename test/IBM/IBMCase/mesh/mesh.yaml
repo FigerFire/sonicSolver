@@ -1,6 +1,0 @@
-# Mesh registry.
-SonicFile:
-  object: mesh
-  type: registry
-files: [mesh/mesh.sfm]
-generator: mesh/blockMeshDict

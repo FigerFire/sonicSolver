@@ -388,7 +388,8 @@ void writeRecipe(const std::filesystem::path& directory,
     write(directory/"models/thermoDynamics.yaml",
           "SonicFile:\n  object: models\n  type: thermoDynamics\n"
           "thermoDynamics:\n  equationOfState: perfectGas\n  thermo: hConst\n  transport: const\n"
-          "properties: {}\n");
+          "properties:\n  equationOfState:\n    gamma: 1.4\n    R: 287.05\n"
+          "  transport:\n    mu: 0.0\n    Pr: 0.72\n");
     write(directory / "mesh/mesh.yaml",
           "SonicFile:\n  object: mesh\n  type: registry\n"
           "files: [mesh/mesh.sfm]\n");

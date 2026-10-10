@@ -49,6 +49,9 @@ public:
     ///
     /// @param field Field whose real boundary points and ghost cells are updated.
     void apply(Field& field) {
+        if (config_.thermophysical && config_.thermophysical->native
+            && config_.thermophysical->selection.equationOfState=="perfectGas" && !field.hasStateModel())
+            throw std::runtime_error(config_.thermophysical->source+": native boundary requires attached thermodynamic model before applying laws.");
         markSolverBoundaryMask(field);
         if (field.hasStateModel() && config_.ilwEnabled
             && !field.stateModel()->perfectGasGamma()) {
@@ -71,9 +74,12 @@ public:
         SF::Boundary::updateEnergyFromPressure(
             field, config_.pressure,
             config_.ilwEnabled, config_.ilwOrder);
+        // Thermal closures read the pressure/velocity boundary writes made in
+        // this operation, rather than an EOS view cached before those writes.
+        if (!config_.thermal.empty()) field.invalidateThermodynamicCache();
         SF::Boundary::updateEnergyFromThermalBoundary(
             field, config_.thermal, config_.thermalDynamicViscosity,
-            config_.thermalPrandtl, config_.ilwEnabled);
+            config_.thermalPrandtl, config_.ilwEnabled, config_.ilwOrder);
     }
 
 private:

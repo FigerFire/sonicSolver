@@ -48,8 +48,16 @@ int main() {
             "native case does not declare solvers/runtime.yaml");
 
     // (2) 语义对象 -> typed section，不经过任何字典文档。
-    const SF::Model::Description description =
+    SF::Model::Description description =
         SF::CaseIO::read(caseDir.string());
+    // The historical fixture predates mandatory native coefficients. Complete the
+    // declaration in a test copy, preserving its original files and numerical values.
+    for(auto& object:description.objects)if(object.type=="thermoDynamics")
+        object.parameters["properties"]={{"equationOfState",{{"gamma",1.4},{"R",287.05}}},
+            {"transport",{{"mu",0.},{"Pr",.72}}}};
+    const auto typedCase=std::filesystem::path(SF_TEST_SOURCE_DIR)/"test/t/native-typed-authority";
+    SF::CaseIO::write(description,typedCase.string());
+    std::filesystem::copy_file(caseDir/"mesh/mesh.sfm",typedCase/"mesh/mesh.sfm",std::filesystem::copy_options::overwrite_existing);
     SF::CaseAdapter adapter(caseDir.string());
     adapter.build(description);
     const SF::NativeCaseSections& sections = adapter.sections();
@@ -79,7 +87,7 @@ int main() {
 
     // (3) 完整原生路径直接产出强类型 CaseConfig。
     const SF::CaseConfig config =
-        SF::Application::ModelLoader::read(caseDir.string());
+        SF::Application::ModelLoader::read(typedCase.string());
     require(config.solver.numerics.timeRecipe.id()
                 == SF::FDM::TimeRecipeId::ForwardEuler,
             "native time recipe was not projected onto the compiled recipe");
@@ -103,7 +111,41 @@ int main() {
         missingStateRejected=std::string(error.what()).find("explicit solution STATE")!=std::string::npos;
     }
     require(missingStateRejected,"A native EOS or legacy label silently supplied missing STATE");
-    const auto roundTrip=std::filesystem::temp_directory_path()/
+    for(const auto* wall:{"noSlip","slip"}) {
+        auto model=description;
+        auto u=std::find_if(model.fields.begin(),model.fields.end(),[](const auto& f){return f.name=="U";});
+        u->boundaries["sideWalls"]={{"type",wall}};
+        SF::Model::FieldDescriptor temperature;temperature.name="T";temperature.initial=300.;
+        temperature.boundaries["sideWalls"]={{"type","fixedTemperature"},{"value",310.}};
+        model.fields.push_back(temperature);
+        const auto resolved=SF::Application::ModelLoader::build(model);
+        const auto& velocity=resolved.solver.boundaries.velocity;
+        const auto bc=std::find_if(velocity.begin(),velocity.end(),[](const auto& x){return x.name=="sideWalls";});
+        require(bc!=velocity.end() && bc->type==(std::string(wall)=="noSlip"?SF::FIXED_VALUE:SF::SYMMETRY)
+            && bc->value.x==0. && bc->value.y==0. && bc->value.z==0.,"Wall preset did not expand to its neutral velocity constraint");
+        const auto& thermal=resolved.solver.boundaries.thermal;
+        require(thermal.size()==1 && thermal.front().type==SF::ThermalBCType::FixedTemperature
+            && thermal.front().value==310.,"Wall velocity silently replaced the independently selected thermal law");
+        require(resolved.solver.boundaries.pressure.size()==config.solver.boundaries.pressure.size()
+            && resolved.solver.numerics.timeRecipe.id()==config.solver.numerics.timeRecipe.id(),"Wall preset changed pressure/time composition");
+        auto invalid=model;
+        auto rho=std::find_if(invalid.fields.begin(),invalid.fields.end(),[](const auto& f){return f.name=="rho";});
+        rho->boundaries["sideWalls"]={{"type",wall}};
+        bool rejected=false;try{(void)SF::Application::ModelLoader::build(invalid);}catch(const std::runtime_error& e){rejected=std::string(e.what()).find("velocity patches")!=std::string::npos;}
+        require(rejected,"Scalar field accepted a velocity wall law");
+        invalid=model;invalid.fields.back().boundaries["sideWalls"]["type"]=wall;
+        rejected=false;try{(void)SF::Application::ModelLoader::build(invalid);}catch(const std::runtime_error& e){rejected=std::string(e.what()).find("thermal boundary independently")!=std::string::npos;}
+        require(rejected,"Thermal field accepted a velocity wall law");
+        invalid=model;auto moving=std::find_if(invalid.fields.begin(),invalid.fields.end(),[](const auto& f){return f.name=="U";});
+        moving->boundaries["sideWalls"]["value"]=SF::Model::Parameters::array({1.,0.,0.});
+        rejected=false;try{(void)SF::Application::ModelLoader::build(invalid);}catch(const std::runtime_error& e){rejected=std::string(e.what()).find("stationary")!=std::string::npos;}
+        require(rejected,"Stationary wall ignored a conflicting velocity");
+    }
+    auto unknown=description;auto unknownU=std::find_if(unknown.fields.begin(),unknown.fields.end(),[](const auto& f){return f.name=="U";});
+    unknownU->boundaries["sideWalls"]={{"type","slipp"}};
+    bool unknownRejected=false;try{(void)SF::Application::ModelLoader::build(unknown);}catch(const std::runtime_error& e){unknownRejected=std::string(e.what()).find("Unknown boundary law")!=std::string::npos;}
+    require(unknownRejected,"Unknown boundary law silently fell back");
+    const auto roundTrip=std::filesystem::path(SF_TEST_SOURCE_DIR)/"test/t"/
         ("sonic-explicit-state-io-"+std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
     SF::CaseIO::write(description,roundTrip.string());
     const auto reread=SF::CaseIO::read(roundTrip.string());

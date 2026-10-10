@@ -237,6 +237,43 @@ inline bool buildLeastSquaresPlan(const std::vector<TensorPoint>& points,
     return true;
 }
 
+/// @brief 用列缩放、两次正交化的 QR 构造多项式投影，避免正规方程平方条件数。
+/// @return 样本不足、非有限或秩不足时返回 false；不截断基函数或降阶。
+inline bool buildLeastSquaresPlanQR(const std::vector<TensorPoint>& points,
+                                    bool useT2,int order,LeastSquaresPlan& plan) {
+    const int n=tensorBasisSize(useT2,order),m=(int)points.size();
+    if (m<n || n<=0) return false;
+    plan.useT2=useT2;plan.order=order;
+    plan.basisRows.clear();
+    for (const auto& p:points)plan.basisRows.push_back(tensorBasis(p.s,p.a,p.b,useT2,order));
+    std::vector<std::vector<double>> q(n,std::vector<double>(m)),r(n,std::vector<double>(n,0.));
+    std::vector<double> scale(n,0.);
+    for (int j=0;j<n;++j) {
+        for (int i=0;i<m;++i)scale[j]=std::hypot(scale[j],plan.basisRows[i][j]);
+        if (!std::isfinite(scale[j]) || scale[j]<=0.)return false;
+        for (int i=0;i<m;++i)q[j][i]=plan.basisRows[i][j]/scale[j];
+        // Reorthogonalization protects constant and high-degree reproduction.
+        for (int pass=0;pass<2;++pass)for (int k=0;k<j;++k) {
+            double dot=0.;for(int i=0;i<m;++i)dot+=q[k][i]*q[j][i];
+            r[k][j]+=dot;for(int i=0;i<m;++i)q[j][i]-=dot*q[k][i];
+        }
+        double norm=0.;for(double v:q[j])norm=std::hypot(norm,v);
+        if (!std::isfinite(norm) || norm<=1.e-12)return false;
+        r[j][j]=norm;for(double& v:q[j])v/=norm;
+    }
+    plan.projectionRows.assign(n,std::vector<double>(m,0.));
+    std::vector<double> coefficient(n);
+    for (int sample=0;sample<m;++sample) {
+        for (int j=n-1;j>=0;--j) {
+            double value=q[j][sample];
+            for(int k=j+1;k<n;++k)value-=r[j][k]*coefficient[k];
+            coefficient[j]=value/r[j][j];
+        }
+        for(int j=0;j<n;++j)plan.projectionRows[j][sample]=coefficient[j]/scale[j];
+    }
+    return true;
+}
+
 } // namespace Polynomial
 } // namespace Math
 } // namespace SF

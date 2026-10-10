@@ -6,6 +6,9 @@ import json
 import math
 import os
 from pathlib import Path
+import sys
+sys.path.insert(0,str(Path(__file__).resolve().parents[1]/"test"))
+from thermophysical_fixture import declare_historical_thermophysical_fixture
 import re
 import shutil
 import subprocess
@@ -69,6 +72,7 @@ def main():
     with tempfile.TemporaryDirectory(prefix='sonic-native-sst-') as directory:
         case = Path(directory) / 'case'
         shutil.copytree(args.case, case, ignore=shutil.ignore_patterns('result', '._*'))
+        declare_historical_thermophysical_fixture(case)
         run = subprocess.run([str(args.solver.resolve()), 'run', str(case)], text=True,
                              capture_output=True, env={**os.environ, 'SF_PLAN_TRACE':'1',
                                                        'SF_HIGH_ORDER_TRACE':'1'})
@@ -81,7 +85,12 @@ def main():
             shutil.copytree(case,args.output/'case',dirs_exist_ok=True)
             (args.output/'run.log').write_text(log)
             (args.output/'evidence.json').write_text(json.dumps(actual,indent=2)+'\n')
-        for key in ('inputs','vts','fields','boundary','time_dt','diagnostics'):
+        # Only the explicit declaration of previously frozen defaults changes.
+        changed_inputs={name for name in set(actual['inputs'])|set(baseline['inputs'])
+                        if actual['inputs'].get(name)!=baseline['inputs'].get(name)}
+        if changed_inputs != {'models/thermoDynamics.yaml'}:
+            raise AssertionError('Unexpected regression fixture input changes: '+str(changed_inputs))
+        for key in ('vts','fields','boundary','time_dt','diagnostics'):
             if actual[key] != baseline[key]:
                 raise AssertionError('First differing frozen evidence category: '+key)
         without_advance = [line for line in actual['plan'] if 'op=turbulence.advance' not in line]

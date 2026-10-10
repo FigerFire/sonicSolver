@@ -118,12 +118,12 @@ int executeConservativeEquations(
     if ((!legacyMultiPhaseActive && !usesHomogeneousThermodynamics
          && !constantDensityState)
         || interfaceActive) {
+        if (!solverConfig.thermophysical)
+            throw std::runtime_error("Single-fluid execution requires frozen thermophysical binding.");
+        solverConfig.validateThermophysicalProjection();
         singleFluidEquations=
             SF::Physics::FluidStateModel::makeSingleFluidPerfectGas(
-                solverConfig.numerics.idealGasGamma,
-                solverConfig.numerics.idealGasConstant,
-                solverConfig.numerics.dynamicViscosity,
-                solverConfig.numerics.prandtl);
+                *solverConfig.thermophysical);
         if (interfaceActive) {
             // OneFluidInterface still advances the conservative density
             // system.  Its level-set coupling is auxiliary state, so bind the

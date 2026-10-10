@@ -1496,8 +1496,16 @@ void CaseAdapter::decodeVectorField(
         raw = jsonValueAfterKey(block, "value");
         Vector3 patchValue;
         if (!foamVectorValue(raw, &patchValue)) patchValue = Vector3(0, 0, 0);
+        const std::string wallType = foamLower(foamUnquote(jsonValueAfterKey(block,"type")));
+        if (wallType == "noslip" || wallType == "slip") {
+            if (!raw.empty() && (!foamVectorValue(raw,&patchValue)
+                || patchValue.x!=0. || patchValue.y!=0. || patchValue.z!=0.))
+                throw std::runtime_error(field.name+": boundary '"+name+"' uses stationary "+wallType
+                    +" and cannot prescribe a nonzero or malformed wall velocity.");
+            patchValue = {};
+        }
         BCType type = foamBCTypeValue(jsonValueAfterKey(block, "type"),
-                                      ZERO_GRADIENT);
+                                      ZERO_GRADIENT,true);
         bc.push_back({name, type, patchValue});
     }
 

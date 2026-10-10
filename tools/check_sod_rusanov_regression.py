@@ -8,6 +8,9 @@ import hashlib
 import json
 import math
 from pathlib import Path
+import sys
+sys.path.insert(0,str(Path(__file__).resolve().parents[1]/"test"))
+from thermophysical_fixture import declare_historical_thermophysical_fixture
 import re
 import shutil
 import subprocess
@@ -71,6 +74,7 @@ def main() -> int:
     with tempfile.TemporaryDirectory(prefix="sonic-sod-rusanov-") as directory:
         working_case = Path(directory) / "case"
         shutil.copytree(case, working_case, ignore=shutil.ignore_patterns("result"))
+        declare_historical_thermophysical_fixture(working_case)
         run = subprocess.run(
             [str(solver), "run", str(working_case)],
             text=True,
@@ -98,7 +102,9 @@ def main() -> int:
             require_close(f"dt[{index}]", actual, expected)
         require_close("final time", float(steps[-1][0]), baseline["final_time"])
 
-        outputs = list((working_case / "result").glob("*_t0.2.vts"))
+        # macOS metadata sidecars are not additional solution files.
+        outputs = [path for path in (working_case / "result").glob("*_t0.2.vts")
+                   if not path.name.startswith("._")]
         if len(outputs) != 1:
             raise RuntimeError("one t=0.2 VTS output was expected")
         output = outputs[0]

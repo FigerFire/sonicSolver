@@ -55,13 +55,26 @@ int taylorOrder(int accuracyOrder) {
         requireAccuracyOrder(accuracyOrder));
 }
 
-BoundaryNormal boundaryNormal(const Field& field, int i, int j, int k) {
+BoundaryNormal boundaryNormal(const Field& field, int i, int j, int k, int axis) {
     const int ng = field.NG();
     BoundaryNormal normal;
     auto physicalSide=[&](int ni,int nj,int nk) {
         return ni<0 || ni>=field.MX() || nj<0 || nj>=field.MY() || nk<0 || nk>=field.MZ()
             || !field.isCommunicationHalo(ni,nj,nk);
     };
+
+    if (axis >= 0) {
+        if (axis > 2 || !Math::isDirectionActiveIndex(axis)) return normal;
+        const int p[3]={i,j,k}, n[3]={field.NX(),field.NY(),field.NZ()};
+        if (p[axis]<=ng) normal.sign=-1;
+        else if (p[axis]>=ng+n[axis]-1) normal.sign=1;
+        else return normal;
+        int g[3]={i,j,k};
+        g[axis]=(normal.sign<0 ? ng-1 : ng+n[axis]);
+        if (!physicalSide(g[0],g[1],g[2])) return {};
+        normal.axis=axis;
+        return normal;
+    }
 
     if (Math::isDirectionActiveIndex(0) &&
         (i < ng || i >= field.NX() + ng)) {
@@ -161,7 +174,7 @@ int ghostLayer(int gi, int gj, int gk,
 }
 
 double ghostDistance(int layer, double h) {
-    return ((double)layer - 0.5) * h;
+    return (double)layer * h;
 }
 
 namespace {
@@ -209,18 +222,26 @@ std::vector<Math::Polynomial::TensorPoint> gatherSubStencilPoints(
     std::vector<Math::Polynomial::TensorPoint> pts;
     pts.reserve(samples.size());
 
-    /// 子模板的法向范围为前 (polyOrder+1) 层，切向为中心 ±polyOrder/2。
-    const double sMax = (polyOrder + 0.5 + 1e-6) * sScale;
-    const double aMax = (polyOrder * 0.5 + 1e-6) * aScale;
-    const double bMax = (polyOrder * 0.5 + 1e-6) * bScale;
-
-    for (const auto& sample : samples) {
-        const double absS = std::abs(sample.second.s);
-        const double absA = std::abs(sample.second.a);
-        const double absB = std::abs(sample.second.b);
-        if (absS > sMax) continue;
-        if (absA > aMax) continue;
-        if (useT2 && absB > bMax) continue;
+    // Select r+1 nearest coordinate lines in each direction. A shifted
+    // corner stencil has the same rank/order as a centred stencil.
+    auto limit = [&](int coord) {
+        std::vector<double> values;
+        for (const auto& sample:samples) {
+            const double v=coord==0 ? sample.second.s : coord==1 ? sample.second.a : sample.second.b;
+            values.push_back(v);
+        }
+        std::sort(values.begin(),values.end());
+        values.erase(std::unique(values.begin(),values.end()),values.end());
+        std::sort(values.begin(),values.end(),[](double a,double b) {
+            return std::abs(a)==std::abs(b) ? a<b : std::abs(a)<std::abs(b);
+        });
+        if ((int)values.size()<polyOrder+1) return -1.;
+        return std::abs(values[polyOrder])+1.e-6*(coord==0?sScale:coord==1?aScale:bScale);
+    };
+    const double sMax=limit(0),aMax=limit(1),bMax=useT2?limit(2):0.;
+    for (const auto& sample:samples) {
+        if (std::abs(sample.second.s)>sMax || std::abs(sample.second.a)>aMax
+            || (useT2 && std::abs(sample.second.b)>bMax)) continue;
         pts.push_back(sample.second);
     }
     return pts;
@@ -393,7 +414,7 @@ bool fitPolynomialToSubStencil(
     }
 
     Math::Polynomial::LeastSquaresPlan plan;
-    if (!Math::Polynomial::buildLeastSquaresPlan(
+    if (!Math::Polynomial::buildLeastSquaresPlanQR(
             scaledPoints, useT2, polyOrder, plan)) {
         return false;
     }
@@ -471,15 +492,13 @@ bool extrapolateMultiDim(
             gatherSubStencilPoints(samples, r, sScale, aScale, bScale, useT2);
         const int minPts = Math::Polynomial::tensorBasisSize(useT2, r);
         if ((int)subPoints.size() < minPts) {
-            alphaVals[(size_t)r] = 0.0;
-            continue;
+            return false;
         }
 
         std::vector<double> coeff;
         if (!fitPolynomialToSubStencil(samples, subPoints, r, useT2,
                                        sScale, aScale, bScale, coeff)) {
-            alphaVals[(size_t)r] = 0.0;
-            continue;
+            return false;
         }
 
         const double beta = multiDimSmoothnessIndicator(

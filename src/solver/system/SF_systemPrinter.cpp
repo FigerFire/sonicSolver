@@ -521,6 +521,19 @@ std::string describe(const ResolvedSimulationSystem& system) {
            << "sonicSolver - Resolved Mathematical System\n"
            << "============================================================\n"
            ;
+    if (system.numericalSystem.thermophysical) {
+        const auto& t=*system.numericalSystem.thermophysical;
+        output << "\nTHERMOPHYSICAL / FROZEN MODEL BINDING\n  source: " << t.source
+               << "\n  equationOfState: " << t.selection.equationOfState
+               << "\n  thermo: " << (t.selection.thermo.empty()?"not selected":t.selection.thermo)
+               << "\n  transport: " << (t.selection.transport.empty()?"not selected":t.selection.transport) << "\n";
+        if (t.selection.equationOfState=="perfectGas")
+            output << "  gamma=" << t.gamma << " R=" << t.gasConstant << " cp=" << t.cp()
+                   << " cv=" << t.cv() << " k=" << t.conductivity() << "\n";
+        else output << "  rho=" << t.selection.constantDensity << " (no PerfectGas caloric closure)\n";
+        output << "  mu=" << t.dynamicViscosity << " Pr=" << t.prandtl << "\n";
+        for (const auto& [name,source]:t.provenance) output << "  " << name << " origin: " << source << "\n";
+    }
     output << "\nWHAT / EQUATIONS\n";
     for (const Equation& formula:system.executableSystem.registry.entries()) {
         output << "  " << formula.id << ": " << formulaText(formula) << "\n";
