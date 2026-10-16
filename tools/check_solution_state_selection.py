@@ -18,22 +18,28 @@ def main():
     parser.add_argument('--output')
     args=parser.parse_args()
     records=[]
-    with tempfile.TemporaryDirectory(prefix='sonic-solution-state-') as directory:
+    temp_root=Path(__file__).resolve().parents[1]/'test/t'
+    temp_root.mkdir(parents=True,exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix='sonic-solution-state-',dir=temp_root) as directory:
         root=Path(directory)
         def case(name,states=None,algorithm=None,eos=None,equations=None):
             target=root/name
             shutil.copytree(args.case,target,ignore=shutil.ignore_patterns('result','._*','.DS_Store'))
             declare_historical_thermophysical_fixture(target)
             if states is not None:
-                (target/'state/state.yaml').write_text('SonicFile:\n  object: state\n  type: registry\nuse: ['+', '.join(states)+']\n')
+                (target/'solvers/state.yaml').write_text('SonicFile:\n  object: solver\n  type: state\nuse: ['+', '.join(states)+']\n')
             if algorithm is not None:
-                (target/'algorithms/algorithms.yaml').write_text('SonicFile:\n  object: algorithms\n  type: registry\n'+algorithm+(': {pressureCorrectors: 1}\n' if algorithm=='SIMPLE' else ': {}\n'))
+                (target/'solvers/execution.yaml').write_text('SonicFile:\n  object: solver\n  type: execution\n'+algorithm+(': {pressureCorrectors: 1}\n' if algorithm=='SIMPLE' else ': {}\n'))
             if eos is not None:
                 eos_properties=('    rho: 1.0\n' if eos=='rhoConst' else '    gamma: 1.4\n    R: 287.05\n')
                 (target/'models/thermoDynamics.yaml').write_text('SonicFile:\n  object: models\n  type: thermoDynamics\nthermoDynamics:\n  equationOfState: '+eos+'\n  thermo: hConst\n  transport: const\nproperties:\n  equationOfState:\n'+eos_properties+'  transport:\n    mu: 0.01\n    Pr: 0.72\n')
             if equations is not None:
-                (target/'equations/equations.yaml').write_text('SonicFile:\n  object: equations\n  type: registry\nuse: ['+', '.join(equations)+']\n')
+                (target/'solvers/equationRegistry.yaml').write_text('SonicFile:\n  object: solver\n  type: equationRegistry\nuse: ['+', '.join(equations)+']\n')
             return target
+        def remove_registry(target,key,kind,file):
+            registry=target/'solvers/solvers.yaml'
+            registry.write_text(registry.read_text().replace(key+':\n  type: '+kind+'\n  file: '+file+'\n',''))
+            (target/file).unlink()
         def check(name,target,expected=None):
             result=subprocess.run([args.solver,'explain',str(target)],text=True,capture_output=True)
             text=result.stdout+result.stderr
@@ -56,9 +62,9 @@ def main():
               'variable-density primitive momentum/continuity')
         check('D ambiguous momentum',case('ambiguous',['U','p','rhoU']),
               'Ambiguous Momentum target')
-        missing=case('missing-state');(missing/'state/state.yaml').unlink()
+        missing=case('missing-state');remove_registry(missing,'state','stateRegistry','solvers/state.yaml')
         check('E missing STATE',missing,'requires explicit solution STATE')
-        missing=case('missing-how');(missing/'algorithms/algorithms.yaml').unlink()
+        missing=case('missing-how');remove_registry(missing,'execution','algorithmRegistry','solvers/execution.yaml')
         check('missing HOW',missing,'requires explicit HOW')
         check('duplicate STATE',case('duplicate',['U','p','U']),'Duplicate solution STATE')
         check('unowned solution',case('unowned',['U','p','T']),

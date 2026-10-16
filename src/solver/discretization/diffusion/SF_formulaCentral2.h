@@ -36,22 +36,26 @@ inline System::FormulaOperatorProvider central2ScalarDiffusion(double diffusivit
 }
 
 /// rhoC storage with concentration gradients and positive stage density.
-inline System::FormulaOperatorProvider conservativeScalarCentral2(double D) {
+inline System::FormulaOperatorProvider conservativeScalarCentral2(double D,int coefficientSlot=-1,bool primitive=false) {
     System::FormulaOperatorProvider p;p.id="scalar.conservative.central2";p.mathematicalOperator="diffusion";
     p.matches=[](const auto&){return true;};
-    p.compileValue=[D](const auto&) -> System::FormulaValueKernel {
-        return [D](const auto& v,int cell,int) {
+    p.compileValue=[D,coefficientSlot,primitive](const auto&) -> System::FormulaValueKernel {
+        return [D,coefficientSlot,primitive](const auto& v,int cell,int) {
             double result=0;
             for(int axis=0;axis<3;++axis) {
                 const double h=v.spacing(axis);if(h==0)continue;
                 const double rho=v.boundReads[1](cell,0);
                 if(!std::isfinite(rho) || rho<=0)throw std::runtime_error("Scalar transport Stage density is not positive.");
-                const double center=v.boundReads[0](cell,0)/rho;
+                const double center=v.boundReads[0](cell,0)/(primitive?1:rho);
                 for(int sign:{-1,1}) {
                     const double rn=v.boundNeighbor(1,cell,axis,sign,0);
                     if(!std::isfinite(rn) || rn<=0)throw std::runtime_error("Scalar transport neighbor density is not positive.");
-                    const double cn=v.boundNeighbor(0,cell,axis,sign,0)/rn;
-                    result+=.5*D*(rho+rn)*(cn-center)/(h*h);
+                    const double cn=v.boundNeighbor(0,cell,axis,sign,0)/(primitive?1:rn);
+                    const double centerD=coefficientSlot<0?D:v.boundReads.at(coefficientSlot)(cell,0);
+                    const double nextD=coefficientSlot<0?D:v.boundNeighbor(coefficientSlot,cell,axis,sign,0);
+                    if(!std::isfinite(centerD) || !std::isfinite(nextD) || centerD<0 || nextD<0)
+                        throw std::runtime_error("Scalar Stage diffusion coefficient must be finite and nonnegative.");
+                    result+=(coefficientSlot<0?.5*D*(rho+rn):.5*(centerD*rho+nextD*rn))*(cn-center)/(h*h);
                 }
             }
             return result;

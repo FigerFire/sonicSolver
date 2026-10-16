@@ -45,6 +45,7 @@ struct Description {
     std::vector<ObjectDescriptor> objects;
     Parameters runtime=Parameters::object(), numerics=Parameters::object();
     Parameters solver=Parameters::object(), mesh=Parameters::object();
+    Parameters meshGeneration=Parameters::object();
     /// @brief 按相对文件路径保存的文档注释，供格式 writer 原样带回。
     std::map<std::string,std::vector<std::string>> comments;
 };

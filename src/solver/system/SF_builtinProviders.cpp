@@ -1,3 +1,4 @@
+#include "SF_thermalMethod.h"
 /// Numerical providers own domain matching, storage realization and local lifecycle.
 #include "SF_methodObjects.h"
 #include "SF_immersedMethods.h"
@@ -52,6 +53,7 @@ SolvePlanNode explicitFragment(const CompiledEquationCall& body,
         stages.children.push_back(leaf(TemporalOps::Open,TemporalOps::Provider));
         for (const auto& p:body.temporalParticipants) stages.children.push_back(leaf(p.prepareStage,p.provider,&p));
         stages.children.push_back(leaf(TemporalOps::Ready,TemporalOps::Provider));
+        for(const auto& p:body.temporalParticipants)if(!p.coefficientPrepare.empty())stages.children.push_back(leaf(p.coefficientPrepare,p.provider,&p));
         for (const auto& p:body.temporalParticipants) stages.children.push_back(leaf(p.rhs,p.provider,&p));
         stages.children.push_back(leaf(TemporalOps::RhsReady,TemporalOps::Provider));
         for (const auto& p:body.temporalParticipants) stages.children.push_back(leaf(p.advance,p.provider,&p));
@@ -187,11 +189,16 @@ public:
         result.temporalStepSize=OpIds::FlowDtCompute;
         result.temporalSnapshot=OpIds::FlowStepBegin;
         result.temporalOwner="flow.conservative";
+        if(step.target.symbol=="rho")result.stageProvides={"canonicalMassFlux(Stage)"};
         result.temporalStagePrepare="flow.stage.prepare";result.temporalRhs="flow.stage.rhs";
         result.temporalAdvance="flow.stage.advance";result.temporalPublish=OpIds::FlowStepCommit;
         result.oldTimeWorkspace="explicit.q0";
         result.publishesStageToPhysicalTarget=true;
-        if (system.state.contains("mu_t")) result.stateUses.push_back({"turbulence.mu_t.step",StateVersion::Frozen});
+        if (system.state.contains("mu_t")) {
+            const auto& resource=system.state.at("mu_t").stageCoefficientResource;
+            if(resource.empty())result.stateUses.push_back({"turbulence.mu_t.step",StateVersion::Frozen});
+            else {result.stateUses.push_back({"mu_t",StateVersion::Stage});result.stageRequires.push_back(resource);}
+        }
         result.spatialTerms=true;
         result.residualWorkspace="residual";
         for (const char* operation:{OpIds::FlowStepPrepare,OpIds::FlowDtCompute,OpIds::FlowStepBegin,
@@ -823,6 +830,7 @@ ProviderRegistry builtinProviders() {
     addImmersedMethods(result);
     addLevelSetMethods(result);
     addMultiphaseMethods(result);
+    addThermalMethod(result);
     result.add(turbulence);
     static const TurbulenceClosureMethod turbulenceClosure;
     result.add(turbulenceClosure);

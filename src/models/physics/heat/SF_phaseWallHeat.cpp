@@ -131,7 +131,8 @@ public:
         const size_t vapor = configuredPhase(
             system, Multiphase::PhaseRole::Gas);
         const auto& liquidState = system.phases()[liquid];
-        const bool rpi = PhaseChange::normalizeModel(
+        const bool rpi = system.config().phaseChange.enabled
+            && PhaseChange::normalizeModel(
             system.config().phaseChange.model) == "rpi";
         if (cachedGeometry_ != &system.geometry()
             || cachedSamples_.size() != settings_.size()) {

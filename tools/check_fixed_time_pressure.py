@@ -55,9 +55,9 @@ def prepare(solver, source, parent, name, preset, outer, corrections,
             raise AssertionError("pressure convergence controls have no preset block")
         contents = contents.replace(anchor, anchor + "\n" + "\n".join(lines), 1)
     algorithm.write_text(contents)
-    semantic = case / "algorithms/algorithms.yaml"
+    semantic = case / "solvers/execution.yaml"
     if semantic.exists():
-        semantic.write_text("SonicFile:\n  object: algorithms\n  type: registry\n"
+        semantic.write_text("SonicFile:\n  object: solver\n  type: execution\n"
                             + f"{preset}: {{}}\n")
     declare_historical_thermophysical_fixture(case)
     runtime = case / "solvers/runtime.yaml"
@@ -238,7 +238,9 @@ def main():
     parser.add_argument("--poiseuille", type=Path, required=True)
     args = parser.parse_args()
     solver = args.solver.resolve()
-    with tempfile.TemporaryDirectory(prefix="sonic-fixed-time-") as temp:
+    temp_root = Path(__file__).resolve().parents[1] / "test/t"
+    temp_root.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="sonic-fixed-time-", dir=temp_root) as temp:
         directory = Path(temp)
         check_cavity(solver, args.cavity, directory)
         check_simple_poiseuille(solver, args.poiseuille, directory)

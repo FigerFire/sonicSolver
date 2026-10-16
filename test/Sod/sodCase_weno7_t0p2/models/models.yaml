@@ -1,4 +1,4 @@
-# Physics model registry.
+# Explicit document registry.
 SonicFile:
   object: models
   type: registry
@@ -14,3 +14,6 @@ MRF:
 thermoDynamics:
   type: thermoDynamics
   file: models/thermoDynamics.yaml
+IBM:
+  type: IBM
+  file: models/IBM.yaml

@@ -1,4 +1,4 @@
 SonicFile:
   object: solver
-  type: equationSystem
+  type: equations
 preset: compressible

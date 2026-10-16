@@ -346,7 +346,7 @@ void MainWindow::connectUi()
 
 void MainWindow::addOptionalModuleActions(QMenu* menu)
 {
-    // 这三个动作只发 addModuleRequested(kind)，真正创建文件和修改 system/sonicDict
+    // 这三个动作只发 addModuleRequested(kind)，真正注册原生模型和更新 models registry
     // 在 Controller/Project 层处理。
     QAction* ibm = menu->addAction(
         moduleIcon(ProjectModuleKind::IBM), QStringLiteral("新增 IBM"));

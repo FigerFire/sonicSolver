@@ -51,8 +51,6 @@ void validateMultiPhaseConfig(const MultiPhaseConfig& config,
     const bool thermalType = isThermalType(config.type);
     const bool homogeneousType = isHomogeneousType(config.type);
     const bool eulerianEulerianType = isEulerianEulerianType(config.type);
-    const MultiPhaseSolverKind solverKind =
-        resolvedMultiPhaseSolverKind(config);
 
     if (!levelSetType && !mixtureType && !thermalType && !homogeneousType
         && !eulerianEulerianType) {

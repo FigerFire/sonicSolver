@@ -123,22 +123,10 @@ struct EulerianEulerianOptions {
     std::vector<PhasePairModelOptions> phasePairs;
 };
 
-/// @brief 多相求解器家族。
-enum class MultiPhaseSolverKind {
-    Auto,
-    DensityBased,
-    PressureBased
-};
-
 /// @brief mixture 模型输入结构。
 struct MixtureOptions {
     std::vector<std::string> phaseNames; ///< phases (...) 中的相名。
     std::vector<std::string> phaseFractionFields; ///< alpha.liquid 等相分数字段。
-};
-
-/// @brief density-based 扩展守恒量布局说明。
-struct ConservativeLayout {
-    std::vector<std::string> variables; ///< rho/rhoU/rhoE/rhoYi/rhoAlpha 顺序。
 };
 
 /// @brief 网格 set 到相名的初始化映射。
@@ -279,12 +267,10 @@ struct ConservationDiagnostics {
 struct MultiPhaseConfig {
     bool enabled = false;
     std::string type = "none";                 ///< level set / mixture / thermal / none。
-    MultiPhaseSolverKind solver = MultiPhaseSolverKind::Auto; ///< auto/densityBased/pressureBased。
     std::string defaultPhase;                   ///< Level Set 必填：未被 set 覆盖的相。
     double defaultSignedDistance = std::numeric_limits<double>::quiet_NaN(); ///< Level Set 必填：set 初始化符号场幅值。
     double initialPressure = 0.0;               ///< homogeneous EOS 初值共压；必须显式给出。
     MixtureOptions mixture;
-    ConservativeLayout conservativeLayout;
     std::vector<PhaseProperties> phases;
     std::vector<SetPhaseAssignment> setPhases;  ///< phaseProperties 中的 set->phase 初始化。
     std::vector<LevelSetPlaneInitializer> phiPlaneInitializers;
@@ -328,20 +314,6 @@ bool isEulerianEulerianType(const std::string& type);
 
 /// @brief 判断模型类型是否为单温度热输运模型。
 bool isThermalType(const std::string& type);
-
-/// @brief 解析多相求解器家族。
-MultiPhaseSolverKind parseMultiPhaseSolverKind(std::string solver);
-
-/// @brief 返回多相求解器家族名。
-std::string multiPhaseSolverKindName(MultiPhaseSolverKind solver);
-
-/// @brief 根据 auto/模型内容解析实际求解器家族。
-MultiPhaseSolverKind resolvedMultiPhaseSolverKind(
-    const MultiPhaseConfig& config);
-
-/// @brief 构造 density-based mixture 的扩展守恒量布局说明。
-std::vector<std::string> densityBasedConservedVariables(
-    const MultiPhaseConfig& config);
 
 /// @brief 查找已声明相。
 /// @param config 多相配置。

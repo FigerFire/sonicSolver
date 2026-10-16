@@ -1,7 +1,7 @@
 # Boundary conditions. SonicFile accepts patch: condition: value.
 SonicFile:
   object: fields
-  type: boundary
+  type: boundaries
 U:
   Left: fixedValue: [2.36643, 0, 0]
   Right: zeroGradient

@@ -127,7 +127,7 @@ std::string validateNativeProvider(const std::string& selected,
         const ExecutableEquationSystem& equations,const CompiledNumericalSystem& numerics,
         const CompiledSolvePlan& plan,const ExecutionCapabilitySignature& signature,
         const std::vector<LegacyExecutionPolicy>& policies,bool additionalContributions) {
-    if (selected==ScalarOps::Provider || selected==ScalarOps::TransportProvider) {
+    if (selected==ScalarOps::Provider || selected==ScalarOps::TransportProvider || selected==ScalarOps::SharedFluxProvider || selected==ScalarOps::StageTransportProvider) {
         const auto reason=validateTemporalPlan(plan,numerics.time.recipe.stageCount());
         if(!reason.empty())return reason;
         if (plan.compiledProgram.temporalParticipants.empty() || !plan.compiledProgram.hasTemporalRoot)
@@ -136,6 +136,8 @@ std::string validateNativeProvider(const std::string& selected,
         std::vector<std::string> required{TemporalOps::Dt,TemporalOps::Open,TemporalOps::Ready,
             TemporalOps::RhsReady,TemporalOps::Close,TemporalOps::PublishReady,OpIds::TimeCommit};
         for (const auto& p:plan.compiledProgram.temporalParticipants) {
+            if(!p.coefficientPrepare.empty())required.push_back(p.coefficientPrepare);
+            if(!p.coefficientPublish.empty())required.push_back(p.coefficientPublish);
             for (const auto& op:p.preparation) required.push_back(op);
             for (const auto& op:{p.snapshot,p.prepareStage,p.rhs,p.advance,p.publish}) required.push_back(op);
         }
@@ -154,6 +156,10 @@ std::string validateNativeProvider(const std::string& selected,
             return "scalar plan contains flow-only/wrong-target operations or an invalid physical commit";
         if (!std::isfinite(numerics.dt.maxDeltaT) || numerics.dt.maxDeltaT<=0)
             return "scalar fixed dt must be finite and positive";
+    } else if (selected=="equation.thermal") {
+        if(numerics.time.recipe.id()!=FDM::TimeRecipeId::ForwardEuler || plan.compiledProgram.temporalParticipants.empty()
+            || signature.pressureConstraint || !policies.empty())
+            return "Unsupported thermal execution: Forward Euler synchronous scalar/flow group required; implicit/pressure thermal treatment is not implemented";
     } else if (selected=="flow.eulerian-pressure" || selected=="flow.eulerian-turbulence") {
         if (!hasConstraint(equations,"C_SHARED_PRESSURE") || !hasConstraint(equations,"C_VOLUME_FRACTION")
             || numerics.phaseTransport.convection!=FDM::PhaseConvectionScheme::Upwind
@@ -381,7 +387,7 @@ std::vector<ResolvedOperationBinding> compileOperationBindings(
                     ? "no ExecutableOperation declares '"+leaf.operation+"'" : leaf.unsupportedReason;
             } else {
                 if (leaf.legacyAdapter && leaf.provider.empty())
-                    leaf.provider=Legacy::selectOperationProvider(*declaration,equations,numerics,policies);
+                    leaf.provider=Legacy::selectOperationProvider(*declaration,equations);
                 binding=catalog.resolve(*declaration,leaf.provider);
                 // STATE can reject a selected implementation; it cannot choose another.
                 if (binding.status==BindingStatus::Resolved && !leaf.legacyAdapter) {

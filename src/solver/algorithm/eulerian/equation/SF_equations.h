@@ -11,6 +11,8 @@
 #include "solver/algorithm/eulerian/equation/SF_summary.h"
 
 #include <memory>
+#include <optional>
+#include <cstdint>
 
 namespace SF::EulerianEulerian {
 
@@ -38,7 +40,15 @@ public:
     void correctCanonicalFaceFlux();
     void solvePhaseEnergy(double dt);
     /// @brief 求解已注册的湍流守恒输运方程块。
-    void solveTurbulence(double dt);
+    void solveTurbulence(double dt,std::uint64_t step,int outer);
+    /// @brief 物理步开始使旧 coefficient epoch 失效；不改变 old-time 数组。
+    void beginTurbulenceStep(std::uint64_t step);
+    /// @brief 当前 outer 闭合完成后标记只读系数 epoch。
+    void publishTurbulenceCoefficients(std::uint64_t step,int outer);
+    void refreshTurbulenceClosure();
+    /// @brief compiled Commit 唯一提交 flow 与 turbulence 的旧时间层。
+    void commitTimeLevel(std::uint64_t step);
+    void applyTurbulenceBoundary();
     void attachTurbulence(Turbulence::EquationSystem* turbulence);
     void resetTurbulenceDiagnostics();
     int turbulenceIterations() const { return turbulenceIterations_; }
@@ -69,6 +79,9 @@ private:
     Turbulence::EquationSystem* turbulence_ = nullptr;
     LinearAlgebra::SolverSession pressureSolver_;
     FDM::IExecutionRuntime* runtime_ = nullptr;
+    std::optional<std::uint64_t> turbulenceStep_;
+    std::optional<std::pair<std::uint64_t,int>> coefficientEpoch_;
+    std::optional<int> solvedTurbulenceOuter_;
     double currentTimeStep_ = 0.0;
     int turbulenceIterations_ = 0;
     double turbulenceResidual_ = 0.0;

@@ -1,3 +1,4 @@
+# Explicit document registry.
 SonicFile:
   object: models
   type: registry

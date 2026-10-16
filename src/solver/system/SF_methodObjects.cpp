@@ -113,7 +113,11 @@ CompiledExecutionProgram compileExecutionProgram(
         system.registry.at(step->equation);
         if (step->target.kind!=TargetKind::Workspace) state.at(step->target.symbol);
         const auto& selectedProvider=registry.at(found->method);
-        auto compiled=selectedProvider.compile(system,*step,*found);
+        CompiledEquationCall compiled;
+        try {compiled=selectedProvider.compile(system,*step,*found);}
+        catch(const std::exception& error) {
+            throw std::runtime_error("occurrence="+step->occurrence+" equation="+step->equation+" target="+step->target.symbol+" provider="+found->method+": "+error.what());
+        }
         compiled.backendProvider=selectedProvider.runtimeProvider();
         const auto ownFragment=[&](const auto& self,SolvePlanNode& node)->void {
             if (!node.operation.empty())
@@ -274,6 +278,8 @@ CompiledExecutionProgram compileExecutionProgram(
                     TemporalParticipant p;p.identity=identity;p.provider=call->backendProvider;
                     p.preparation=call->temporalPreparation;p.stepSize=call->temporalStepSize;
                     p.snapshot=call->temporalSnapshot;p.prepareStage=call->temporalStagePrepare;
+                    p.coefficientPrepare=call->coefficientPrepare;p.coefficientPublish=call->coefficientPublish;
+                    p.coefficientProvides=call->coefficientProvides;p.coefficientStates=call->coefficientStates;
                     p.rhs=call->temporalRhs;p.advance=call->temporalAdvance;p.publish=call->temporalPublish;
                     fused.temporalParticipants.push_back(std::move(p));found=fused.temporalParticipants.end()-1;
                 } else if (found->provider!=call->backendProvider || found->prepareStage!=call->temporalStagePrepare
@@ -281,6 +287,24 @@ CompiledExecutionProgram compileExecutionProgram(
                     throw std::runtime_error("Conflicting temporal numerical owner: "+identity);
                 found->calls.insert(found->calls.end(),call->calls.begin(),call->calls.end());
                 found->targets.push_back(call->target.symbol);
+                found->stageRequires.insert(found->stageRequires.end(),call->stageRequires.begin(),call->stageRequires.end());
+                found->stageProvides.insert(found->stageProvides.end(),call->stageProvides.begin(),call->stageProvides.end());
+            }
+            std::vector<std::string> available;
+            for(const auto& p:fused.temporalParticipants)for(const auto& resource:p.coefficientProvides) {
+                if(std::find(available.begin(),available.end(),resource)!=available.end())throw std::runtime_error("Duplicate same-stage coefficient producer: "+resource);
+                available.push_back(resource);
+            }
+            for(const auto& participant:fused.temporalParticipants) {
+                for(const auto& resource:participant.stageRequires)
+                    if(std::find(available.begin(),available.end(),resource)==available.end())
+                        throw std::runtime_error("Temporal occurrence '"+participant.identity+"' provider '"+participant.provider
+                            +"' requires same-stage RHS resource '"+resource+"' before its consumer; available producer set does not satisfy authored HOW.");
+                for(const auto& resource:participant.stageProvides) {
+                    if(std::find(available.begin(),available.end(),resource)!=available.end())
+                        throw std::runtime_error("Duplicated stage resource producer: "+resource+" at "+participant.identity);
+                    available.push_back(resource);
+                }
             }
             if (result.root.children.empty() || result.root.children.back().kind!=ExecutionKind::Commit
                 || std::count_if(result.root.children.begin(),result.root.children.end(),[](const auto& n){return n.kind==ExecutionKind::Commit;})!=1)
@@ -366,6 +390,10 @@ CompiledExecutionProgram compileExecutionProgram(
             for (const auto& p:fused.temporalParticipants) {
                 SolvePlanNode publish;publish.kind=PlanNodeKind::Commit;publish.id=publish.name=publish.operation=p.publish;
                 publish.provider=p.provider;publish.occurrence=p.identity;publish.equationCalls=p.calls;
+                result.temporalRoot.children.push_back(std::move(publish));
+            }
+            for(const auto& p:fused.temporalParticipants)if(!p.coefficientPublish.empty()) {
+                SolvePlanNode publish;publish.kind=PlanNodeKind::Commit;publish.id=publish.name=publish.operation=p.coefficientPublish;publish.provider=p.provider;
                 result.temporalRoot.children.push_back(std::move(publish));
             }
             barrier.id=barrier.name=barrier.operation=OpIds::TimeCommit;
@@ -479,12 +507,14 @@ std::string validateTemporalPlan(const CompiledSolvePlan& plan,int stages) {
     add("<StageLoop>",std::to_string(stages));add(TemporalOps::Open,TemporalOps::Provider);
     for(const auto& p:participants)add(p.prepareStage,p.provider);
     add(TemporalOps::Ready,TemporalOps::Provider);
+    for(const auto& p:participants)if(!p.coefficientPrepare.empty())add(p.coefficientPrepare,p.provider);
     for(const auto& p:participants)add(p.rhs,p.provider);
     add(TemporalOps::RhsReady,TemporalOps::Provider);
     for(const auto& p:participants)add(p.advance,p.provider);
     add(TemporalOps::Close,TemporalOps::Provider);add("</StageLoop>",std::string{});
     add(TemporalOps::PublishReady,TemporalOps::Provider);
     for(const auto& p:participants)add(p.publish,p.provider);
+    for(const auto& p:participants)if(!p.coefficientPublish.empty())add(p.coefficientPublish,p.provider);
     add(OpIds::TimeCommit,TemporalOps::Provider);
     bool valid=true;
     const auto walk=[&](const auto& self,const SolvePlanNode& n)->void {

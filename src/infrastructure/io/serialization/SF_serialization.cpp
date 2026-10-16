@@ -157,13 +157,8 @@ SonicDocument readSonicFile(const std::string& path) {
     if(!document.value.is_object())throw std::runtime_error(path+": SonicFile must be a mapping");
     SonicDocument result;result.source=path;result.comments=document.comments;
     auto root=document.value;
-    Model::Parameters header;
-    if(root.contains("SonicFile")) {
-        header=root.at("SonicFile");root.erase("SonicFile");
-    } else {
-        header=root;
-        root.erase("object");root.erase("type");
-    }
+    if(!root.contains("SonicFile"))throw std::runtime_error(path+": missing explicit SonicFile header");
+    const auto header=root.at("SonicFile");root.erase("SonicFile");
     if(!header.is_object()||!header.contains("object")||!header.contains("type")
        ||!header.at("object").is_string()||!header.at("type").is_string())
         throw std::runtime_error(path+": SonicFile requires string object and type");

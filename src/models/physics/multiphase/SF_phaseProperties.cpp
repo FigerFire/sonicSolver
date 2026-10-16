@@ -54,11 +54,6 @@ PhaseRole inferRoleFromThermoModel(const std::string& model) {
     return PhaseRole::Unknown;
 }
 
-bool phaseNeedsPressureBased(const PhaseProperties& phase) {
-    const std::string thermo = normalizeModelType(phase.thermoModel);
-    return thermo == "perfectliquid" || thermo == "solid";
-}
-
 PhaseRole resolvedRole(const MultiPhaseConfig& config,
                        const std::string& phaseName) {
     if (const PhaseProperties* phase = findPhase(config, phaseName)) {
@@ -131,67 +126,6 @@ bool isThermalType(const std::string& type) {
         || t == "singletemperature"
         || t == "heatconduction"
         || t == "temperature";
-}
-
-MultiPhaseSolverKind parseMultiPhaseSolverKind(std::string solver) {
-    const std::string raw = solver;
-    const std::string s = normalizeModelType(std::move(solver));
-    if (s.empty() || s == "auto") return MultiPhaseSolverKind::Auto;
-    if (s == "densitybased" || s == "density") {
-        return MultiPhaseSolverKind::DensityBased;
-    }
-    if (s == "pressurebased" || s == "pressure") {
-        return MultiPhaseSolverKind::PressureBased;
-    }
-    throw std::runtime_error(
-        "multiPhase.solver supports auto, densityBased, or pressureBased; got '"
-        + raw + "'.");
-}
-
-std::string multiPhaseSolverKindName(MultiPhaseSolverKind solver) {
-    switch (solver) {
-    case MultiPhaseSolverKind::DensityBased: return "densityBased";
-    case MultiPhaseSolverKind::PressureBased: return "pressureBased";
-    default: return "auto";
-    }
-}
-
-MultiPhaseSolverKind resolvedMultiPhaseSolverKind(
-        const MultiPhaseConfig& config) {
-    if (config.solver != MultiPhaseSolverKind::Auto) return config.solver;
-    const std::string phaseChangeModel =
-        normalizeModelType(config.phaseChange.model);
-    if (config.phaseChange.enabled
-        && (phaseChangeModel == "rpi"
-            || phaseChangeModel == "wallboiling")) {
-        return MultiPhaseSolverKind::PressureBased;
-    }
-    for (const PhaseProperties& phase : config.phases) {
-        if (phaseNeedsPressureBased(phase)) {
-            return MultiPhaseSolverKind::PressureBased;
-        }
-    }
-    return MultiPhaseSolverKind::DensityBased;
-}
-
-std::vector<std::string> densityBasedConservedVariables(
-        const MultiPhaseConfig& config) {
-    std::vector<std::string> variables = {
-        "rho", "rhoU", "rhoV", "rhoW", "rhoE"
-    };
-    for (const PhaseProperties& phase : config.phases) {
-        if (normalizeModelType(phase.thermoModel) == "perfectgas") {
-            variables.push_back("rhoY." + phase.name);
-        }
-    }
-    for (const std::string& alpha : config.mixture.phaseFractionFields) {
-        const std::string variable = "rhoAlpha." + alpha;
-        if (std::find(variables.begin(), variables.end(), variable)
-            == variables.end()) {
-            variables.push_back(variable);
-        }
-    }
-    return variables;
 }
 
 const PhaseProperties* findPhase(const MultiPhaseConfig& config,

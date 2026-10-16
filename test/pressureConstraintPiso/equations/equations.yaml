@@ -1,4 +1,0 @@
-SonicFile:
-  object: equations
-  type: registry
-use: [Continuity, Momentum, Energy, PressureConstraint]

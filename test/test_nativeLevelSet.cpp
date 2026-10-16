@@ -1,5 +1,5 @@
 #include "models/physics/interfaceModel/levelSet/SF_levelSetSystemContribution.h"
-#include "models/physics/interfaceModel/levelSet/SF_reinit.h"
+#include "solver/algorithm/interface/SF_reinitialization.h"
 #include "solver/system/SF_systemBuilder.h"
 #include "solver/run/SF_planExecutor.h"
 #include "core/system/SF_operationIds.h"
@@ -63,13 +63,13 @@ int main() {
         scalar.values()[cell]=1.4*(field.X(i,j,k)-1.55);
     }
     const auto initial=scalar.values();auto batched=scalar;
-    SF::Physics::Multiphase::ReinitOptions options{12,.02,5,1e-6,2,1,{}};
+    SF::SolverAlgorithm::ReinitOptions options{12,.02,5,1e-6,2,1,{}};
     int callbacks=0;options.prepareStage=[&] {++callbacks;};
-    SF::Physics::Multiphase::Reinit::advance(field,batched,options);
+    SF::SolverAlgorithm::Reinit::advance(field,batched,options);
     require(callbacks==12,"Pseudo-time boundary/halo callback count changed.");
-    SF::Physics::Multiphase::Reinit::Workspace workspace;
-    SF::Physics::Multiphase::Reinit::begin(field,scalar,options,workspace);
-    for (int stage=0;stage<12;++stage) SF::Physics::Multiphase::Reinit::stage(field,scalar,options,workspace);
+    SF::SolverAlgorithm::Reinit::Workspace workspace;
+    SF::SolverAlgorithm::Reinit::begin(field,scalar,options,workspace);
+    for (int stage=0;stage<12;++stage) SF::SolverAlgorithm::Reinit::stage(field,scalar,options,workspace);
     require(workspace.reference==initial && scalar.values()==batched.values(),"Reinitialization refroze sign or changed stage arithmetic.");
     const int ng=field.NG(),j=ng,k=ng;
     double before=0,after=0;

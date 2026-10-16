@@ -113,7 +113,8 @@ EulerianStepper::EulerianStepper(
         wallHeatEnabled = wallHeatEnabled || found->wallHeat;
         sourceRegistry_.add(found->make(config_.sources));
     }
-    if (Physics::PhaseChange::normalizeModel(
+    if (system_.config().phaseChange.enabled
+        && Physics::PhaseChange::normalizeModel(
             system_.config().phaseChange.model) == "rpi"
         && !wallHeatEnabled) {
         throw std::runtime_error(
@@ -231,7 +232,7 @@ void EulerianStepper::applyBoundaryAndSynchronize() {
                         system_.phases()[phase]);
     }
     synchronizePrimaryState();
-    turbulence_.applyBoundary(system_);
+    equations_.applyTurbulenceBoundary();
     synchronizeTurbulenceState();
 }
 
@@ -477,6 +478,7 @@ void EulerianStepper::registerOperations(
             throw std::runtime_error(
                 "Eulerian Plan retained an unpublished pressure correction.");
         }
+        equations_.beginTurbulenceStep(state_->step);
         equations_.resetTurbulenceDiagnostics(); equations_.refreshRowMap();
         applyBoundaryAndSynchronize(); system_.validateState("pre-interphase");
     });
@@ -485,6 +487,7 @@ void EulerianStepper::registerOperations(
     if (turbulence_.active()) {
         operations.bind(System::OpIds::EeTurbulencePrepare,"flow.eulerian-turbulence",[&] {
             turbulence_.prepare(system_);
+            equations_.publishTurbulenceCoefficients(state_->step,lastSummary_.outerCorrectors);
             synchronizeTurbulenceState();
         });
     }
@@ -531,14 +534,18 @@ void EulerianStepper::registerOperations(
     operations.bind(System::OpIds::EeEnergySolve,"flow.eulerian-pressure",[&] { equations_.solvePhaseEnergy(dt); });
     if (turbulence_.hasTransportEquations()) {
         operations.bind(System::OpIds::EeTurbulenceSolve,"flow.eulerian-turbulence",[&] {
-            equations_.solveTurbulence(dt);
+            equations_.solveTurbulence(dt,state_->step,lastSummary_.outerCorrectors);
         });
+    }
+    if(turbulence_.hasTransportEquations()) {
+        operations.bind(System::OpIds::EeTurbulenceBoundary,"flow.eulerian-turbulence",[&] { equations_.applyTurbulenceBoundary(); });
+        operations.bind(System::OpIds::EeTurbulenceValidate,"flow.eulerian-turbulence",[&] { turbulence_.validate(system_,"linear solve"); });
+        operations.bind(System::OpIds::EeTurbulenceRefresh,"flow.eulerian-turbulence",[&] { equations_.refreshTurbulenceClosure(); });
     }
     operations.bind(System::OpIds::EeBoundaryFinal,"flow.eulerian-pressure",[&] { applyBoundaryAndSynchronize(); });
     operations.bind(System::OpIds::EeOuterValidate,"flow.eulerian-pressure",[&] { system_.validateState("PIMPLE outer corrector"); ++lastSummary_.outerCorrectors; });
     operations.bind(System::OpIds::EeStepCommit,"flow.eulerian-pressure",[&] {
-    workspace_.commitTimeLevel(system_);
-    turbulence_.commit(system_);
+    equations_.commitTimeLevel(state_->step);
     lastSummary_.pressureStructureRebuilds =
         equations_.pressureReuseStatistics().structureRebuilds;
     lastSummary_.pressureLinearSolves =

@@ -4,9 +4,8 @@ add_library(SF_io STATIC
     registry/SF_IORegistry.cpp
     case/SF_case.cpp
     field/SF_field.cpp
-    SF_meshDictReader.cpp
+    mesh/SF_meshParameters.cpp
     private/SF_casePath.cpp
-    private/SF_foamParser.cpp
     mesh/SF_sfmMesh.cpp
     mesh/SF_generatedMeshWriter.cpp
 )

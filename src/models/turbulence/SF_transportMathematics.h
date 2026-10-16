@@ -1,12 +1,21 @@
 #pragma once
 
-/// @brief Single-fluid RAS WHAT contribution matching the frozen production arithmetic.
-/// Production/blending/cross-diffusion symbols denote the existing RAS closures;
-/// this contract deliberately contains no convection or implicit sink.
+/// @brief Single-fluid RAS mathematical contributions.
+/// The stage recipe declares full conservative transport. The explicit legacy
+/// selection retains its real no-convection, once-step arithmetic contract.
 #include "core/system/SF_formula.h"
 #include <stdexcept>
 
 namespace SF::Turbulence {
+inline System::Equation stageTransportMathematics(const std::string& target) {
+    using E=System::FormulaExpr;auto s=[](const std::string& n){return E::symbol(n);};
+    if(target!="k" && target!="omega")throw std::runtime_error("Stage SST target unsupported.");
+    auto q=E::multiply(s("rho"),s(target));
+    auto rhs=E::add(E::op("diffusion",{E::multiply(s("rho"),s("SST.nu."+target)),s(target)}),
+        E::subtract(s("SST.production."+target),E::multiply(s("SST.sink."+target),s(target))));
+    if(target=="omega")rhs=E::add(rhs,s("SST.cross"));
+    return {target,E::add(E::op("ddt",{q}),E::op("div",{s("rhoU"),s(target)})),rhs,{System::OriginKind::Model,"kOmegaSST.stageConservative"},true};
+}
 inline System::Equation transportMathematics(const std::string& second,
                                             const std::string& target) {
     using E=System::FormulaExpr;

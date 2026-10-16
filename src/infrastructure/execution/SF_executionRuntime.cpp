@@ -5,9 +5,29 @@
 
 
 #include <cmath>
+#include <cstdlib>
+#include <fstream>
+#include <iomanip>
+#include <sstream>
 #include <stdexcept>
+#include <unistd.h>
 
 namespace SF::Execution {
+namespace {
+void traceVersions(const State::StateBundle& state, const char* phase,
+                   const OperatorContract& contract) {
+    const char* directory=std::getenv("SF_LEVEL_SET_CHECKPOINT_DIR");
+    if (!directory) return;
+    const std::string path=std::string(directory)+"/runtime-"+std::to_string(getpid())+".csv";
+    const bool header=!std::ifstream(path).good();
+    std::ofstream output(path,std::ios::app);
+    if (!output) throw std::runtime_error("Cannot write runtime version checkpoint.");
+    if (header) output<<"step,time,phase,operation,field,block,generation,synchronizedGeneration,availableDepth\n";
+    std::ostringstream prefix;
+    prefix<<std::setprecision(17)<<state.step<<','<<state.time<<','<<phase<<','<<contract.name;
+    state.distributed.writeDiagnosticVersions(output,prefix.str());
+}
+}
 
 void Runtime::attachState(State::StateBundle& state) {
     state_ = &state;
@@ -39,6 +59,7 @@ void Runtime::prepare(const OperatorContract& contract) {
         if (needsExchange) ++statistics_.haloExchanges;
         else ++statistics_.freshHaloReuses;
     }
+    traceVersions(*state_,"prepare",contract);
 }
 
 void Runtime::finalize(const OperatorContract& contract) {
@@ -78,6 +99,7 @@ void Runtime::finalize(const OperatorContract& contract) {
         throw std::runtime_error(
             "workspace synchronization must be invoked with explicit borrowed storage.");
     }
+    traceVersions(*state_,"finalize",contract);
 }
 
 void Runtime::synchronizeCanonicalFaceFluxes(

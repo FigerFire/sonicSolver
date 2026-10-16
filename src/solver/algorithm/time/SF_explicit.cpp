@@ -345,6 +345,28 @@ void executeStage(
             "Explicit stage execution is inactive, out of range, or out of order.");
     }
     auto& storage = workspace.patches;
+    const auto publishStage=[&](const std::vector<Field*>& patches) {
+        publish(patches);
+        const char* directory=std::getenv("SF_LEVEL_SET_CHECKPOINT_DIR");
+        if (!directory) return;
+        static unsigned long long sequence=0;
+        const char* rank=std::getenv("OMPI_COMM_WORLD_RANK");
+        std::ofstream out(std::string(directory)+"/stage-"+std::to_string(getpid())+"-"+std::to_string(sequence++)+".csv");
+        if (!out) throw std::runtime_error("Cannot write registered scalar stage checkpoint.");
+        out<<std::setprecision(17)<<"step,stage,time,stageTime,patch,rank,id,ownerRank,owner,i,j,k,x,y,z,phi\n";
+        for(Field* field:patches) {
+            if (!field) continue;
+            auto* registry=registryFor(*field,patches,state,equationSystem);
+            if (!registry) continue;
+            for(const auto& variable:registry->variables()) {
+                if (variable.descriptor.name!="phi") continue;
+                const int ng=field->NG();
+                for(int k=ng;k<ng+field->NZ();++k)for(int j=ng;j<ng+field->NY();++j)for(int i=ng;i<ng+field->NX();++i)
+                    out<<state.step<<','<<stageIndex<<','<<state.time<<','<<state.time+workspace.recipe.stage(stageIndex).abscissa*state.dt<<','<<reinterpret_cast<std::uintptr_t>(field)<<','<<(rank?rank:"0")<<','<<field->globalDofId(i,j,k)<<','<<field->globalDofOwnerRank(i,j,k)<<','<<field->isGlobalDofOwner(i,j,k)<<','<<i<<','<<j<<','<<k<<','<<field->X(i,j,k)<<','<<field->Y(i,j,k)<<','<<field->Z(i,j,k)<<','<<variable.value->operator()(i,j,k)<<'\n';
+            }
+        }
+    };
+
     const auto assemble=[&](const auto& patches,auto& numerical,double time) {
         if (!workspace.rhsReady) assembleRHS(patches,numerical,time);
         workspace.rhsReady=false;
@@ -369,7 +391,7 @@ void executeStage(
             }
         }
         traceUpdatedConservative("Q after Euler update", fields, state);
-        publish(fields);
+        publishStage(fields);
         validate(fields, "Euler final");
     } else if (workspace.recipe.backend() == System::ExplicitStageBackend::SSPRK3) {
         const auto& stage = workspace.recipe.stage(stageIndex);
@@ -391,7 +413,7 @@ void executeStage(
             }
         }
         traceUpdatedConservative(labels[stageIndex], fields, state);
-        publish(fields);
+        publishStage(fields);
         validate(fields, labels[stageIndex]);
     } else if (workspace.recipe.backend() == System::ExplicitStageBackend::ClassicalRK4
                && stageIndex == 0) {
@@ -420,7 +442,7 @@ void executeStage(
         }
     }
     traceUpdatedConservative("Q after RK4 stage 2 update", fields, state);
-    publish(fields);
+    publishStage(fields);
     validate(fields, "RK4 stage 2");
     } else if (stageIndex == 1) {
     assemble(fields, workspaces,
@@ -447,7 +469,7 @@ void executeStage(
         }
     }
     traceUpdatedConservative("Q after RK4 stage 3 update", fields, state);
-    publish(fields);
+    publishStage(fields);
     validate(fields, "RK4 stage 3");
     } else if (stageIndex == 2) {
     assemble(fields, workspaces,
@@ -474,7 +496,7 @@ void executeStage(
         }
     }
     traceUpdatedConservative("Q after RK4 stage 4 update", fields, state);
-    publish(fields);
+    publishStage(fields);
     validate(fields, "RK4 stage 4");
     } else {
     assemble(fields, workspaces,
@@ -499,7 +521,7 @@ void executeStage(
         }
     }
     traceUpdatedConservative("Q after RK4 final update", fields, state);
-    publish(fields);
+    publishStage(fields);
     validate(fields, "RK4 final");
     }
 

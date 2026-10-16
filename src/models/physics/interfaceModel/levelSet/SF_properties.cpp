@@ -69,6 +69,7 @@ void Properties::update(const Field& field,
             "LevelSet properties: LevelSetField dimensions do not match Field.");
     }
 
+    levelSet.setMaterialPropertiesReady(false);
     const PhaseProperties* liquid = findByRole(config, PhaseRole::Liquid);
     const PhaseProperties* gas = findByRole(config, PhaseRole::Gas);
     requirePhaseProperties(liquid, PhaseRole::Liquid, "density");
@@ -86,6 +87,9 @@ void Properties::update(const Field& field,
         for (int j = 0; j < field.MY(); ++j) {
             for (int i = 0; i < field.MX(); ++i) {
                 const int id = levelSet.getIdx(i, j, k);
+                if (!std::isfinite(levelSet.phi(i,j,k)))
+                    throw std::runtime_error("LevelSet material properties: non-finite phi at ("
+                        +std::to_string(i)+","+std::to_string(j)+","+std::to_string(k)+").");
                 const double h = indicator(levelSet.phi(i, j, k), epsilon);
                 levelSet.densities()[(size_t)id] =
                     h * liquid->density + (1.0 - h) * gas->density;

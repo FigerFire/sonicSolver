@@ -1,5 +1,12 @@
 # SonicSolver：双数学入口、统一方程驱动的 CFD 求解器架构
 
+> 2026-10-14 实现更新：生产 IO 仅 SonicFile native registry；CLI/GUI 共享创建、
+> reader/writer 和 typed inspection。Level-set RHS/pseudo workspace 与 thermal
+> numerical execution 已迁入 solver；mixture flow/thermo、advanced KKT 等仍明确 Unsupported。
+> 历史章节中的验收范围不自动升级为本轮证据。详见
+> [全模块收口报告](../docs/native-architecture-closure.md) 与
+> [Native IO/GUI 契约](../docs/native-io-gui-contract.md)。
+
 SonicSolver 组合可解释、可执行的数值系统。主未知量、数学方程、模块贡献、耦合、时间方法、空间离散和运行时并行语义保持独立；case 不选择一个预打包的 solver family。
 
 > WHAT defines equations.
@@ -138,10 +145,10 @@ Formula/Expression AST 是 equation mathematical implementation detail，不是�
 原生 case 必须分别选择 WHAT、solution STATE 和 HOW。`EquationCompositionConfig::stateDeclared/solutionVariables` 是输入；冻结后 `StateRegistry::solutionVariables()` 是成员身份 authority。`StateRole` 仍描述数学/存储职责，不决定是否属于 solution；不增加 `Conserved` 互斥角色。物理守恒密度及其 balance 属于 WHAT，一个主未知量可以同时表示守恒密度。
 
 ```yaml
-# state/state.yaml
+# solvers/state.yaml
 SonicFile:
-  object: state
-  type: registry
+  object: solver
+  type: state
 use: [U, p]                 # 或 [rho, rhoU, rhoE]
 ```
 
@@ -373,7 +380,7 @@ Compiler 通过 const source HOW/WHICH 和 const equation/provider interfaces �
 
 ## Native single-fluid turbulence and mixed temporal lowering
 
-显式 primary flow STATE selection 不要求用户把每个模型辅助变量加入 `state/state.yaml`。用户显式选择 kOmegaSST 后，模型在同一个 StateRegistry 贡献 k/omega；选择 kEpsilon 则贡献 k/epsilon。用户 primary flow selection 仍是 rho/rhoU/rhoE，U/p/T 是 flow closure views，mu_t 是模型 derived closure output。没有第二个 STATE registry。
+显式 primary flow STATE selection 不要求用户把每个模型辅助变量加入 `solvers/state.yaml`。用户显式选择 kOmegaSST 后，模型在同一个 StateRegistry 贡献 k/omega；选择 kEpsilon 则贡献 k/epsilon。用户 primary flow selection 仍是 rho/rhoU/rhoE，U/p/T 是 flow closure views，mu_t 是模型 derived closure output。没有第二个 STATE registry。
 
 RAS 的 k/omega/epsilon/mu_t backing 仍由 Turbulence::Manager 内的 ScalarFields 持有；`ProviderDistributed` 描述这一事实。Manager::registerDistributed 发布原数组的非 owning views，StateRealization 和 Physical(target) 直接引用它们，compiled view owner 为 NumericalProvider。没有为架构另分配数组；ScalarFields 原先分配的四个槽位仍保留。当前没有 turbulence restart reader，因此这些 STATE 不宣称 restart capability。
 
@@ -502,8 +509,8 @@ flow 保留原 `Time::Explicit` workspace、stage 系数、RHS 和 Q publication
 | Constant-density PISO/SIMPLE/PIMPLE | native HOW + method-owned pressure/Rhie–Chow operations；无 legacy provider routing | 本阶段 PISO、16²/32² Poiseuille、fixed-time SIMPLE/PIMPLE、既有 MPI 回归前后全部通过；同配置前后 VTS hash 一致 |
 | Active STATE / lazy views | catalog metadata 与 active registry 分离；HOW/WHICH 请求 view，runtime 绑定 storage | inactive symbol、qualified target、storage/owner contract 检查通过；本阶段 CFD 实际覆盖 Working(U)、Correction(p)、Physical(U/p/phi) |
 | Single-fluid conservative/variable-density pressure | native six occurrences + explicit three-equation predictor fusion；bindPressureOps 仅注册已有 kernels | pressureConstraintPiso 1 step，time/dt=1.659315e-06；输入、诊断、操作顺序、字段统计与两个 VTS 均前后完全一致；fixed-time conservative 等 capability 仍 Unsupported |
-| Single-fluid transported RAS | native WHAT/STATE/HOW/WHICH；完整相邻 pair 显式 fusion；CompiledSolvePlan 调用 flow.turbulence，一次/物理步 | 新增 SST 串行覆盖：6 steps / 4 VTS 与旧内核诊断对照逐字节一致；kEpsilon 为结构、存储及更新单元覆盖，未做 CFD baseline |
-| Eulerian turbulence | 原生 mass-weighted WHAT、单 registry STATE aliases、显式 closure/transport HOW 和独立 WHICH；无 E_TURB/legacy routing | SST/kEpsilon：每项 6 steps / 7 VTS / 180 operations；subset/reversed phases 及多 PIMPLE passes 严格一致；多 pass 588 operations；Smagorinsky closure-only 174 operations；全部与隔离旧内核接线对照比较，非历史 production baseline |
+| Single-fluid transported RAS | native WHAT/STATE/HOW/WHICH；完整 pair fusion；Plan 每物理步调度 flow.turbulence，solver 执行原位 sweep/BC/diffusion，model 保留物理闭合与原数组 | 2026-10-16：非均匀 kEpsilon/SST、no-slip Ghost/SST、LES、stage SST、Eulerian RAS 和 Sod 共 8 对短时 CFD 与迁移前一致；不代表长期湍流物理验收，见 once-step ownership 报告 |
+| Eulerian turbulence | 原生 mass-weighted WHAT、单 registry STATE aliases、显式 closure/transport HOW 和独立 WHICH；物理数组/闭合属于 model，old-time、节点 BC、装配/线性求解属于 solver；无 model commit | Phase C：10 个短时案例各 6 steps / 7 VTS；矩阵、解、物理输出与迁移前当前工作区逐字节一致；单 outer RAS 180→198 leaves，多 outer 870→924（只展开原后处理）；serial single-block，MPI/multipatch Unsupported。详见 execution ownership 报告 |
 | Eulerian shared pressure | native phase/pressure WHAT/STATE/HOW/WHICH；explicit N-member fragment fusion；EulerianStepper 仅绑定/执行；AST -> immutable compiled assembly contract，零 native flat DSL 依赖 | 现有双相/MRF/PIMPLE：6 steps、7 VTS、168 Ee operations 和诊断前后逐字节一致；三阶段 CFD 均完全一致；最终完整回归见本次迁移报告 |
 | IBM / distributed execution | native boundary/impulse/projection/block contracts；原 numerical kernels 和 COPY/SUM semantics | 各方法分别验证；不能用 Ghost 代表 forcing/KKT；本次完整时域结果见 IBM migration report |
 
@@ -533,7 +540,11 @@ IBM 的 legacy Definition/HOW/policy/provider routing、空 ImmersedConstraintTr
 
 ## Native interface 与剩余多相能力
 
-Level-set WHAT 分离 `ddt(phi)+U·grad(phi)=0`、frozen-reference pseudo-time 与 normal/curvature algebraic relations；CSF 的 force/energy 数学成员绑定原融合 RHS 写集合，Ghost-fluid 仅声明 jump query。STATE alias 原模型数组。HOW 显式冻结 phi0、伪时间 Loop、geometry publication、physical commit。WHICH 在 reference preparation 固定伪时间 recipe，stage 消费该 workspace，不拥有第二份 dt/time；界面 port 不拥有循环。原 stage preparation/BC/halo/source 顺序保留。MPI 重初始化仍 Unsupported；旧 MPI 输运存在 phi/派生场 boundary replica 差异，迁移保持测试不能替代并行一致性证明。
+Level-set WHAT 分离 `ddt(phi)+U·grad(phi)=0`、frozen-reference pseudo-time 与 normal/curvature algebraic relations；CSF 的 force/energy 数学成员绑定原融合 RHS 写集合，Ghost-fluid 仅声明 jump query。STATE alias 原模型数组。HOW 显式冻结 phi0、伪时间 Loop、geometry publication、physical commit。WHICH 在 reference preparation 固定伪时间 recipe，stage 消费该 workspace，不拥有第二份 dt/time；界面 port 不拥有循环。
+
+D1 的实际发布链为：物理 BC → phi owner 写失效声明 → HJ 所需 phi halo → 第二次物理 BC/必要时重新发布 → normal 计算 → normal owner COPY/一层 halo → curvature、mask、物性与 band 更新 → curvature owner COPY/一层 halo → owner-only 物理体积积分 SUM → 消费/输出。BC 的 zeroGradient donor 使用真实 set 的法向轴，不能从局部 patch endpoint 推断物理壁面。共享 physical replica 可参与同一局部几何计算，但 authoritative normal/curvature 始终由 owner 发布；几何计算不得在 normal COPY 后再清零 normal。material cache 与 normal/curvature publication 分开标记有效，失效状态不得被 CSF、jump 或输出消费。
+
+初始化输出在 StateBundle attach 与上述发布之后；physical commit 使用同一准备链，writer 不执行隐式通信或副本平均。每 rank 一个 patch 的 MPI 也必须归并 diagnostics，不能将 single-field storage layout 当作串行。原 HJ-WENO、RK、CSF、Young–Laplace、canonical face COPY 与 GlobalDof SUM 数学保持。倾斜平面、圆界面、CSF 与不同 x/y/2×2 分区及实际多 source-zone MPI 的短时证据见 [D1 修复报告](../docs/level-set-mpi-publication-repair.md)。MPI 重初始化和 massCorrection 仍 Unsupported，串行多 source-zone solve 当前也 Unsupported；sharp indicator 对 phi=0 的舍入敏感性仍保留，不由 D1 扩展数学能力。D2 的伪时间 workspace/执行与 D3 的独立 thermal 执行 ownership 已在 2026-10-14 收口（见下文）；mixture flow/thermo binding 仍 Unsupported。
 
 Homogeneous 按 partial-density component layout 声明原生 balances；mixture 推进 phaseMass，alpha 保持派生。它们没有内置 flat Definition/HOW producer，但无 generic-EOS flux / native mixture closure binding 时不能报告 Runnable。共享 flat DSL 保留于真实 compatibility consumers；死 prefix/forwarding API 已删除。
 
@@ -632,9 +643,7 @@ properties:
 
 |语义|目录|SonicFile.object|
 |---|---|---|
-|STATE registry|state/|state|
-|WHAT equation registry|equations/|equations|
-|algorithm registry|algorithms/|algorithms|
+|STATE / WHAT / algorithm registry|solvers/|solver|
 |HOW/WHICH/runtime、旧 flow equationSystem、普通边界 ILW|solvers/|solver|
 |EOS/caloric/transport、IBM、turbulence、物理 source|models/|models|
 |field declaration、初值、边界|fields/|fields|
@@ -642,4 +651,148 @@ properties:
 
 温度等 derived view 可以只声明边界而不声明独立初值；configuration decoding 不得因缺少 T 初值而丢弃 thermal boundary。p 初始化和 T 初始化应共享同一套显式边界。
 
-CaseIO writer 在写入任何文件前计算全部目标路径，拒绝 safeFileName 或大小写碰撞、保留 registry 名、重复 category/name、重复 registry、非法父目录和目标目录冲突。solver/model 的同名对象位于不同目录，不覆盖彼此。Reader 按 registry reference 解析，不搜索猜测文件；历史明确引用的旧目录布局可读，canonical writer 不再生成该布局。重复 referenced file（含规范化路径或 symlink 指向同一文件）和 object/type 不匹配会拒绝。短 registry selection 写出后保持，浮点参数按 max_digits10 写出，避免读回改变系数。
+## Phase B：共享守恒通量与 single-fluid stage SST
+
+共享质量通量是原 NS `PatchWorkspace::convectiveFlux` 中密度分量的只读借用，不是另一个 flux provider 的计算结果。`StageFluxPublication` 只保存 patch、FluidStateModel、component、layout、numerical recipe、physical step/stage/time 和 generation 元数据；`StageMassFluxView` 不持有数值数组。RHS 清理、resize、move 和 stage advance 使旧 view 失效。候选面通量完成现有 canonical finalize/COPY 后才能发布，同 epoch 重复发布拒绝。面按正计算方向编号，读取 cofactor 加权 `F_hat`；散度是 `Jac*(F_right-F_left)`，不重复乘面积或除 dx。canonical COPY 与 residual SUM 的实现不变。
+
+`ScalarTransportSharedFluxCentral2` 通过 `equation.scalar-shared-flux` 消费同 stage canonicalMassFlux；浓度采用 Upwind1，扩散采用面平均 `rho*D` 的 Central2。WHAT 为 `ddt(rhoC)+div(rhoU,C)=diffusion(rho*D,C)+source`，STATE 的原 rhoC 是唯一 physical authority。D 可以是常数或明确的 Stage STATE。独立几何标量和旧中心 rhoU 构造仍是不同的显式数值选择，不作为新 shared method 的 fallback。第一版共享标量限串行单 patch、均匀正交网格；MPI/new multipatch 支持不能由 NS 的并行能力推断。
+
+模型显式选择 `transportMethod: stageConservative` 时，single-fluid kOmegaSST 贡献 `ddt(rho*k)` / `ddt(rho*omega)`、真实 convection、rho 加权 diffusion、production、sink 和 cross diffusion，WHICH 为 `SSTStageTransport`。primitive physical k/omega/mu_t 继续 alias 原 Manager 数组；solver 标量 participant 持有 rho*k/rho*omega 的 OldTime/Stage/RHS/RK workspace。模型只计算系数，不通过 `correct()` 推进该路径；solver 持有七个 SST 系数 workspace。mu_t 发布到原数组，并被真实 NS 黏性算子读取。不存在第二份 physical k/omega、第二个 clock 或 SST runner。
+
+公共 temporal 编译契约具有 optional coefficient resources：全部 participant boundary/prepare -> Stage ready -> 明确 coefficient publication -> 全部 ordered RHS -> RHS ready -> 全部 advance。RHS 不写其他 participant 的 Stage 状态。NS canonicalMassFlux producer 必须位于 shared scalar consumer 之前，coefficients 必须在 flow/SST RHS 之前；compiler 校验 authored 顺序，不自行重排。全部 physical publish 后刷新最终系数，再执行唯一 `time.commit`。recipe coefficients、stage abscissae、CFL、NS flux、residual 和 MPI 语义不改变。
+
+stage SST 第一版仅支持 single-fluid kOmegaSST、serial/single patch、forwardEuler/classicalRK4、明确完整面 fixedValue/zeroGradient 边界；继承 mesh halo 标签不等于允许内部/局部点集冒充完整面。新 stage SST＋IBM、pressure、MPI/multipatch、Eulerian、kEpsilon 或未实现的 stage recipe 明确 Unsupported。已有 `legacyOnceStep`（省略选择时保持当前兼容默认）有真实 Ghost/SST、kEpsilon 和旧 single-fluid 消费者；它仍使用前述 once-step 数学，不得称为共享守恒 SST。Eulerian 保留自己的相质量加权矩阵内核。两种 SST 数学不会静默互换。
+
+## Phase C：Eulerian turbulence execution ownership（2026-10-12）
+
+模型 `Turbulence::EquationSystem` 保留原 k/epsilon/omega、mu_t、wallDistance 和 diffusivity/explicitSource/implicitSink 缓存；模型贡献是 WHAT authority，provider 中的 AST signature 只验证已实现数学。物理数组仍由唯一 STATE alias 暴露，不复制为 solver physical state。模型不应用通用节点 BC，不拥有线性装配/求解或 numerical time commit。
+
+`PhaseSolverWorkspace::turbulenceOldTime` 每个被输运 unknown 分配一份 `phaseMass_n * phi_n`；条目同时绑定实际 phaseIndex 和原 physical array。选中相的顺序不能被当作 phase storage slot。初次 attach 在原 initialization BC/prepare 后初始化 snapshot；所有 outer 都读取同一 snapshot，唯一 compiled `ee.step.commit` 后更新下一物理时间层。`StateBundle.time/step` 仍是物理 clock，workspace 的 step/outer epoch 只是消费有效性标记。失败的装配/求解不更新 old-time；不承诺物理数组的整步回滚。
+
+节点 scalar BC 移入 `solver/boundary/SF_scalarBoundary`：保留固定值的镜像 ghost、zeroGradient/symmetry 的边界相邻点复制和全部 ghost 常值延拓、EMPTY 的原 stencil。它不同于普通 scalar provider 的 Neumann 模板，不能因 API 名称相近替换。`PhaseEquationAssembler` 在已有 transport 实现中组装和求解相质量加权矩阵，拥有每 unknown 的可复用 SolverSession，workspace 复用一个 diagonal；不创建第二个 runner 或 outer loop。
+
+编译 fragment 显式显示原尾部：`ee.turbulence.solve`（求解并写回原数组）→ `ee.turbulence.boundary` → `ee.turbulence.validate` → `ee.turbulence.refresh` → 原 final boundary/outer validation → physical commit。predictor 前 prepare/publication、transport 消费 Frozen 系数、solve 后 prepare、dt probe 的 prepare/sourceTimeStep 均保留原频率。系数 epoch 必须匹配当前 physical step/outer，不能以读取“最新值”为由改成 fully coupled turbulence。
+
+本 provider 明确限定 closure gradient=Central2、diffusion=Central2、canonical mass-flux convection=Upwind1；显式选择其他 order 或未知参数 fail-fast。原 CENTRAL2 闭合 kernel 暂留 model 内，公开为 fixed implementation capability，不声称已支持任意梯度。Eulerian RAS/LES 仍仅串行单块；MPI 在 capability 阶段拒绝，多 patch 在单 patch state binding 拒绝。COPY/SUM、canonical face orientation、隐式 sink、线性容差和 PIMPLE 三层循环不变。数值证据和逐例设置见 [Phase C 中文报告](../docs/eulerian-turbulence-execution-ownership-migration.md)。
+
+验收与范围见 [共享守恒输运迁移报告](../docs/shared-conservative-flux-transport-migration.md)。离散守恒预算使用原散度控制体权重，输出统计使用物理梯形积分，两者须分别解释。新增 SST 对流及 common-stage 推进是数学变化，不能以旧 once-step SST 的冻结结果作为新模型的正确性证明。
+
+CaseIO writer 在写入任何文件前计算全部目标路径，拒绝 safeFileName 或大小写碰撞、保留 registry 名、重复 category/name、重复 registry、非法父目录和目标目录冲突。solver/model 的同名对象位于不同目录，不覆盖彼此。Reader 只按当前 object registry 的 reference 解析，不搜索猜测文件；旧分散布局须显式转换，生产 reader 不再读取历史固定路径。重复 referenced file（含规范化路径或 symlink 指向同一文件）和 object/type 不匹配会拒绝。短 registry selection 写出后保持，浮点参数按 max_digits10 写出，避免读回改变系数。
+
+
+### Native IO 注册身份与单目录约束（2026-10-11）
+
+语义 WHAT / STATE / HOW / WHICH 独立不要求创建独立 case 目录。所有 solver 配置使用 `SonicFile.object: solver`，集中在 `solvers/`，由唯一 `solvers/solvers.yaml`（type: registry）注册。models/fields/mesh 同样保持自己的 object。
+
+双重核验区分 **文件身份** 与 **内部角色**：
+
+|Registry 键 / 子文件 type|注册项内部 type|子文件|职责|
+|---|---|---|---|
+|equations|equationSystem|solvers/equations.yaml|方程系统 preset/实例|
+|state|stateRegistry|solvers/state.yaml|solution STATE 选择|
+|equationRegistry|equationRegistry|solvers/equationRegistry.yaml|WHAT 方程选择|
+|execution|algorithmRegistry|solvers/execution.yaml|HOW 算法选择|
+|how|executionProgram|solvers/how.yaml|显式 HOW（按需注册）|
+|which|providerBindings|solvers/which.yaml|显式 WHICH（按需注册）|
+|internalField|internalField|fields/internalField.yaml|初值（fields registry 注册）|
+|boundaries|boundary|fields/boundaries.yaml|边界（fields registry 注册）|
+
+注册键 `state` 对应子文件 `type: state`；`stateRegistry` 仅作为母文件条目内部角色。母子 object、键与子 type 逐字核验；保留键必须匹配指定角色，单例角色不能换名创建第二 authority。自定义实例（例如 models 的 surface: {type: geometry}）保持 surface 文件身份与 geometry 角色独立，不用几何角色覆盖实例身份。
+
+默认 `flow` 键已改为 `equations`。原有 equationRegistry 选择表使用同名独立键，不与方程系统共用键。HOW/WHICH、runtime、numerics、algorithm 和 ILW 都在 solvers/；热物性、IBM、湍流、物理源属于 models/。
+
+`case.yaml` 是 case 身份/版本元数据，固定的四个 object registry 是引导入口。其子文件只能由显式注册读取。已登记的内置 compact selection 可以解析到登记过的默认文件位置；这不授权扫描目录。fields 的内联字段声明仍是 STATE IO metadata，不是额外的 document registry；初值/边界 child reference 显式注册，并在字段声明加载后分派。
+
+加载链：registry -> parseEntry（保留键/角色校验）-> resolveFile -> object 目录/重复引用校验 -> 子文件 object/type 校验 -> 内部角色 handler -> typed Description。数值 compiler 仍消费原内部角色及 payload；文件身份不成为算法 dispatch authority。
+
+拒绝注册的缺失文件、跨 object/嵌套目录引用、symlink 越界、重复 canonical 文件和第二份 registry。未注册文件即使格式错误也不读取。删除 state、equationRegistry 或 execution 注册后，不能通过同名文件存在恢复；后续能力校验照常报告必需配置缺失。旧式头部/分散布局须显式转换，生产 reader 不保留自动发现 fallback。
+
+CLI init、CaseIO writer 与正式算例遵守同一布局。Writer 先检查整个输出集和注册契约，再写任何文件。物理 state、clock、numerical workspace、provider、stage/boundary/halo order 与 MPI COPY/SUM 均不因 IO 迁移改变。验证证据见 [注册身份 IO 收口报告](../docs/registry-identity-io-closure.md)。
+
+## Native IO / D2 / Thermal ownership closure（2026-10-14）
+
+2026-10-15 source启用语义补充：phaseChange block存在时默认启用，显式`enabled:false`
+不得因模型名称再次启用；inactive RPI不要求wall-boiling服务，也不产生沸腾质量源。独立启用的
+普通wallHeat仍提供热贡献。dt probe和各outer允许重算源率，但必须先清空重装配；physical state
+只由编译数值操作推进，物理clock每步只commit一次。选定Lee/RPI的source-only预算和短时CFD
+证据见[执行与预算报告](../docs/source-execution-budget-closure.md)，不代表任意热力学组合已验证。
+
+### 生产输入与 GUI
+
+`Application::createNativeCase → CaseIO → ModelLoader/inspectCase` 是 CLI 与 GUI 唯一创建/校验链。
+模型与 solver 配置按 object registry 显式注册；GUI 原生文本编辑先 staging validation，失败
+rollback，optional 模块默认 inactive。不存在 OpenFOAM dictionary reader/editor/backend 或
+vtkOpenFOAMReader。application 的 native 数值转换 helper 不是旧格式 filesystem parser。
+历史输入只能显式转换，不能因文件存在自动加载。
+
+mesh registry 可选注册 `generation: {type: structuredMesh, file: mesh/generation.yaml}`，
+child header 为 `object: mesh, type: generation`。CaseIO 验证typed参数，CaseAdapter 冻结
+MeshParameters；MeshGen 保留原trilinear/grading/TFI算法。face classification 分别使用每个显式
+表面region，不能把相对面的point-set union当成一个表面。生成SFM须可被正式loader重新读取。
+GUI四角挤出草图消费同一参数；更复杂编辑UI明确Unsupported，保留真实几何kernel。
+
+GUI用typed native parallel配置启动QProcess；single-step preview 是 test/ 下独立副本的
+`sonicSolver steps 1`，正常结束后读取结果。按step文件编号与PVD physical time分开：
+PVD标签来自committed StateBundle.time，不拥有时间状态。
+
+### Level-set
+
+phi、normal、curvature仍由原LevelSetModel持有。`solver/algorithm/interface/SF_levelSetOperations`
+持有RHS、Reinit::Workspace与frozen phi0，`SF_advection`和`SF_reinitialization`负责数值执行。
+原模型不再有primaryScalarRHS/advance/reinitialize转发入口。geometry、CSF、jump数学留在models。
+
+HOW/Plan决定physical RK、pseudo Loop、geometry publication与唯一physical Commit。
+D1的BC/invalidation/halo/donor/normal COPY/curvature COPY/diagnostics SUM链不变。
+37个单source配置和6个MPI多source配置before/after result/checkpoint exact。
+MPI/multipatch reinit仍因缺真实scheduler而Unsupported；不隐式降级。
+
+### 独立温度与 mixture
+
+thermal贡献普通WHAT/STATE/HOW/WHICH；`thermal.T` alias原MultiPhaseModel温度数组，
+不能与EOS T/rhoE混成两个writable authority。存在EOS T时选择独立fieldName，mean-flow T
+输入/BC与该target分开。`ThermalEulerTransport`仅声明已实现的Forward Euler、serial单patch。
+convection要求真实五变量PerfectGas velocity closure；unrelated U alias、primitive pressure port、
+未知time treatment、MPI均拒绝。pure diffusion不要求convection port。old/stage/RHS属于solver，
+通过现有StateRealization绑定。模型不再有advanceTemperature或beginStep完成Euler的隐藏路径。
+
+mixture仍由phaseMass主量推进，alpha/T派生；真实native flow/thermo及publication binding未实现，
+保持Unsupported，不能根据RPI/相物性自动选pressure/density family。Auto/family配置与
+print-only conservativeLayout镜像已删除。独立温度不开放为mixture的第二份energy积分。
+
+### 清理与能力边界
+
+native 模块不新增 legacy Definition/role/flat plan；AssemblyPlan 已删除，仍有真实消费者的全局兼容 DSL 按模块保留。
+single-fluid legacyOnceStep RAS 的原位 sweep、dt 写回、标量扩散和通用 BC 已迁入 solver；
+模型仅提供局部只读物理闭合、原物理数组、floors/壁面关系和代数 mu_t，见下一节。
+
+LES无配置rho clamp已改为finite-positive fail-fast。Scalar Project仍是显式bounding选择；
+本轮不删除合法limiter/regularization。TransferLedger是源项预算authority；homogeneous total-energy
+mapping只计external energy一次，不重复加phase wall allocations；不支持的phase mechanical conversion
+在写source之前拒绝。generic-EOS homogeneous flux、mixture binding、JANAF/Sutherland、primitive energy、
+Subcycle、density KKT/advanced rigid augmentation/restart仍按真实实现能力报告。
+
+本轮最终验证为45个serial C++ tests、11个host MPI/HYPRE tests、72组短时保护对照与GUI实际运行，
+不替代历史完整CFD或长期物理验收。逐例配置、终点、hash与限制见收口报告和test/证据。
+
+
+## Single-fluid once-step RAS execution ownership（2026-10-16）
+
+`TurbulenceTransport → turbulence.advance → bindTransportOperations` 仍是原 HOW/WHICH 入口。
+solver/algorithm/transport 的 SF_onceStep 执行 k/j/i 原位 sweep、两个原标量数组的扩散与 dt 写回；
+每个 cell 调用模型只读闭合计算 production/dissipation、SST blending/cross diffusion。
+`OnceStepTransportData` 只借用原 ScalarFields 的数组、BC 配置和物理系数，不分配或复制 physical state。
+通用标量 fixedValue/zeroGradient/symmetry/empty 实现在 solver/boundary；保留旧单流体模板的
+角点方向与 ghost 写入顺序，不换成语义不同的 Eulerian 节点 BC。
+
+实际叶操作内部顺序保持：BC → Runtime finalize → Runtime prepare → 原位更新 → BC →
+mu_t 代数刷新 → BC → finalize → prepare。新 BC 表示通用模板后再执行原 floors/immersed wall 数学。
+初始化由 application 在原数组创建/IC 后立即请求 solver BC/closure；没有新增 timestep 或 Commit。
+模型不再暴露 correct(field,dt) 或数值推进转发；LES/DNS 用不接受 dt 的 refreshClosure。
+绑定数值 advance 时缺少原两标量端口明确失败，不能以 closure-only 刷新冒充 transport。
+
+本实现仍是原 legacyOnceStep source/diffusion 数学，未增加 convection，未转成 rho*k/rho*omega
+stageConservative。mu_t 在 sweep 内冻结；无壁面时原 dynamicViscosity 查询计算、Ghost/SST 的
+step-frozen 缓存、stage SST 的 publishStageViscosity 以及 Eulerian 矩阵路径分别保留。
+SST F1/F2/cross/strain 等物理闭合所用既有 Central2 kernel 仍属 model 的真实消费者。
+不开放 pressure/MPI RAS、移动壁、其他 IBM 组合或新时间策略。
+数值证据、API 删除与完整逐例设置见[迁移报告](../docs/single-fluid-ras-execution-ownership-migration.md)。

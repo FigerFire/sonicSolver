@@ -9,6 +9,7 @@ target_include_directories(SF_guiVTKView PUBLIC
 )
 
 target_link_libraries(SF_guiVTKView PUBLIC
+    SF_io
     Qt${QT_VERSION_MAJOR}::Widgets
     SF_guiViewerControls
 )

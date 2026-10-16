@@ -2,8 +2,9 @@
 /// @brief Level Set 输运、重初始化或界面几何模型实现。
 
 #include "SF_levelSet.h"
+#include "SF_publicationTrace.h"
+#include "SF_geometry.h"
 
-#include "SF_advect.h"
 #include "SF_band.h"
 #include "SF_heaviside.h"
 #include "methods/numerics/structured/SF_structured.h"
@@ -83,7 +84,9 @@ void LevelSetModel::requireInitialized(const char* operation) const {
 
 void LevelSetModel::initialize(const Field& field) {
     state_.initializeFromSets(field, config_);
+    Multiphase::tracePublication("C0-initial-phi",field,state_);
     state_.applyBoundaryConditions(field, config_);
+    Multiphase::tracePublication("C1-boundary-phi",field,state_);
     state_.computeGeometry(
         field, config_.levelSet.geometryGradientTolerance);
     state_.updateMaterialProperties(field, config_);
@@ -91,61 +94,43 @@ void LevelSetModel::initialize(const Field& field) {
         Multiphase::NarrowBand::update(
             field, state_, config_.levelSet.narrowBandWidth);
     }
-    rhs_.assign((size_t)state_.TotalSize(), 0.0);
     initialized_ = true;
     updateDiagnostics(field, true);
-}
-
-void LevelSetModel::beginTimeStep(double dt) {
-    requireInitialized("beginTimeStep");
-    if (!std::isfinite(dt) || dt <= 0.0) {
-        throw std::runtime_error(
-            "LevelSetModel::beginTimeStep requires finite dt > 0.");
-    }
-    if (config_.levelSet.massCorrection) {
-        throw std::runtime_error(
-            "LevelSetModel::beginTimeStep: massCorrection is requested, but "
-            "global Level Set mass correction is not implemented.");
-    }
-}
-
-void LevelSetModel::assembleTransportRHS(const Field& field) {
-    requireInitialized("assembleTransportRHS");
-    Multiphase::AdvectOptions options;
-    options.order = config_.levelSet.advectionOrder;
-    options.wenoEpsilon = config_.levelSet.wenoEpsilon;
-    options.wenoPower = config_.levelSet.wenoPower;
-    options.skipSolidCells = config_.levelSet.advectFluidCellsOnly;
-    options.skipSolidCellsDeclared = true;
-    Multiphase::Advect::assembleRHS(field, state_, options, rhs_);
-}
-
-void LevelSetModel::completeTimeStep(
-        Field& field, double dt) {
-    requireInitialized("completeTimeStep");
-    if (!std::isfinite(dt) || dt <= 0.0) {
-        throw std::runtime_error(
-            "LevelSetModel::completeTimeStep requires finite dt > 0.");
-    }
-    refresh(field);
+    Multiphase::tracePublication("C6-initial-geometry",field,state_);
 }
 
 void LevelSetModel::applyBoundary(const Field& field) {
     requireInitialized("applyBoundary");
     state_.applyBoundaryConditions(field, config_);
+    Multiphase::tracePublication("C1-boundary-phi",field,state_);
 }
 
 void LevelSetModel::refresh(const Field& field) {
     requireInitialized("refresh");
-    state_.applyBoundaryConditions(field, config_);
-    state_.computeGeometry(
-        field, config_.levelSet.geometryGradientTolerance);
+    applyBoundary(field);
+    computeNormals(field);
+    state_.publishNormalStencil();
+    refreshFromNormals(field);
+    state_.publishCurvatureStencil();
+}
+
+void LevelSetModel::computeNormals(const Field& field) {
+    requireInitialized("computeNormals");
+    Multiphase::Geometry::computeNormals(field,state_,
+        {config_.levelSet.geometryGradientTolerance});
+    Multiphase::tracePublication("C6-owned-normal",field,state_);
+}
+
+void LevelSetModel::refreshFromNormals(const Field& field) {
+    requireInitialized("refreshFromNormals");
+    Multiphase::Geometry::computeCurvature(field,state_,
+        {config_.levelSet.geometryGradientTolerance});
     state_.updateMaterialProperties(field, config_);
     if (config_.levelSet.narrowBandWidth > 0.0) {
-        Multiphase::NarrowBand::update(
-            field, state_, config_.levelSet.narrowBandWidth);
+        Multiphase::NarrowBand::update(field,state_,config_.levelSet.narrowBandWidth);
     }
     updateDiagnostics(field, false);
+    Multiphase::tracePublication("C7-refresh-geometry",field,state_);
 }
 
 void LevelSetModel::addSourceTerms(Field& field, Residual& residual) const {
@@ -158,7 +143,7 @@ void LevelSetModel::addSourceTerms(Field& field, Residual& residual) const {
             "LevelSetModel::addSourceTerms received an invalid "
             "surfaceTensionModel.");
     }
-    if (!state_.hasMaterialProperties()) {
+    if (!state_.curvatureStencilReady() || !state_.hasMaterialProperties()) {
         throw std::runtime_error(
             "LevelSetModel::addSourceTerms requires current material "
             "properties before CSF assembly.");
@@ -189,6 +174,7 @@ void LevelSetModel::addSourceTerms(Field& field, Residual& residual) const {
         residual.source(i, j, k, E) +=
             u * force.x + v * force.y + w * force.z;
     });
+    Multiphase::tracePublication("C10-CSF-consumer",field,state_,nullptr,&residual);
 }
 
 FDM::InterfacePressureJump LevelSetModel::pressureJump(
@@ -199,6 +185,8 @@ FDM::InterfacePressureJump LevelSetModel::pressureJump(
             config_.levelSet.surfaceTensionModel) != "ghostfluid") {
         return result;
     }
+    if (!state_.curvatureStencilReady())
+        throw std::runtime_error("LevelSetModel::pressureJump: levelSetCurvature stencil not published for current phi.");
     if (!state_.isCompatibleWith(field)) {
         throw std::runtime_error(
             "LevelSetModel::pressureJump requires a compatible Field.");
@@ -258,13 +246,6 @@ FDM::InterfacePressureJump LevelSetModel::pressureJump(
     return result;
 }
 
-void LevelSetModel::correct(const Field& field, double dt) {
-    if (!std::isfinite(dt) || dt <= 0.0) {
-        throw std::runtime_error(
-            "LevelSetModel::correct requires finite dt > 0.");
-    }
-    refresh(field);
-}
 
 double LevelSetModel::dynamicViscosity(
         const Field& field, int i, int j, int k,
@@ -287,6 +268,27 @@ double LevelSetModel::dynamicViscosity(
     return value;
 }
 
+void LevelSetModel::publishConservation(double phaseIndicator,double flowMass) {
+    if (!std::isfinite(phaseIndicator) || !std::isfinite(flowMass))
+        throw std::runtime_error("LevelSet diagnostics: non-finite global owner integral.");
+    const double phaseMass=phaseIndicator*liquidDensity(config_);
+    if (!diagnosticsPublished_) {
+        diagnostics_.referencePhaseIndicator=phaseIndicator;
+        diagnostics_.referencePhaseMass=phaseMass;
+        diagnostics_.referenceFlowMass=flowMass;
+        diagnosticsPublished_=true;
+    }
+    diagnostics_.currentPhaseIndicator=phaseIndicator;
+    diagnostics_.phaseIndicatorError=phaseIndicator-diagnostics_.referencePhaseIndicator;
+    diagnostics_.phaseIndicatorRelativeError=relativeError(diagnostics_.phaseIndicatorError,diagnostics_.referencePhaseIndicator);
+    diagnostics_.currentPhaseMass=phaseMass;
+    diagnostics_.phaseMassError=phaseMass-diagnostics_.referencePhaseMass;
+    diagnostics_.phaseMassRelativeError=relativeError(diagnostics_.phaseMassError,diagnostics_.referencePhaseMass);
+    diagnostics_.currentFlowMass=flowMass;
+    diagnostics_.flowMassError=flowMass-diagnostics_.referenceFlowMass;
+    diagnostics_.flowMassRelativeError=relativeError(diagnostics_.flowMassError,diagnostics_.referenceFlowMass);
+}
+
 void LevelSetModel::updateDiagnostics(
         const Field& field, bool resetReference) {
     const double rhoLiquid = liquidDensity(config_);
@@ -304,7 +306,18 @@ void LevelSetModel::updateDiagnostics(
                << ", rho=" << rho << ".";
             throw std::runtime_error(os.str());
         }
-        const double volume = cellVolume(field, i, j, k);
+        if (!field.isGlobalDofOwner(i,j,k)) return;
+        double volume = cellVolume(field,i,j,k);
+        const int point[3]={i,j,k};
+        const int sizes[3]={field.NX(),field.NY(),field.NZ()};
+        for (int axis=0;axis<3;++axis) {
+            if (sizes[axis]<=1) continue;
+            const int coordinate=point[axis];
+            if (coordinate!=field.NG() && coordinate!=field.NG()+sizes[axis]-1) continue;
+            int neighbor[3]={i,j,k};
+            neighbor[axis]+=coordinate==field.NG() ? -1 : 1;
+            if (!field.isCommunicationHalo(neighbor[0],neighbor[1],neighbor[2])) volume*=0.5;
+        }
         phaseIndicator += h * volume;
         flowMass += rho * volume;
     });

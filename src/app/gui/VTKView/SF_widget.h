@@ -45,9 +45,9 @@ public:
     /// @return 成功读取并刷新预览时返回 true。
     bool loadFile(const QString& path, QString* error = nullptr);
 
-    /// @brief 将 OpenFOAM blockMeshDict 直接渲染为参数化三维几何预览。
+    /// @brief 将已注册 native mesh generation 直接渲染为参数化三维几何预览。
     /// @details 这是 GeometryModel 的派生 VTK 表示，不读取或生成真实 polyMesh。
-    bool loadBlockMeshGeometry(const QString& path, QString* error = nullptr);
+    bool loadNativeGeometry(const QString& path, QString* error = nullptr);
 
     /// @brief 当前构建是否启用了 VTK 预览。
     bool vtkAvailable() const;

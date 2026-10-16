@@ -1,5 +1,5 @@
 # GUI 控件层静态库。
-# 这里只放“显示控件”：主窗口、布尔开关、GEO/MESH 开关。
+# 这里只放“显示控件”：主窗口、GEO/MESH 开关。
 # Controller、IO、VTKView、Geometry 是其他子目录，各自有自己的 CMakeLists。
 add_library(SF_guiWidgets STATIC
     SF_GUI.cpp
@@ -7,8 +7,6 @@ add_library(SF_guiWidgets STATIC
     SF_mainWindowTree.cpp
     SF_GUI.h
     SF_mainWindow.h
-    SF_switchButton.cpp
-    SF_switchButton.h
     SF_viewModeSwitch.cpp
     SF_viewModeSwitch.h
 )

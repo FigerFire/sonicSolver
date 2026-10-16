@@ -86,3 +86,11 @@ rho.water:
   dimensions: [1, -3, 0, 0, 0, 0, 0]
   storage: primary
   output: true
+
+internalField:
+  type: internalField
+  file: fields/internalField.yaml
+
+boundaries:
+  type: boundary
+  file: fields/boundaries.yaml

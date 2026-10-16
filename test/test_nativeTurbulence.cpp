@@ -1,3 +1,4 @@
+#include "solver/algorithm/transport/SF_transportBinding.h"
 #include "models/turbulence/SF_turbulenceSystemContribution.h"
 #include "models/turbulence/SF_turbulence.h"
 #include "models/physics/fluidStateModel/SF_factory.h"
@@ -132,6 +133,7 @@ int main() {
     SF::FDM::TurbulenceConfig config;config.enabled=true;config.family=SF::FDM::TurbulenceFamily::RAS;
     config.model=SF::FDM::TurbulenceModelKind::kEpsilon;
     SF::Turbulence::Manager manager(config);require(manager.initialize(field),"Manager initialization failed.");
+    SF::SolverAlgorithm::initializeTransport(field,manager);
     SF::State::StateBundle bundle;bundle.patches={&field};manager.registerDistributed(bundle.distributed,0,field);
     SystemContribution contribution;SF::Turbulence::contribute(contribution,{"kEpsilon",{},false});
     const auto system=equations(contribution);ExecutionProgram program;program.root.children=contribution.execution;
@@ -151,7 +153,7 @@ int main() {
         for (int c=0;c<5;++c) before.push_back(field(i,j,k,c));
     }
     SF::Run::OpRegistry operations;CompiledSolvePlan plan;plan.root=compiled.loweredRoot;
-    operations.bind(OpIds::TurbulenceAdvance,"flow.turbulence",[&] { manager.correct(field,0.01); });
+    operations.bind(OpIds::TurbulenceAdvance,"flow.turbulence",[&] { SF::SolverAlgorithm::updateOnceStepTransport(field,manager,0.01); });
     SF::Run::PlanExecutor::execute(plan,operations);
     require(manager.scalarFields().K(1,1,1)!=0.01 && manager.scalarFields().Epsilon(1,1,1)!=0.001
         && manager.scalarFields().EddyMu(1,1,1)>0,"Fused RAS operation did not publish transported/closure arrays.");

@@ -6,7 +6,7 @@
 |---|---|
 | `core/` | Field、StateBundle、强类型配置、运行接口及中立 `core/system` 值类型 |
 | `models/` | 物理源项、湍流、IBM、相模型；向系统提供 contribution，不拥有全局 timestep |
-| `solver/system/` | 三契约的 composition、transformation、state/term compilation、SolvePlanner、ProviderResolver 和验证；尚未通用化任意方程 |
+| `solver/system/` | 四契约的 composition、transformation、state/term compilation、SolvePlanner、ProviderResolver 和验证；尚未通用化任意方程 |
 | `solver/algorithm/` | 现有数值 provider、solver workspace、显式 stage 运算和 Eulerian 相执行；部分专用 numerical helper 仍在迁移 |
 | `solver/equation/`、`discretization/`、`boundary/`、`linearAlgebra/` | 方程装配、空间离散、边界闭合与线性后端 |
 | `infrastructure/` | IO、网格和 MPI/backend 实现 |
@@ -26,3 +26,11 @@
 - `solver/algorithm/SF_singleFluidStepper.cpp`、`eulerian/SF_eulerianStepper.cpp`：绑定已分配的 operation 并调用现有数值 kernel。
 
 模型贡献依赖 `core/system`，不能为了取得中立 IR 反向依赖 `solver/system`。预设在组合阶段展开，运行时不能按预设名选择另一个方程执行入口。single-fluid 调用现有 numerical kernels；Eulerian、湍流和 IBM 专用 backend 保留明确的 migration boundary。并行状态和几何使用 owner→COPY，共享面只有一个 canonical flux，残差/源项/载荷使用 SUM；详见架构文档。
+
+
+2026-10-14：CLI/GUI 共用 native case/template/inspection；typed mesh generation 替代旧 dictionary reader。
+Level-set 的 RHS、advection/reinitialization、pseudo workspace 与 publication 调度位于
+`solver/algorithm/interface/`；模型仍持有原 physical phi/geometry。
+独立温度由 `SF_thermalMethod` 与 `scalar/SF_thermalOperations` 执行，仅实现 Forward Euler/serial
+受限契约。mixture flow/thermo、advanced KKT 与全局兼容 DSL 的真实剩余消费者没有伪开放。
+详见 [本轮报告](../docs/native-architecture-closure.md)。

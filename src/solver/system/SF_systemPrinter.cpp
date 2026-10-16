@@ -658,10 +658,13 @@ std::string describe(const ResolvedSimulationSystem& system) {
     if(!system.solvePlan.compiledProgram.temporalParticipants.empty()) {
         output << "\nSYNCHRONOUS TEMPORAL GROUP\n"
                << "  one dt / recipe / physical clock / terminal Commit\n"
-               << "  snapshots -> all prepare -> all RHS -> all advance -> validate all -> publish -> time.commit\n";
+               << "  snapshots -> all prepare -> coefficient publication -> ordered RHS -> all advance -> validate all -> publish -> final coefficients -> time.commit\n";
         for(const auto& p:system.solvePlan.compiledProgram.temporalParticipants) {
             output<<"  participant "<<p.identity<<" provider="<<p.provider<<"\n    calls:";
             for(const auto& c:p.calls)output<<" "<<c.equation<<"->"<<c.target;
+            for(const auto& r:p.stageRequires)output<<"\n    same-stage requires: "<<r;
+            for(const auto& r:p.stageProvides)output<<"\n    RHS provides: "<<r;
+            if(!p.coefficientPrepare.empty())output<<"\n    coefficients: "<<p.coefficientPrepare<<" / "<<p.coefficientPublish;
             output<<"\n    phases: "<<p.snapshot<<" / "<<p.prepareStage<<" / "<<p.rhs<<" / "<<p.advance<<" / "<<p.publish<<"\n";
         }
     }

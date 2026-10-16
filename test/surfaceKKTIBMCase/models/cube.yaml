@@ -1,5 +1,5 @@
 # cube model module.
 SonicFile:
   object: models
-  type: geometry
+  type: cube
 file: mesh/geometry/cube.stl

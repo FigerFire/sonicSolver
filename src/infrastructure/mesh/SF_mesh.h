@@ -33,7 +33,7 @@ namespace SF {
     class Mesh {
     public:
         /// @brief 进入纯网格生成模式(createMesh=true时调用)。
-        /// @param io IO管理器；createMesh 固定读取 system/blockMeshDict。
+        /// @param io IO管理器；createMesh 消费已经解析并冻结的 native MeshParameters。
         /// @return 生成成功返回true。
         static bool createMesh(
             const CaseConfig& caseConfig,

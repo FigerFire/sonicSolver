@@ -179,24 +179,20 @@ public:
                             ScalarFields& state,
                             const FDM::TurbulenceConfig& config) = 0;
 
-    /// @brief 应用模型自管边界条件。
-    /// @param flow 主流场。
-    /// @param state 湍流标量存储。
-    /// @param config 强类型湍流配置。
-    virtual void applyBoundary(const Field& flow,
-                               ScalarFields& state,
-                               const FDM::TurbulenceConfig& config) = 0;
+    /// @brief 模型floor与immersed wall数学；不执行通用节点BC。
+    virtual void applyPhysicalBoundary(const Field&,ScalarFields&,const FDM::TurbulenceConfig&) = 0;
+    /// @brief 发布代数黏度，不接受dt、不推进输运变量。
+    virtual void refreshClosure(const Field&,ScalarFields&,const FDM::TurbulenceConfig&) = 0;
+    /// @brief 只读当前live数组计算局部闭合，不写回或调用输运离散。
+    virtual FDM::TransportCellClosure onceStepClosure(const Field&,const ScalarFields&,
+        const FDM::TurbulenceConfig&,int,int,int) const {
+        throw std::runtime_error("Selected model has no once-step transport closure.");
+    }
 
-    /// @brief 用当前流场修正湍流状态。
-    /// @param flow 主流场。
-    /// @param state 湍流标量存储。
-    /// @param config 强类型湍流配置。
-    /// @param dt 当前时间步长。
-    virtual void correct(const Field& flow,
-                         ScalarFields& state,
-                         const FDM::TurbulenceConfig& config,
-                         double dt) = 0;
-
+    virtual FDM::TransportStageCoefficients stageCoefficients(const Field&,const FDM::TransportStageSamples&,
+        const FDM::TurbulenceConfig&,int,int,int) const {
+        throw std::runtime_error("Selected turbulence model has no stage closure.");
+    }
     /// @brief 读取当前单元的湍流附加动力粘度。
     /// @param flow 主流场。
     /// @param state 湍流标量存储。
@@ -218,7 +214,7 @@ public:
     /// @param config 湍流配置值对象。
     explicit Manager(FDM::TurbulenceConfig config,const FDM::IImmersedTurbulenceBoundary* wall=nullptr);
 
-    /// @brief 根据配置创建具体模型并初始化内部标量状态。
+    /// @brief 根据配置创建模型及原数组初值；随后由 solver 初始化 BC/闭合。
     /// @param field 主流场。
     /// @return 成功创建有效模型时返回true。
     bool initialize(const Field& field);
@@ -231,14 +227,14 @@ public:
     /// @return 便于日志输出的模型说明。
     std::string description() const;
 
-    /// @brief 应用湍流标量边界条件。
+    /// @brief 应用模型 floors 和壁面关系；通用 BC 由 solver 执行。
     /// @param field 主流场。
     void applyBoundary(const Field& field) override;
 
-    /// @brief 更新湍流状态。
-    /// @param field 主流场。
-    /// @param dt 当前时间步长。
-    void correct(const Field& field, double dt) override;
+    /// @brief 仅刷新原mu_t闭合数组。
+    void refreshClosure(const Field& field) override;
+    /// @brief 原k/epsilon/omega数组及只读cell闭合；调用方不获得第二份storage。
+    FDM::OnceStepTransportData onceStepTransport() override;
 
     /// @brief 查询有效动力粘度。
     /// @param field 主流场。
@@ -250,6 +246,10 @@ public:
     double dynamicViscosity(const Field& field,
                             int i, int j, int k,
                             double laminarMu) const override;
+    std::vector<std::string> stageScalarTargets() const override;
+    FDM::TransportStageCoefficients stageCoefficients(const Field&,const FDM::TransportStageSamples&,int,int,int) const override;
+    FDM::ScalarEquationData stageScalarData(const Field&,const std::string&) const override;
+    void publishStageViscosity(const Field&,const std::vector<double>&) override;
     std::vector<std::string> distributedReadFields() const override;
     std::vector<std::string> distributedWriteFields() const override;
     int distributedHaloDepth() const override;
@@ -263,6 +263,7 @@ public:
     ScalarFields& scalarFields() { return state_; }
 
 private:
+    bool stageClosurePublished_=false;
     const FDM::IImmersedTurbulenceBoundary* wall_;
     FDM::TurbulenceConfig config_;
     ScalarFields state_;
@@ -278,16 +279,6 @@ void applyScalarInitialConditions(const Field& flow,
                                   const std::vector<BCSetting<double>>& settings,
                                   ScalarFields& state,
                                   ScalarSlot slot);
-
-/// @brief 对某个湍流标量应用边界条件。
-/// @param flow 主流场，仅用于边界 sets 定位。
-/// @param settings 对应标量的边界条件列表。
-/// @param state 湍流标量存储。
-/// @param slot 目标标量槽位。
-void applyScalarBoundaryConditions(const Field& flow,
-                                   const std::vector<BCSetting<double>>& settings,
-                                   ScalarFields& state,
-                                   ScalarSlot slot);
 
 /// @brief 保证标量为正值。
 /// @param value 原始值。
@@ -314,18 +305,6 @@ double characteristicFilterWidth(const Field& flow,
                                  int i, int j, int k,
                                  double filterScale);
 
-/// @brief 计算湍流标量扩散项 ∇·((μ_t/σ) ∇φ)。
-/// @param flow 主流场（提供度量系数）。
-/// @param state 湍流标量存储。
-/// @param slot 目标标量槽位。
-/// @param invSigma 1/σ（湍流 Prandtl 数倒数）。
-/// @param i, j, k 单元索引。
-/// @return ∇·((μ_t/σ) ∇φ) 在当前单元的物理散度值。
-double scalarTurbulentDiffusion(const Field& flow,
-                                const ScalarFields& state,
-                                ScalarSlot slot,
-                                double invSigma,
-                                int i, int j, int k);
 
 } // namespace Turbulence
 } // namespace SF

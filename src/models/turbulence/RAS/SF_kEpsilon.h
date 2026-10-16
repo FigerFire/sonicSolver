@@ -32,23 +32,17 @@ public:
                     ScalarFields& state,
                     const FDM::TurbulenceConfig& config) override;
 
-    /// @brief 对 k/epsilon 应用边界条件。
+    /// @brief 对 k/epsilon 应用模型 floors；不执行通用 BC。
     /// @param flow 主流场。
     /// @param state 湍流标量存储。
     /// @param config 强类型湍流配置。
-    void applyBoundary(const Field& flow,
+    void applyPhysicalBoundary(const Field& flow,
                        ScalarFields& state,
                        const FDM::TurbulenceConfig& config) override;
 
-    /// @brief 用局部生产/耗散关系修正 k 与 epsilon。
-    /// @param flow 主流场。
-    /// @param state 湍流标量存储。
-    /// @param config 强类型湍流配置。
-    /// @param dt 当前时间步长。
-    void correct(const Field& flow,
-                 ScalarFields& state,
-                 const FDM::TurbulenceConfig& config,
-                 double dt) override;
+    /// @brief 返回只读cell物理闭合；solver保留原位数值sweep。
+    FDM::TransportCellClosure onceStepClosure(const Field&,const ScalarFields&,
+        const FDM::TurbulenceConfig&,int,int,int) const override;
 
     /// @brief 计算湍流附加动力粘度。
     /// @param flow 主流场。

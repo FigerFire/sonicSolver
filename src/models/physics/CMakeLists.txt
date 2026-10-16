@@ -1,6 +1,5 @@
 add_library(SF_physics STATIC
     equationRuntime/SF_equationCoupling.cpp
-    equationRuntime/SF_interfaceCoupling.cpp
     SF_physics.cpp
     SF_sourceContribution.cpp
     SF_sourceContribution.h
@@ -20,8 +19,6 @@ add_library(SF_physics STATIC
     multiphase/SF_temperatureProperties.cpp
     interfaceModel/levelSet/SF_state.cpp
     interfaceModel/levelSet/SF_hjWeno.cpp
-    interfaceModel/levelSet/SF_advect.cpp
-    interfaceModel/levelSet/SF_reinit.cpp
     interfaceModel/levelSet/SF_geometry.cpp
     interfaceModel/levelSet/SF_heaviside.cpp
     interfaceModel/levelSet/SF_properties.cpp

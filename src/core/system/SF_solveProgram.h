@@ -209,6 +209,9 @@ struct TemporalParticipant {
     std::vector<std::string> targets;
     std::vector<OpId> preparation;
     OpId stepSize, snapshot, prepareStage, rhs, advance, publish;
+    /// @brief 同一 stage RHS 内按 authored HOW 验证的数值资源依赖。
+    std::vector<std::string> stageRequires,stageProvides,coefficientProvides,coefficientStates;
+    OpId coefficientPrepare,coefficientPublish;
 };
 inline OpId instanceOperation(std::string_view type,std::string_view occurrence) {
     return std::string(type)+"@"+std::to_string(occurrence.size())+":"+std::string(occurrence);
@@ -237,6 +240,8 @@ struct CompiledEquationCall {
     std::string equationMethod;
     bool temporalResidual = false;
     bool synchronousStages = false;
+    std::vector<std::string> stageRequires,stageProvides,coefficientProvides,coefficientStates;
+    OpId coefficientPrepare,coefficientPublish;
     /// Provider-owned step setup; temporal recipes own stage topology/math.
     std::vector<OpId> temporalPreparation;
     OpId temporalStepSize;

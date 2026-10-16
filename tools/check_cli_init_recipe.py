@@ -14,7 +14,9 @@ def main() -> int:
     parser.add_argument("--case", required=True)
     args = parser.parse_args()
 
-    with tempfile.TemporaryDirectory(prefix="sonic-cli-recipe-") as directory:
+    temp_root = pathlib.Path(__file__).resolve().parents[1] / "test/t"
+    temp_root.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="sonic-cli-recipe-", dir=temp_root) as directory:
         root = pathlib.Path(directory)
         generated = root / "generated"
         subprocess.run(
@@ -28,8 +30,16 @@ def main() -> int:
         runnable = root / "runnable"
         shutil.copytree(args.case, runnable)
         shutil.copy2(generated_numerics, runnable / "solvers" / "numerics.yaml")
-        for category in ("state", "equations", "algorithms"):
-            shutil.copytree(generated / category, runnable / category, dirs_exist_ok=True)
+        for file in ("state.yaml", "equations.yaml", "equationRegistry.yaml", "execution.yaml"):
+            path = generated / "solvers" / file
+            if "object: solver" not in path.read_text():
+                raise RuntimeError("CLI registry object must match solvers directory")
+            if "  type: " + path.stem + "\n" not in path.read_text():
+                raise RuntimeError("CLI file identity must match its registry key")
+            shutil.copy2(path, runnable / "solvers" / file)
+        for old in ("state", "equations", "algorithms"):
+            if (generated / old).exists():
+                raise RuntimeError("CLI created a separate solver registry directory")
         shutil.copy2(generated / "models/thermoDynamics.yaml", runnable / "models/thermoDynamics.yaml")
         registry=runnable / "models/models.yaml"
         if "type: thermoDynamics" not in registry.read_text():
@@ -45,8 +55,8 @@ def main() -> int:
         algorithm.write_text("SonicFile:\n  object: solver\n  type: algorithm\n"
                              "type: densityBase\nalgorithm: PIMPLE\n"
                              "PIMPLE:\n  outerCorrectors: 1\n")
-        (runnable / "algorithms/algorithms.yaml").write_text(
-            "SonicFile:\n  object: algorithms\n  type: registry\nPIMPLE: {}\n")
+        (runnable / "solvers/execution.yaml").write_text(
+            "SonicFile:\n  object: solver\n  type: execution\nPIMPLE: {}\n")
         # The native algorithm has complete numerical controls, independent of old type labels.
         pressure_controls=pathlib.Path(args.case).parents[1] / "pressure/constantDensityPiso/solvers/algorithm.yaml"
         if pressure_controls.exists():

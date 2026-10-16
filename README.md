@@ -14,6 +14,11 @@ SonicSolver 是科研型结构网格有限差分 CFD 框架。case 组合 WHAT�
 
 目标用法允许“预设”“预设 + add/extend/replace/disable”和“完全自定义方程”最终得到等价的 compiled system。**这是设计验收标准，不是当前 native 输入已支持的语法。** 例如 `incompressible + navierStokes + kEpsilon` 配 `RK2 + SIMPLE` 和 `WENO5 + Central2` 目前不能作为可运行组合照抄；RK2、用户方程编译及该组合的 stage/数值 provider 尚未闭环。现有输入格式请以 `test/` 下的真实 case 为准，使用 `sonicSolver check`、`explain` 核实当前 capability。
 
+2026-10-15：修复相变模型 `enabled:false` 被模型名重新启用的问题。选定 Lee/RPI 的 dt probe、
+PIMPLE outer 与 commit 时序，以及逐相 source 预算已补充短时验收；启用配置的同输入结果保持。
+这不代表 mixture、pressure-dependent phase change 或 production KKT 的缺失能力已经实现。
+逐例配置、失败对照与范围见 [执行与预算报告](docs/source-execution-budget-closure.md)。
+
 ## 构建与检查
 
 需要 CMake、C++17 编译器、Python 3；MPI/HYPRE 路径取决于构建环境。下列配置只构建 CLI：
@@ -34,7 +39,63 @@ python3 tools/check_architecture.py
 mpirun -np 4 ./build/sonicSolver run --steps 20 test/Sod/sodCase
 ```
 
-`sonicSolver help` 列出 `run`、`check`、`explain`、`doctor`、`models`、`recipes` 与 `init` 等入口。当前 native case 使用 `case.yaml` 及 `fields/`、`equations/`、`models/`、`solvers/`、`mesh/` 下的 typed 文件；结果写入 case 的 `result/`。查看真实配置示例可从 [常密度 PISO case](test/pressure/constantDensityPiso) 或 [Sod case](test/Sod/sodCase) 开始。
+`sonicSolver help` 列出 `run`、`check`、`explain`、`doctor`、`models`、`recipes` 与 `init` 等入口。当前 native case 使用 `case.yaml` 及 `fields/`、`models/`、`solvers/`、`mesh/` 下的 typed 文件；结果写入 case 的 `result/`。查看真实配置示例可从 [常密度 PISO case](test/pressure/constantDensityPiso) 或 [Sod case](test/Sod/sodCase) 开始。
+
+2026-10-14 Native IO/执行职责收口：CLI 与 GUI 共享 `Application::createNativeCase`、严格 object
+registry 和 typed inspection。`init DIR compressibleSingleFluid` 生成可重新加载的 native SFM；
+其他没有独立有效模板的 recipes 明确 Unsupported。结构网格参数由 mesh registry 的 generation
+（role: structuredMesh）注册；不再读取 blockMeshDict 或 OpenFOAM case。GUI 可编辑已注册 YAML、
+执行 native serial/MPI、在独立 test/ 副本严格预览一步。Level-set RHS/pseudo workspace 与独立
+thermal FE execution 归 solver；mixture flow/thermo 仍 Unsupported。45 项serial与11项host MPI/HYPRE
+测试、本轮72组短时保护对照见[收口报告](docs/native-architecture-closure.md)，输入格式见
+[Native IO/GUI契约](docs/native-io-gui-contract.md)。历史长时结果保持其原验证范围。
+
+
+Solver 配置统一放在 `solvers/`，包括 STATE、方程选择和执行选择；文件头均为 `SonicFile.object: solver`，由 `solvers/solvers.yaml` 的显式 `type/file` 引用加载：
+
+```text
+solvers/
+  solvers.yaml          # registry
+  runtime.yaml          # runtime
+  numerics.yaml         # numerics
+  algorithm.yaml        # algorithm controls
+  equations.yaml        # equations identity; equationSystem role
+  state.yaml            # state identity; stateRegistry role
+  equationRegistry.yaml # equationRegistry
+  execution.yaml        # execution identity; algorithmRegistry role
+  ILW.yaml              # optional boundary numerics
+```
+
+注册键是子文件身份，注册项 `type` 是内部角色，二者分别校验。例如：
+
+```yaml
+# solvers/solvers.yaml
+SonicFile:
+  object: solver
+  type: registry
+equations:
+  type: equationSystem
+  file: solvers/equations.yaml
+state:
+  type: stateRegistry
+  file: solvers/state.yaml
+equationRegistry:
+  type: equationRegistry
+  file: solvers/equationRegistry.yaml
+```
+
+```yaml
+# solvers/state.yaml
+SonicFile:
+  object: solver
+  type: state
+use: [rho, rhoU, rhoE]
+```
+
+母文件与子文件的 object 必须相同，子文件 type 必须逐字匹配注册键；保留键必须使用对应内部角色。只有注册的文件会读取；fields 中的初值和边界也必须显式注册。未注册文件不会因为存在于目录中而被启用，已注册的缺失文件或错误标题会报错。每个 object 目录只允许一个 registry，子文件引用必须留在该目录。默认方程系统注册键为 `equations`，原来的 `flow` 键已迁移；独立 WHAT 选择表用 `equationRegistry`，两者不合并。
+
+文件目录不表示第二套 solver authority。EOS、thermo、transport、IBM、turbulence 仍由 `models/` 注册；新输入与写回不生成 `state/`、`equations/` 或 `algorithms/` 子目录。
+
 
 ## 当前可运行范围与限制
 
@@ -83,3 +144,9 @@ source "/Volumes/SSD_LPF/sonicSolver/sonicSolver/etc/bashrc"
 
 `postProcessing` 在 macOS 通过 LaunchServices 打开 ParaView，启动成功后立即返回终端，
 ParaView 独立运行。其他平台等待 `paraview` 退出并返回其退出状态；启动失败均报错。
+
+
+Single-fluid `legacyOnceStep` RAS 的数值 sweep、dt 写回、标量扩散和通用边界现由 solver 执行；
+模型保留原数组、物理源项/闭合与壁面数学。HOW 顺序和原位更新方式不变，没有增加对流或
+替换为 stageConservative SST。非均匀 k-ε/SST、no-slip Ghost/SST、LES、stage SST、Eulerian RAS
+及 Sod 的迁移前后短时对照见[中文报告](docs/single-fluid-ras-execution-ownership-migration.md)。

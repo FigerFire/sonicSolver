@@ -17,6 +17,7 @@
 #include <vector>
 
 namespace SF {
+struct MeshParameters;
 
 /// @brief MPI 与网格分区配置。
 struct CaseParallelConfig {
@@ -46,7 +47,7 @@ struct CaseConfig {
     std::string compatFlowLabel;
     /// @brief case 是否显式声明了 pressure-coupling preset（algorithm.yaml）。
     bool pressureCouplingDeclared = false;
-    std::string meshParameterFile;
+    std::shared_ptr<const MeshParameters> meshParameters;
     std::vector<std::string> meshFiles;
     std::vector<std::string> ibmGeometryFiles;
 

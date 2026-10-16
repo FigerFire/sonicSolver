@@ -14,7 +14,6 @@ namespace SF::Turbulence {
 /// @brief 一个守恒标量输运方程的状态和装配系数。
 struct TransportEquationState {
     ScalarField variable;
-    ScalarField previousConserved;
     ScalarField diffusivity;
     ScalarField explicitSource;
     ScalarField implicitSink;
@@ -43,14 +42,8 @@ public:
     bool hasTransportEquations() const;
     std::string description() const;
 
-    /// @brief 应用湍流标量物理边界；halo 由 Solver Algorithm 统一请求。
-    void applyBoundary(
-        const Physics::PhaseSystems::PhaseSystem& phaseSystem);
     /// @brief 从当前相状态计算 mu_t、生产耗散和扩散系数。
     void prepare(
-        const Physics::PhaseSystems::PhaseSystem& phaseSystem);
-    /// @brief 成功完成物理时间步后提交旧时间层。
-    void commit(
         const Physics::PhaseSystems::PhaseSystem& phaseSystem);
     /// @brief 校验所有被求解湍流状态为有限正值。
     void validate(

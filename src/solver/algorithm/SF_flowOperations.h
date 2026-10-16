@@ -36,6 +36,8 @@ public:
     void prepare();
     void bindOperations(Run::OpRegistry&);
     Time::TemporalCallbacks temporalParticipant();
+    /// @brief 同 patch/stage 的只读 canonical flux；owner 仍是本对象的 workspace。
+    StageMassFluxView stageMassFlux(StageFluxIdentity stamp) const;
     void bindStageSources();
     void prepareBoundaryState(const std::vector<Field*>& fields,double time,double dt);
     FDM::ImmersedConstraintResult& correctionResult() { return immersedCorrection_; }

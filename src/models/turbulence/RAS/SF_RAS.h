@@ -26,23 +26,14 @@ protected:
                           const std::vector<BCSetting<double>>& settings,
                           ScalarSlot slot) const;
 
-    /// @brief 对单个湍流标量应用边界条件。
-    /// @param flow 主流场。
-    /// @param state 湍流标量存储。
-    /// @param settings 对应边界条件配置。
-    /// @param slot 目标槽位。
-    void applyScalarBC(const Field& flow,
-                       ScalarFields& state,
-                       const std::vector<BCSetting<double>>& settings,
-                       ScalarSlot slot) const;
-
+public:
     /// @brief 将所有内部流体单元的附加动力粘度刷新到缓存。
     /// @param flow 主流场。
     /// @param state 湍流标量存储。
     /// @param config 强类型湍流配置。
-    void refreshEddyMu(const Field& flow,
+    void refreshClosure(const Field& flow,
                        ScalarFields& state,
-                       const FDM::TurbulenceConfig& config) const;
+                       const FDM::TurbulenceConfig& config) override;
 };
 
 } // namespace RAS

@@ -56,35 +56,16 @@ bool ResultWriter::useMultiBlockOutput() const {
     return parallel_ != nullptr && parallel_->active() && !pieces_.empty();
 }
 
-void ResultWriter::save(const SF::Field& field, int step) {
-    save(field, step, std::vector<ScalarField>{});
-}
-
-void ResultWriter::save(const SF::Field& field,
-                 int step,
-                 const std::vector<ScalarField>& extraScalars) {
-    std::string prefix = outputPrefix(config_.jobName, config_.caseName);
-    std::string base   = formatStepName(prefix, step);
-    std::string fullPath = config_.caseDir + "/" + config_.outputDir + "/" + base + ".vts";
-    writeToDisk(field, fullPath, true, extraScalars);
-    recordAndWritePVD((double)step, base + ".vts");
-}
-
-void ResultWriter::save(const SF::Field& field, int step, int blockId) {
-    save(field, step, blockId, std::vector<ScalarField>{});
-}
-
-void ResultWriter::save(const SF::Field& field,
-                 int step,
-                 int blockId,
-                 const std::vector<ScalarField>& extraScalars) {
-    // HYPRE 会在单进程压力基计算中初始化 MPI。此时网格仍是单块串行网格，
-    // 不应进入遗留的 _block000 输出路径，否则 PVD 时间序列无法注册。
-    if (!parallel_ || parallel_->size() == 1) {
-        save(field, step, extraScalars);
-        return;
+void ResultWriter::save(const SF::Field& field,int step) {saveStep(field,step,double(step),{});}
+void ResultWriter::save(const SF::Field& field,int step,const std::vector<ScalarField>& extra) {saveStep(field,step,double(step),extra);}
+void ResultWriter::save(const SF::Field& field,int step,int block) {saveStep(field,step,double(step),{},block);}
+void ResultWriter::save(const SF::Field& field,int step,int block,const std::vector<ScalarField>& extra) {saveStep(field,step,double(step),extra,block);}
+void ResultWriter::saveStep(const SF::Field& field,int step,double physicalTime,const std::vector<ScalarField>& extraScalars,int blockId) {
+    if(blockId<0 || !parallel_ || parallel_->size()==1) {
+        const std::string base=formatStepName(outputPrefix(config_.jobName,config_.caseName),step);
+        writeToDisk(field,config_.caseDir+"/"+config_.outputDir+"/"+base+".vts",true,extraScalars);
+        recordAndWritePVD(physicalTime,base+".vts");return;
     }
-
     std::string prefix = outputPrefix(config_.jobName, config_.caseName);
     std::string base   = formatStepName(prefix, step);
 
@@ -115,7 +96,7 @@ void ResultWriter::save(const SF::Field& field,
         if (parallel_) parallel_->barrier();
         if (!parallel_ || parallel_->rank() == 0) {
             writeMultiBlockIndex(vtmPath, blockFiles);
-            recordAndWritePVD((double)step, base + ".vtm");
+            recordAndWritePVD(physicalTime, base + ".vtm");
         }
         if (parallel_) parallel_->barrier();
         return;
@@ -201,10 +182,10 @@ void ResultWriter::save(const SF::Field& field,
     writeToDisk(field, oss.str(), true, extraScalars);
 }
 
-void ResultWriter::savePieces(const std::vector<FieldPiece>& pieces, int step) {
-    const std::string prefix = outputPrefix(config_.jobName, config_.caseName);
-    const std::string base = formatStepName(prefix, step);
-    savePartitionPieces(pieces, base, (double)step);
+void ResultWriter::savePieces(const std::vector<FieldPiece>& pieces,int step) {savePiecesStep(pieces,step,double(step));}
+void ResultWriter::savePiecesStep(const std::vector<FieldPiece>& pieces,int step,double physicalTime) {
+    const auto base=formatStepName(outputPrefix(config_.jobName,config_.caseName),step);
+    savePartitionPieces(pieces,base,physicalTime);
 }
 
 void ResultWriter::savePieces(const std::vector<FieldPiece>& pieces, double time) {

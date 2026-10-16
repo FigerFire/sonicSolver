@@ -229,11 +229,20 @@ void validateDataFlow(const StateRegistry& state,const CompiledExecutionProgram&
                     if (!state.contains(use.symbol)) throw std::runtime_error("Unknown STATE use: "+use.symbol);
                     const bool commonStage=at->temporalResidual && !program.temporalParticipants.empty()
                         && std::any_of(program.temporalParticipants.begin(),program.temporalParticipants.end(),[&](const auto& p) {
-                            return std::find(p.targets.begin(),p.targets.end(),use.symbol)!=p.targets.end();
+                            return std::find(p.targets.begin(),p.targets.end(),use.symbol)!=p.targets.end() || std::find(p.coefficientStates.begin(),p.coefficientStates.end(),use.symbol)!=p.coefficientStates.end();
                         });
                     if (use.version==StateVersion::Stage && !stage && !commonStage)
                         throw std::runtime_error("Unsupported stage STATE use outside declared StageLoop: "+node.step.occurrence);
-                    check(check,use.symbol,node.step.occurrence,use.halo);
+                    // Common RHS calls read one prepared epoch. A coefficient
+                    // is explicitly published before all RHS leaves, not between
+                    // source HOW members whose writes commit after the barrier.
+                    if(use.version==StateVersion::Stage && commonStage && !state.at(use.symbol).stageCoefficientResource.empty()) {
+                        const auto& resource=state.at(use.symbol).stageCoefficientResource;
+                        if(use.halo || std::none_of(program.temporalParticipants.begin(),program.temporalParticipants.end(),[&](const auto& p){
+                            return !p.coefficientPrepare.empty() && std::find(p.coefficientProvides.begin(),p.coefficientProvides.end(),resource)!=p.coefficientProvides.end()
+                                && std::find(p.coefficientStates.begin(),p.coefficientStates.end(),use.symbol)!=p.coefficientStates.end();
+                        }))throw std::runtime_error("Missing bound stage coefficient publication: "+use.symbol);
+                    } else check(check,use.symbol,node.step.occurrence,use.halo);
                 }
             }
             for (const auto& effect:effects) {

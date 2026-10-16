@@ -20,6 +20,13 @@ struct PhaseFaceFlux {
                         int i, int j, int k);
 };
 
+/// @brief 一个输运目标的固定物理旧时间层；physical 只借用模型的原数组。
+struct TurbulenceTimeLevel {
+    size_t phaseIndex;
+    const ScalarField* physical;
+    ScalarField previousConserved;
+};
+
 /// @brief 求解器临时量；不进入 Physics::PhaseSystem 的物理主状态。
 struct PhaseSolverWorkspace {
     std::vector<Physics::PhaseSystems::PhaseVectorField> predictedVelocity;
@@ -29,6 +36,8 @@ struct PhaseSolverWorkspace {
     std::vector<ScalarField> previousPhaseEnthalpy;
     std::vector<ScalarField> momentumDiagonal;
     std::vector<PhaseFaceFlux> faceFlux;
+    std::vector<TurbulenceTimeLevel> turbulenceOldTime;
+    ScalarField turbulenceDiagonal;
     ScalarField pressureCorrection;
     ScalarField previousPressure;
 

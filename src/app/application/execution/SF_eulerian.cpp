@@ -53,7 +53,7 @@ int executeEulerianEquations(
                  - solverConfig.pressure.reference.referencePressure)
         > 1.0e-10 * solverConfig.pressure.reference.referencePressure) {
         broadcast("Fatal: ",
-            "phaseProperties initialPressure must equal solverProperties "
+            "phaseProperties initialPressure must equal registered pressure "
             "referencePressure for the shared-pressure reference cell.");
         return -1;
     }
@@ -84,10 +84,10 @@ int executeEulerianEquations(
         values.insert(values.end(), turbulence.begin(), turbulence.end());
         return values;
     };
+    State::StateBundle stateBundle;
     auto saveStep = [&](int outputStep) {
         auto values = scalars();
-        if (parallel.active()) writer.save(field, outputStep, localBlockId, values);
-        else writer.save(field, outputStep, values);
+        writer.saveStep(field,outputStep,stateBundle.time,values,parallel.active()?localBlockId:-1);
     };
     auto saveTime = [&](double outputTime) {
         auto values = scalars();
@@ -104,7 +104,6 @@ int executeEulerianEquations(
         else saveTime(caseConfig.time.startTime);
     }
 
-    State::StateBundle stateBundle;
     stateBundle.patches = {&field};
     stateBundle.time = caseConfig.time.startTime;
     stateBundle.registerConservativeState();

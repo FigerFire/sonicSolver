@@ -1,6 +1,7 @@
 #include "SF_singleFluidBinding.h"
 #include "SF_flowOperations.h"
 #include "scalar/SF_scalarBinding.h"
+#include "scalar/SF_thermalOperations.h"
 #include "solver/system/SF_scalarMethod.h"
 #include "transport/SF_transportBinding.h"
 #include "interface/SF_levelSetBinding.h"
@@ -22,7 +23,10 @@ void bindSingleFluidOperations(Run::OpRegistry& operations,const FDM::SolverConf
         std::vector<Time::TemporalCallbacks> callbacks;
         // Bind all stage views before constructing cross-provider readers.
         if (flow) callbacks.push_back(flow->temporalParticipant());
-        auto scalars=scalarParticipants(numerics,plan,state,services,realized,maximumTimeStep);
+        auto scalars=scalarParticipants(numerics,plan,state,services,realized,maximumTimeStep,
+            flow?std::function<StageMassFluxView(StageFluxIdentity)>([flow](auto stamp){return flow->stageMassFlux(stamp);}):std::function<StageMassFluxView(StageFluxIdentity)>{});
+        auto thermal=thermalParticipants(numerics,plan,state,services,realized);
+        callbacks.insert(callbacks.end(),thermal.begin(),thermal.end());
         if (flow) flow->bindStageSources();
         callbacks.insert(callbacks.end(),scalars.begin(),scalars.end());
         std::vector<Time::TemporalCallbacks> ordered;

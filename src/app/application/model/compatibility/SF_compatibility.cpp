@@ -72,7 +72,7 @@ void CaseAdapter::buildCaseConfig() {
     caseConfig_.caseDir = caseDir_;
     caseConfig_.caseName = caseName_;
     caseConfig_.jobName = jobName_;
-    caseConfig_.meshParameterFile = meshGenerator_;
+    caseConfig_.meshParameters = meshParameters_;
     caseConfig_.meshFiles = meshFiles_;
     caseConfig_.ibmGeometryFiles = ibmGeometryFiles_;
     caseConfig_.multiPhase = multiPhaseConfig_;

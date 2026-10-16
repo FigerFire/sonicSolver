@@ -71,7 +71,9 @@ def main() -> int:
     case = args.case.resolve()
     baseline = json.loads((case / "baseline.json").read_text())
 
-    with tempfile.TemporaryDirectory(prefix="sonic-sod-rusanov-") as directory:
+    test_folder = case.parents[1] / "t"
+    test_folder.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="sonic-sod-rusanov-", dir=test_folder) as directory:
         working_case = Path(directory) / "case"
         shutil.copytree(case, working_case, ignore=shutil.ignore_patterns("result"))
         declare_historical_thermophysical_fixture(working_case)

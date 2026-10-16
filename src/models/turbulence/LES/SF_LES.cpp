@@ -1,5 +1,5 @@
 /// @file SF_LES.cpp
-/// @brief LES 湍流模型选择与推进实现。
+/// @brief LES 湍流模型选择与代数闭合实现。
 
 /*--------------Sonic Fluid-------------------*/
 /*---------copyright by Li Pengfei------------*/
@@ -7,27 +7,26 @@
 
 #include "SF_LES.h"
 
-#include <algorithm>
+#include <cmath>
+#include <stdexcept>
 
 namespace SF {
 namespace Turbulence {
 namespace LES {
 
-void SmagorinskyModel::initialize(const Field& flow,
-                                  ScalarFields& state,
-                                  const FDM::TurbulenceConfig& config) {
-    correct(flow, state, config, 0.0);
+void SmagorinskyModel::initialize(const Field&,
+                                  ScalarFields&,
+                                  const FDM::TurbulenceConfig&) {
 }
 
-void SmagorinskyModel::applyBoundary(const Field&,
+void SmagorinskyModel::applyPhysicalBoundary(const Field&,
                                      ScalarFields&,
                                      const FDM::TurbulenceConfig&) {
 }
 
-void SmagorinskyModel::correct(const Field& flow,
+void SmagorinskyModel::refreshClosure(const Field& flow,
                                ScalarFields& state,
-                               const FDM::TurbulenceConfig& config,
-                               double) {
+                               const FDM::TurbulenceConfig& config) {
     int ng = flow.NG();
     int nx = flow.NX();
     int ny = flow.NY();
@@ -50,7 +49,10 @@ double SmagorinskyModel::eddyDynamicViscosity(const Field& flow,
                                               const ScalarFields&,
                                               const FDM::TurbulenceConfig& config,
                                               int i, int j, int k) const {
-    double rho = std::max(flow(i, j, k, RHO), 1.0e-12);
+    const double rho=flow(i,j,k,RHO);
+    if (!std::isfinite(rho) || rho<=0.0)
+        throw std::runtime_error("Smagorinsky requires finite positive physical density at ("
+            +std::to_string(i)+","+std::to_string(j)+","+std::to_string(k)+"); rho="+std::to_string(rho));
     double delta = characteristicFilterWidth(flow, i, j, k, config.coefficients.filterScale);
     double sMag = strainRateMagnitude(flow, i, j, k);
     double cs = config.coefficients.cSmagorinsky;

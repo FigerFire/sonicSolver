@@ -39,22 +39,16 @@ public:
     virtual const Multiphase::MultiPhaseConfig& config() const noexcept = 0;
     /// @brief 根据网格和 case 初值创建 canonical 界面状态。
     virtual void initialize(const Field& field) = 0;
-    /// @brief 校验并开始一个由主求解器统一调度的物理时间步。
-    virtual void beginTimeStep(double dt) = 0;
-    /// @brief 用当前主流 stage 状态装配 canonical 界面标量 RHS。
-    virtual void assembleTransportRHS(const Field& field) = 0;
-    /// @brief 完成真实时间推进后的重初始化、几何和物性刷新。
-    virtual void completeTimeStep(Field& field, double dt) = 0;
     /// @brief 从 canonical 界面状态刷新几何、物性和诊断缓存。
     virtual void refresh(const Field& field) = 0;
+    /// @brief 分阶段几何计算，调用方负责两阶段之间的 normal stencil 发布。
+    virtual void computeNormals(const Field& field) = 0;
+    virtual void refreshFromNormals(const Field& field) = 0;
     /// @brief 向主方程装配表面张力等界面贡献。
     virtual void addSourceTerms(Field& field, Residual& residual) const = 0;
     /// @brief 返回 canonical 界面标量，供状态注册和输出使用。
     virtual ScalarField& primaryScalar() = 0;
     virtual const ScalarField& primaryScalar() const = 0;
-    /// @brief 返回由统一显式 tableau 消费的 canonical 标量 RHS。
-    virtual std::vector<double>& primaryScalarRHS() = 0;
-    virtual const std::vector<double>& primaryScalarRHS() const = 0;
     /// @brief Level Set 专用状态访问；非 Level Set 模型返回 nullptr。
     virtual Multiphase::LevelSetField* levelSetState() noexcept {
         return nullptr;
@@ -64,6 +58,8 @@ public:
     }
     /// @brief 返回相指标和流动质量诊断。
     virtual const Multiphase::ConservationDiagnostics& conservation() const = 0;
+    /// @brief 接收 runtime 对 owner 物理积分的全局 SUM；只更新诊断快照。
+    virtual void publishConservation(double phaseIndicator,double flowMass) = 0;
 };
 
 /// @brief 按 phaseProperties 创建已配置但尚未初始化的界面模型。

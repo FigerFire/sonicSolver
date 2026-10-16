@@ -15,6 +15,7 @@
 #include <iomanip>
 #include <map>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 
 namespace SF {
@@ -80,7 +81,7 @@ void writePointSetSections(
 void writeCellFaceSections(
         std::ofstream& sfm,
         int nx, int ny, int nz,
-        const std::vector<std::map<std::string, std::vector<int>>>& facePatchSets,
+        const FacePatchRegions& facePatchSets,
         int blockId) {
     const int nxCells = nx - 1;
     const int nyCells = ny - 1;
@@ -141,11 +142,10 @@ void writeCellFaceSections(
         const auto& sets = facePatchSets[(std::size_t)blockId];
         for (const auto& [name, ids] : sets) {
             if (name == "all") continue;
-            std::vector<unsigned char> mask((std::size_t)(nx * ny * nz), 0);
-            for (int id : ids) {
-                if (id >= 0 && id < (int)mask.size()) {
-                    mask[(std::size_t)id] = 1;
-                }
+            std::vector<std::vector<unsigned char>> masks;
+            for(const auto& region:ids) {
+                masks.emplace_back(static_cast<std::size_t>(nx*ny*nz),0);
+                for(int id:region)if(id>=0 && id<int(masks.back().size()))masks.back()[id]=1;
             }
 
             WriterPatch patch;
@@ -153,7 +153,8 @@ void writeCellFaceSections(
             for (int faceId = 0; faceId < (int)faces.size(); ++faceId) {
                 WriterFace& face = faces[(std::size_t)faceId];
                 if (face.neighbour >= 0) continue;
-                if (!faceInSet(face, mask)) continue;
+                if (!std::any_of(masks.begin(),masks.end(),[&](const auto& mask){return faceInSet(face,mask);})) continue;
+                if(face.patch>=0)throw std::runtime_error("Generated mesh face belongs to conflicting explicit patches");
                 face.patch = (int)patches.size();
                 patch.faces.push_back(faceId);
             }
@@ -238,7 +239,7 @@ void writeMultiZoneSFM(
         const std::vector<double>& allZ,
         const std::vector<int>& blockSizes,
         int nGhost,
-        const std::vector<std::map<std::string, std::vector<int>>>& facePatchSets,
+        const FacePatchRegions& facePatchSets,
         const std::vector<std::map<std::string, std::vector<int>>>& pointSets) {
     std::ofstream sfm(filename);
     if (!sfm) {

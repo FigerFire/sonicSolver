@@ -103,11 +103,6 @@ public:
     /// @param field 已加载网格和 set 的流场。
     void initializeAlpha(const Field& field);
 
-    /// @brief 推进 legacy thermal 物理时间步；mixture 由主积分器推进。
-    /// @param field 提供速度和网格度规的主流场。
-    /// @param dt 主求解器本步时间步长。
-    void advance(Field& field, double dt);
-
     /// @brief 应用多相辅助场边界条件。
     /// @param field 主流场, 提供网格 set 和边界定位。
     void applyAuxiliaryBoundaryConditions(const Field& field);
@@ -152,9 +147,6 @@ public:
     /// @brief ITransportModel: 应用多相辅助场边界。
     void applyBoundary(const Field& field) override;
 
-    /// @brief ITransportModel: 更新多相物性缓存；不推进辅助场。
-    void correct(const Field& field, double dt) override;
-
     /// @brief ITransportModel: 返回多相局部动力黏度。
     double dynamicViscosity(const Field& field,
                             int i,
@@ -181,7 +173,6 @@ private:
 
     void updateMixtureProperties(const Field& field);
     void initializeTemperature(const Field& field);
-    void advanceTemperature(Field& field, double dt);
     void updateAlphaFromPhaseMass(const Field& field);
     void updatePhaseMassFromAlpha(const Field& field);
     void applyPhaseChangeClosure(Field& field, double dt);

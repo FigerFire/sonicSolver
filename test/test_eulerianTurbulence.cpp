@@ -43,9 +43,9 @@ int main() {
             std::map<std::string,int> counts;std::vector<std::string> order;SF::Run::OpRegistry operations;
             leaves(resolved.solvePlan.root,[&](const auto& node) {
                 require(!node.legacyAdapter && !node.operation.empty(),"Legacy/unbound native leaf.");
-                const bool tur=node.operation==OpIds::EeTurbulencePrepare || node.operation==OpIds::EeTurbulenceSolve;
+                const bool tur=node.operation.rfind("ee.turbulence.",0)==0;
                 require(node.provider==(tur ? "flow.eulerian-turbulence" : "flow.eulerian-pressure"),"Wrong operation ownership.");
-                if (tur) require(node.equationCalls.size()==selected.size()*(node.operation==OpIds::EeTurbulenceSolve ? 2 : 1),"Lost grouped mathematical provenance.");
+                if (tur) require(node.equationCalls.size()==selected.size()*(node.operation==OpIds::EeTurbulencePrepare ? 1 : 2),"Lost grouped mathematical provenance.");
                 operations.bind(node.operation,node.provider,[&,id=node.operation]{++counts[id];order.push_back(id);});
             });
             SF::Run::PlanExecutor::execute(resolved.solvePlan,operations);
@@ -53,9 +53,20 @@ int main() {
                 && counts[OpIds::EeInterphaseCompute]==2 && counts[OpIds::EeSourcesAssemble]==2
                 && counts[OpIds::EeEnergySolve]==2 && counts[OpIds::EePressureSolve]==8
                 && counts[OpIds::EeStepCommit]==1,"A kernel repeated per phase or escaped its physical-step/outer contract.");
+            if(ras) require(counts[OpIds::EeTurbulenceBoundary]==2 && counts[OpIds::EeTurbulenceValidate]==2
+                && counts[OpIds::EeTurbulenceRefresh]==2,"Provider-local publication fragment is incomplete.");
             for (std::size_t i=0;i<order.size();++i) {
+                if(order[i]==OpIds::EeTurbulenceSolve)
+                    require(order[i+1]==OpIds::EeTurbulenceBoundary && order[i+2]==OpIds::EeTurbulenceValidate
+                        && order[i+3]==OpIds::EeTurbulenceRefresh && order[i+4]==OpIds::EeBoundaryFinal,"Solve tail changed order.");
                 if (order[i]==OpIds::EeTurbulencePrepare) require(i>0 && order[i-1]==OpIds::EeSourcesAssemble && order[i+1]==OpIds::EeSourcesValidate,"Prepare moved relative to sources/predictor.");
                 if (order[i]==OpIds::EeEnergySolve) require(order[i+1]==(ras ? OpIds::EeTurbulenceSolve : OpIds::EeBoundaryFinal),"Transport moved relative to energy/final boundary.");
+            }
+            for(const auto& phases:std::vector<std::vector<std::string>>{{"missing"},{"water","water"}}) {
+                bool failed=false;
+                try {SystemContribution invalid;SF::Turbulence::contribute(invalid,{model,phases,true,request.phaseNames});}
+                catch(const std::exception&) {failed=true;}
+                require(failed,"Unknown/duplicate selected phase accepted.");
             }
             auto parallel=request;parallel.parallel=true;const auto unsupported=build(config,parallel);
             require(unsupported.runtime.report.status==RuntimeStatus::Unsupported,"Serial phase transport advertised MPI capability.");
@@ -64,6 +75,20 @@ int main() {
                 bool failed=false;try {(void)compileExecutionProgram(equations,declared,numerics,builtinProviders());} catch (const std::exception&) {failed=true;}
                 require(failed,"Invalid native Eulerian turbulence inherited a runnable kernel.");
             };
+            auto duplicateCommit=resolved.solvePlan.sourceProgram;
+            duplicateCommit.root.children.push_back(duplicateCommit.root.children.back());
+            reject(duplicateCommit,resolved.executableSystem,resolved.numericalSelection.bindings);
+            auto unsupportedNumerics=resolved.numericalSelection.bindings;
+            for(auto& binding:unsupportedNumerics) if(binding.method=="EulerianTurbulenceClosure") binding.parameters["closureGradientOrder"]=4;
+            reject(resolved.solvePlan.sourceProgram,resolved.executableSystem,unsupportedNumerics);
+            unsupportedNumerics=resolved.numericalSelection.bindings;
+            for(auto& binding:unsupportedNumerics) if(binding.method=="EulerianTurbulenceClosure") binding.parameters["convectionOrder"]=2;
+            reject(resolved.solvePlan.sourceProgram,resolved.executableSystem,unsupportedNumerics);
+            for(const auto& omitted:std::vector<std::string>{"mu_t."+selected[0],"phaseMass."+selected[0]}) {
+                auto missingState=resolved.executableSystem;missingState.state=StateRegistry{};
+                for(auto symbol:resolved.executableSystem.state.symbols()) if(symbol.id!=omitted) missingState.state.add(symbol);
+                reject(resolved.solvePlan.sourceProgram,missingState,resolved.numericalSelection.bindings);
+            }
             auto bad=resolved.solvePlan.sourceProgram;bad.root.children[0].children.erase(bad.root.children[0].children.begin());
             reject(bad,resolved.executableSystem,resolved.numericalSelection.bindings);
             bad=resolved.solvePlan.sourceProgram;std::swap(bad.root.children[0].children[0],bad.root.children[0].children[1]);

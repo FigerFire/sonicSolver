@@ -1,4 +1,0 @@
-SonicFile:
-  object: state
-  type: registry
-use: [rho, rhoU, rhoE]

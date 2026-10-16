@@ -103,6 +103,10 @@ public:
                     "Homogeneous transfer component route does not belong to its phase.");
             }
         }
+        for (int cell=0;cell<ledger.cellCount();++cell) {
+            if (ledger.mechanicalEnergyConversion(cell)!=0.0)
+                throw std::runtime_error("Unsupported homogeneous transfer: interphase kinetic/internal conversion requires independently resolved phase velocities.");
+        }
         for (int cell = 0; cell < ledger.cellCount(); ++cell) {
             for (int phase = 0; phase < phaseCount(); ++phase) {
                 sources(cell, transferComponentByPhase[(size_t)phase]) +=
@@ -115,11 +119,10 @@ public:
                 }
                 sources(cell, momentumIndex(d)) += mixtureMomentum;
             }
-            double mixtureEnergy = ledger.mixtureEnergySource(cell);
-            for (int phase = 0; phase < phaseCount(); ++phase) {
-                mixtureEnergy += ledger.phaseEnergySource(cell, phase);
-            }
-            sources(cell, energyIndex()) += mixtureEnergy;
+            // A shared-velocity total-energy balance sees external heat once.
+            // Phase allocations and paired internal enthalpy are ledger partitions,
+            // not additional external power for this conservative unknown.
+            sources(cell,energyIndex()) += ledger.mixtureEnergySource(cell);
         }
     }
 

@@ -1,3 +1,4 @@
+#include "core/mesh/SF_dimension.h"
 #include "solver/algorithm/transport/SF_transportBinding.h"
 #include "solver/algorithm/SF_singleFluidStepper.h"
 #include <type_traits>
@@ -12,11 +13,15 @@ using namespace SF;
 namespace {
 void require(bool value,const char* message) { if (!value) throw std::runtime_error(message); }
 struct Transport : FDM::ITransportModel {
-    std::vector<std::string> events;
-    std::vector<double> steps;
+    std::vector<std::string> events;std::vector<double> first{1},second{2},mu{0};
+    std::vector<BCSetting<double>> boundary;
     void applyBoundary(const Field&) override { events.push_back("boundary"); }
-    void correct(const Field&,double dt) override { events.push_back("correct");steps.push_back(dt); }
-    double dynamicViscosity(const Field&,int,int,int,double mu) const override { return mu; }
+    void refreshClosure(const Field&) override { events.push_back("refresh"); }
+    double dynamicViscosity(const Field&,int,int,int,double mu) const override {return mu;}
+    FDM::OnceStepTransportData onceStepTransport() override {
+        FDM::OnceStepTransportData d;d.variables={&first,&second};d.eddyViscosity=&mu;d.boundary={&boundary,&boundary};
+        d.cellClosure=[this](const Field&,int,int,int) {events.push_back("cell");FDM::TransportCellClosure c;c.density=1;c.values={first[0],second[0]};c.source={1,0};return c;};return d;
+    }
 };
 struct Interface : FDM::ILevelSetOperations {
     Field& geometry;
@@ -45,7 +50,7 @@ System::SolvePlanNode leaf(const char* operation,const char* provider) {
 int main() {
     static_assert(!std::is_copy_constructible_v<SolverAlgorithm::SingleFluidStepper>);
     static_assert(!std::is_move_constructible_v<SolverAlgorithm::SingleFluidStepper>);
-    Field field;field.setup(1,1,1,0,5);
+    Field field;field.setup(1,1,1,0,5);Math::resetActiveDirections();for(int a=0;a<3;++a)Math::deactivateDirection(a);
     State::StateBundle state;state.patches={&field};state.time=12;state.step=99;state.dt=.1;
     FDM::SolverServices services;Transport model;services.transportModel=&model;
     System::RuntimeRequirements requirements;
@@ -56,9 +61,17 @@ int main() {
     operations.invoke(System::OpIds::TurbulenceAdvance,execution,"flow.turbulence");
     state.dt=.2;
     operations.invoke(System::OpIds::TurbulenceAdvance,execution,"flow.turbulence");
-    require(model.steps==std::vector<double>{.1,.2},"Long-lived binding captured a stale timestep");
-    require(model.events==std::vector<std::string>{"boundary","correct","boundary","boundary","correct","boundary"},"Transport BC/correction order changed");
+    require(std::abs(model.first[0]-1.3)<1e-14,"Long-lived binding captured a stale timestep");
+    require(model.events==std::vector<std::string>{"boundary","cell","boundary","refresh","boundary","boundary","cell","boundary","refresh","boundary"},"Transport BC/correction order changed");
     require(state.time==12 && state.step==99,"Transport gained clock authority");
+    struct ClosureOnly final : Transport {
+        FDM::OnceStepTransportData onceStepTransport() override { return {}; }
+    } closureOnly;
+    auto closureServices=services;closureServices.transportModel=&closureOnly;
+    bool closureRejected=false;
+    try { Run::OpRegistry invalid;SolverAlgorithm::bindTransportOperations(invalid,requirements,state,closureServices); }
+    catch(const std::runtime_error& e) {closureRejected=std::string(e.what()).find("closure-only")!=std::string::npos;}
+    require(closureRejected,"A closure-only service silently replaced numerical transport");
     auto missing=services;missing.transportModel=nullptr;
     bool rejected=false;
     try {Run::OpRegistry invalid;SolverAlgorithm::bindTransportOperations(invalid,requirements,state,missing);}

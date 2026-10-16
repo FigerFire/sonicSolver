@@ -136,6 +136,14 @@ CompiledStateView realizeTarget(const StateRegistry& state,CompiledTarget& targe
 
 void realizeTemporalViews(const StateRegistry& state,CompiledExecutionProgram& program,
         int stages) {
+    for(const auto& participant:program.temporalParticipants)for(const auto& name:participant.coefficientStates) {
+        const auto& symbol=state.at(name);
+        for(int stage=0;stage<stages;++stage) {
+            CompiledStateView view;view.symbol=name;view.kind=StateViewKind::Stage;view.stage=stage;
+            view.storage=symbol.storageKey+".stage-coefficient";view.components=symbol.components;view.componentOffset=symbol.componentOffset;
+            view.location=symbol.location;view.ownership=symbol.ownership;view.owner=StateViewOwner::NumericalProvider;program.stateViews.push_back(std::move(view));
+        }
+    }
     for (const auto& call:program.steps) {
         if (!call.temporalResidual) continue;
         const auto& symbol=state.at(call.source.target.symbol);
@@ -148,7 +156,12 @@ void realizeTemporalViews(const StateRegistry& state,CompiledExecutionProgram& p
         old.storage=call.oldTimeWorkspace;old.componentOffset=symbol.componentOffset;
         old.components=symbol.components;old.location=symbol.location;
         old.ownership=symbol.ownership;old.owner=StateViewOwner::NumericalProvider;
-        if (stages>1) program.stateViews.push_back(old);
+        if (stages>1 || call.synchronousStages) program.stateViews.push_back(old);
+        if (!call.residualWorkspace.empty()) {
+            auto residual=old;residual.kind=StateViewKind::Workspace;
+            residual.storage=call.residualWorkspace;residual.componentOffset=0;
+            program.stateViews.push_back(std::move(residual));
+        }
         for (int stage=0;stage<stages;++stage) {
             auto view=old;view.kind=StateViewKind::Stage;view.stage=stage;
             // The explicit backend publishes each stage into the physical packed

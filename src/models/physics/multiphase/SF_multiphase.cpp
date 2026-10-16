@@ -159,17 +159,6 @@ FDM::Scalar::Bounds temperatureBounds(const MultiPhaseConfig& config) {
     return bounds;
 }
 
-FDM::Scalar::TransportConfig temperatureTransportConfig(
-        const MultiPhaseConfig& config) {
-    FDM::Scalar::TransportConfig transport;
-    transport.name = config.temperature.fieldName;
-    transport.convectionEnabled = config.temperature.transportEnabled;
-    transport.diffusionEnabled = config.temperature.diffusionEnabled;
-    transport.diffusivity = config.temperature.diffusivity;
-    transport.bounds = temperatureBounds(config);
-    return transport;
-}
-
 bool phaseChangeActive(const MultiPhaseConfig& config) {
     return config.phaseChange.enabled
         && normalizeModelType(config.phaseChange.model) != "none";
@@ -333,33 +322,6 @@ void MultiPhaseModel::initializeAlpha(const Field& field) {
     updateConservationDiagnostics(field, true);
 }
 
-void MultiPhaseModel::advance(Field& field, double dt) {
-    if (!enabled()) return;
-    if (!initialized_) {
-        throw std::runtime_error(
-            "MultiPhaseModel::advance called before model initialization.");
-    }
-    if (!std::isfinite(dt) || dt <= 0.0) {
-        throw std::runtime_error(
-            "MultiPhaseModel::advance requires a finite positive dt.");
-    }
-
-    if (isThermal()) {
-        advanceTemperature(field, dt);
-        return;
-    }
-
-    if (isMixture()) {
-        throw std::runtime_error(
-            "MultiPhaseModel::advance cannot update mixture state outside "
-            "the solver integrator; use assembleIntegratedRHS().");
-    }
-
-    throw std::runtime_error(
-        "MultiPhaseModel::advance supports only legacy thermal state; "
-        "mixture is advanced by assembleIntegratedRHS().");
-}
-
 void MultiPhaseModel::updateMixtureProperties(const Field& field) {
     if (!alpha_.isCompatibleWith(field)) {
         throw std::runtime_error(
@@ -422,31 +384,6 @@ void MultiPhaseModel::initializeTemperature(const Field& field) {
     });
     hasTemperature_ = true;
 }
-
-void MultiPhaseModel::advanceTemperature(Field& field, double dt) {
-    if (!config_.temperature.enabled) return;
-    if (!hasTemperature_) initializeTemperature(field);
-
-    if (config_.temperature.transportEnabled
-        || config_.temperature.diffusionEnabled) {
-        auto transport = temperatureTransportConfig(config_);
-        transport.ilwBoundaryEnabled = scalarILWEnabled_;
-        transport.ilwAccuracyOrder = scalarILWAccuracyOrder_;
-        FDM::Scalar::advanceForwardEuler(
-            field,
-            temperature_,
-            config_.temperature.boundaryConditions,
-            transport,
-            dt);
-    } else {
-        FDM::Scalar::applyBoundaryConditions(
-            field, temperature_, config_.temperature.boundaryConditions,
-            scalarILWEnabled_, scalarILWAccuracyOrder_);
-        FDM::Scalar::applyBounds(
-            field, temperature_, temperatureBounds(config_));
-    }
-}
-
 
 void MultiPhaseModel::refreshDerivedFromConserved(const Field& field) {
     if (!hasTemperature_) {
@@ -764,10 +701,6 @@ void MultiPhaseModel::applyBoundary(const Field& field) {
     applyAuxiliaryBoundaryConditions(field);
 }
 
-void MultiPhaseModel::correct(const Field& field, double dt) {
-    (void)dt;
-    updateFlowCoupling(field);
-}
 
 double MultiPhaseModel::dynamicViscosity(const Field& field,
                                          int i,

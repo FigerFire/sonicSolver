@@ -1,4 +1,4 @@
-# Physics model registry.
+# Explicit document registry.
 SonicFile:
   object: models
   type: registry
@@ -8,3 +8,6 @@ turbulence:
 cube:
   type: geometry
   file: models/cube.yaml
+IBM:
+  type: IBM
+  file: models/IBM.yaml

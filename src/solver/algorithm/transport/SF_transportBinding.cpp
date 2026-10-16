@@ -35,11 +35,11 @@ void correctTransport(const std::vector<Field*>& fields, State::StateBundle& sta
     };
     for (Field* field : fields) {
         if (!field) continue;
-        services.transportModel->applyBoundary(*field);
+        applyTransportBoundary(*field,*services.transportModel);
         writeContract("transport boundary update");
         readContract("transport correction stencil");
-        services.transportModel->correct(*field, state.dt);
-        services.transportModel->applyBoundary(*field);
+        updateOnceStepTransport(*field,*services.transportModel,state.dt);
+        applyTransportBoundary(*field,*services.transportModel);
         writeContract("transport corrected state");
         readContract("transport diffusion stencil");
     }
@@ -55,6 +55,8 @@ void bindTransportOperations(Run::OpRegistry& operations,
         if (!services.transportModel)
             throw std::runtime_error("Missing frozen turbulence closure service for provider '"+binding.provider+"', operation '"+binding.operation+"'.");
         if (binding.operation==System::OpIds::TurbulenceAdvance) {
+            if (!services.transportModel->onceStepTransport().variables[0])
+                throw std::runtime_error("flow.turbulence requires its frozen once-step transport backing; closure-only service cannot advance RAS.");
             if (state.patches.size()!=1 || (services.executionRuntime && services.executionRuntime->distributed()))
                 throw std::runtime_error("flow.turbulence requires its bound transport service and one serial patch.");
         } else if (binding.operation!=System::OpIds::TurbulenceClosureRefresh)

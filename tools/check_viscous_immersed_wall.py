@@ -16,7 +16,9 @@ def main():
     parser.add_argument('--solver', required=True, type=Path)
     parser.add_argument('--root', required=True, type=Path)
     args = parser.parse_args()
-    with tempfile.TemporaryDirectory(prefix='sf-viscous-wall-') as temporary:
+    test_folder = args.root.resolve() / 'test/t'
+    test_folder.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix='sf-viscous-wall-', dir=test_folder) as temporary:
         folder = Path(temporary)
         def clone(name, target):
             case = folder / target
@@ -58,7 +60,7 @@ def main():
         ibm.write_text(ibm.read_text().replace('stationaryNoSlipAdiabatic', 'eulerSlip'))
         run(slip, 'turbulence.boundary.immersed')
         ilw = clone('cylinderFlowSSTGhost', 'ilw')
-        path = ilw/'models/ILW.yaml'
+        path = ilw/'solvers/ILW.yaml'
         path.write_text(path.read_text().replace('enabled: false', 'enabled: true').replace('value: 0', 'value: 5'))
         run(ilw, 'ILW')
         parallel = clone('cylinderFlowSSTGhost', 'parallel')

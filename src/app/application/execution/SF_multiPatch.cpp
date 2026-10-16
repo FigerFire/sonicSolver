@@ -22,7 +22,7 @@
 #include "core/interfaces/SF_log.h"
 #include "SF_compositeIBM.h"
 #include "models/physics/equationRuntime/SF_mixtureEquationProvider.h"
-#include "models/physics/equationRuntime/SF_interfaceCoupling.h"
+#include "solver/algorithm/interface/SF_levelSetOperations.h"
 #include "SF_interfaceModel.h"
 #include "models/physics/interfaceModel/levelSet/SF_state.h"
 #include "models/physics/fluidStateModel/SF_factory.h"
@@ -57,8 +57,7 @@ int executeMulti(
         bool initialOutputOnly) {
     using SF::Equation::Coupling::CompositeTransportProvider;
     using SF::Equation::Coupling::MultiPatchMixtureEquationProvider;
-    using SF::Equation::Coupling::MultiPatchInterfaceEquationProvider;
-    using SF::Equation::Coupling::registerInterfaceState;
+    using SF::SolverAlgorithm::MultiPatchInterfaceEquationProvider;
     using SF::Equation::Coupling::registerMixtureState;
     using Output::multiPhaseVTKScalars;
     using Output::interfaceVTKScalars;
@@ -183,8 +182,6 @@ int executeMulti(
                 Physics::InterfaceModels::makeInterfaceModel(
                     caseConfig.multiPhase);
             interfaceModels[blockId]->initialize(field);
-            registerInterfaceState(
-                *interfaceModels[blockId], field, variables[blockId]);
         }
     }
     if (multiPhaseActive) {
@@ -276,18 +273,8 @@ int executeMulti(
                     : std::vector<ResultWriter::ScalarField>{}
         });
     }
-    auto saveStep = [&](int value) { writer.savePieces(pieces, value); };
-    auto saveTime = [&](double value) { writer.savePieces(pieces, value); };
-    if (initialOutputOnly) {
-        if (caseConfig.time.writeByStep) saveStep(0);
-        else saveTime(caseConfig.time.startTime);
-        return 0;
-    }
-    if (caseConfig.writeInitial) {
-        if (caseConfig.time.writeByStep) saveStep(0);
-        else saveTime(caseConfig.time.startTime);
-    }
-
+    auto saveStep = [&](int value) { writer.savePiecesStep(pieces,value,bundle.time); };
+    auto saveTime = [&](double value) { writer.savePiecesStep(pieces,value,bundle.time); };
     bundle.time = caseConfig.time.startTime;
     for (size_t blockId = 0; blockId < mesh.size(); ++blockId) {
         auto& geometry = mesh.block(blockId).field;
@@ -300,17 +287,29 @@ int executeMulti(
         if (interfaceActive) {
             auto* levelSet = interfaceModels[blockId]->levelSetState();
             if (levelSet) {
-                bundle.distributed.add(Equation::Coupling::interfaceNormalView(*interfaceModels[blockId],geometry,(int)blockId));
+                bundle.distributed.add(SolverAlgorithm::interfaceNormalView(*interfaceModels[blockId],geometry,(int)blockId));
                 bundle.distributed.add(State::workspaceView(
                     "levelSetCurvature", (int)blockId, geometry,
                     levelSet->curvatures(), 1));
             }
         }
     }
+    executionRuntime.attachState(bundle);
+    if (interfaceEquations) interfaceEquations->preparePressureCorrection(localFields);
+    if (initialOutputOnly) {
+        if (caseConfig.time.writeByStep) saveStep(0);
+        else saveTime(caseConfig.time.startTime);
+        return 0;
+    }
+    if (caseConfig.writeInitial) {
+        if (caseConfig.time.writeByStep) saveStep(0);
+        else saveTime(caseConfig.time.startTime);
+    }
+
     FDM::IEquationSystemCoupling* equationProvider = nullptr;
     if (equations) equationProvider = equations.get();
     if (interfaceEquations) equationProvider = interfaceEquations.get();
-    return Detail::runConservative(
+    const int status = Detail::runConservative(
         solverConfig,system,plan,bundle,boundaryPipeline,executionRuntime,
         observer,
         ibmAdapter
@@ -320,6 +319,13 @@ int executeMulti(
         saveStep,
         saveTime,
         [&](bool finished) { return coordinator.allRanksAgree(finished); });
+    if (std::getenv("SF_LEVEL_SET_CHECKPOINT_DIR")) {
+        const auto& counts=executionRuntime.statistics();
+        std::cout<<"[SF D1 runtime] haloRequests="<<counts.haloRequests
+            <<" haloExchanges="<<counts.haloExchanges<<" freshHaloReuses="<<counts.freshHaloReuses
+            <<" canonicalFaces="<<counts.canonicalFaceAssemblies<<" globalDofSUM="<<counts.globalDofAssemblies<<'\n';
+    }
+    return status;
 }
 
 } // namespace SF::Application::Execution

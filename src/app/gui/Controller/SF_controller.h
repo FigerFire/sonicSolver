@@ -43,21 +43,8 @@ private:
     void editConfigValue(int documentIndex,
                          int entryIndex,
                          const QString& value);
-    void appendConfigAssignments(int documentIndex,
-                                 const QString& section,
-                                 const QStringList& assignments,
-                                 bool newSection);
-    void addBlockMeshPatch(int documentIndex, const QString& name,
-                           const QString& type);
-    void addBlockMeshPatchFace(int documentIndex, const QString& patchName,
-                               const QString& face);
-    void renameBlockMeshPatch(int documentIndex, const QString& oldName,
-                              const QString& newName);
-    void removeBlockMeshPatch(int documentIndex, const QString& name);
-    void removeConfigEntry(int documentIndex, int entryIndex);
     void saveAll();
     void addOptionalModule(ProjectModuleKind kind);
-    void addField(ProjectModuleKind kind, const QString& fieldName);
     void generateMesh();
     void checkMesh();
     void requestImportSfm();
@@ -83,24 +70,14 @@ private:
     void runTerminalCommand(const QString& command);
 
     QString solverExecutable() const;
-    QString manifestFile(const QString& casePath,
-                         const QString& section) const;
-    QString solverControlFile(const QString& casePath) const;
-    QString parallelControlFile(const QString& casePath) const;
     bool parallelCommand(const QString& configPath,
                          QString* program,
                          QStringList* prefixArguments) const;
     QString preparePreviewCase(QString* error);
-    bool patchPreviewControl(const QString& scPath, QString* error) const;
-    bool patchPreviewMesh(const QString& casePath, QString* error) const;
     QString latestPreviewOutput() const;
     static bool copyDirectory(const QString& source,
                               const QString& destination,
                               QString* error);
-    static bool replaceSectionValue(QStringList* lines,
-                                    const QString& section,
-                                    const QString& key,
-                                    const QString& value);
     void log(const QString& message);
     QString initialDirectory() const;
 

@@ -12,6 +12,7 @@ struct Epoch {
     const System::CompiledTimeRecipe& recipe;
     std::vector<TemporalCallbacks> callbacks;
     std::vector<int> status;
+    std::vector<bool> coefficientsReady;
     int next=0, snapshots=0, publications=0;
     bool active=false, publicationReady=false;
     double time() const {return state.time+recipe.stage(next).abscissa*state.dt;}
@@ -40,6 +41,7 @@ void bindStageGroup(Run::OpRegistry& ops,const System::CompiledSolvePlan& plan,
             throw std::runtime_error("Missing/mismatched temporal participant binding.");
     auto epoch=std::make_shared<Epoch>(Epoch{state,views,numerical.time.recipe,std::move(callbacks),
         std::vector<int>(participants.size())});
+    epoch->coefficientsReady.resize(participants.size());
     ops.bind(System::TemporalOps::Dt,System::TemporalOps::Provider,[epoch,&limit,&numerical] {
         if (epoch->active) throw std::runtime_error("Cannot restart an incomplete temporal step.");
         double dt=std::min(limit,numerical.dt.maxDeltaT);
@@ -65,8 +67,17 @@ void bindStageGroup(Run::OpRegistry& ops,const System::CompiledSolvePlan& plan,
             if (epoch->status[i]!=0) throw std::runtime_error("Duplicate stage preparation.");
             epoch->callbacks[i].prepare(c);epoch->status[i]=1;
         });
+        if(!p.coefficientPrepare.empty()) {
+            if(!epoch->callbacks[i].coefficients)throw std::runtime_error("Missing explicit stage coefficient callback.");
+            ops.bind(p.coefficientPrepare,p.provider,[epoch,i](const Run::ExecutionContext& c) {
+                epoch->context(c);epoch->views.requireStageRead(c.stageIndex,epoch->time());epoch->all(1);
+                if(epoch->coefficientsReady[i])throw std::runtime_error("Duplicate stage coefficient publication.");
+                epoch->callbacks[i].coefficients(c);epoch->coefficientsReady[i]=true;
+            });
+        }
         ops.bind(p.rhs,p.provider,[epoch,i](const Run::ExecutionContext& c) {
             epoch->context(c);epoch->views.requireStageRead(c.stageIndex,epoch->time());
+            if(!std::all_of(epoch->coefficientsReady.begin(),epoch->coefficientsReady.end(),[](bool ready){return ready;}))throw std::runtime_error("RHS before required stage coefficient publication.");
             if (epoch->status[i]!=1) throw std::runtime_error("Duplicate/missing participant RHS.");
             epoch->callbacks[i].rhs(c);epoch->status[i]=2;
         });
@@ -75,6 +86,13 @@ void bindStageGroup(Run::OpRegistry& ops,const System::CompiledSolvePlan& plan,
             if (epoch->status[i]!=2) throw std::runtime_error("Advance before participant RHS or duplicate advance.");
             epoch->callbacks[i].advance(c);epoch->status[i]=3;
         });
+        if(!p.coefficientPublish.empty()) {
+            if(!epoch->callbacks[i].publishCoefficients)throw std::runtime_error("Missing final coefficient publication callback.");
+            ops.bind(p.coefficientPublish,p.provider,[epoch,i] {
+                epoch->all(4);if(epoch->active)throw std::runtime_error("Coefficients published before physical state commit.");
+                epoch->callbacks[i].publishCoefficients();
+            });
+        }
         ops.bind(p.publish,p.provider,[epoch,i] {
             if (!epoch->active || !epoch->publicationReady || epoch->status[i]!=3)
                 throw std::runtime_error("Early/duplicate physical publication.");
@@ -88,6 +106,7 @@ void bindStageGroup(Run::OpRegistry& ops,const System::CompiledSolvePlan& plan,
         epoch->all(epoch->next==0?1:3);
         epoch->views.beginStage(c.stageIndex,c.stageCount,epoch->time());
         std::fill(epoch->status.begin(),epoch->status.end(),0);
+        for(std::size_t i=0;i<epoch->callbacks.size();++i)epoch->coefficientsReady[i]=!bool(epoch->callbacks[i].coefficients);
     });
     ops.bind(System::TemporalOps::Ready,System::TemporalOps::Provider,[epoch] {epoch->all(1);epoch->views.stageReady();});
     ops.bind(System::TemporalOps::RhsReady,System::TemporalOps::Provider,[epoch] {epoch->all(2);epoch->views.rhsReady();});

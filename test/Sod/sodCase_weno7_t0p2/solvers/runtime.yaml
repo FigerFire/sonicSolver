@@ -7,11 +7,12 @@ endTime: 0.2
 CFL: 0.5
 writeControl: runTime
 writeInterval: 0.05
+writeInitial: true
 output:
   jobName: SodWENO7RusanovT0p2
   outputDir: result
 parallel:
   enabled: false
-  nProcs: 5
-  split: auto
+  nProcs: 1
+  split: [1, 1, 1]
   haloTolerance: 1e-05

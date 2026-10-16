@@ -1,3 +1,4 @@
+#include <algorithm>
 #include "app/application/model/SF_model.h"
 #include "infrastructure/io/case/SF_case.h"
 #include "models/physics/fluidStateModel/SF_factory.h"
@@ -86,7 +87,14 @@ void ioChecks(const Model::Description& m) {
     changed=reg;changed.body.begin().value()["file"]="models/missing.yaml";
     Serialization::writeSonicFile(changed,regPath.string());rejectRead("Cannot read");
     changed=reg;changed.body.begin().value()["type"]="wrongType";
-    Serialization::writeSonicFile(changed,regPath.string());rejectRead("expected object");
+    Serialization::writeSonicFile(changed,regPath.string());
+    // Header identity is the registry key, not this independent semantic role.
+    const auto changedRead=CaseIO::read((base/"roundtrip").string());
+    const auto changedObject=std::find_if(changedRead.objects.begin(),changedRead.objects.end(),[&](const auto& object){
+        return object.category=="models" && object.name==reg.body.begin().key();
+    });
+    require(changedObject!=changedRead.objects.end() && changedObject->type=="wrongType", "Registry role did not control typed dispatch");
+    rejected(changedRead,"unregistered type wrongType");
     Serialization::writeSonicFile(reg,regPath.string());
     const auto modelPath=base/"roundtrip"/reg.body.begin().value().at("file").get<std::string>();
     auto doc=Serialization::readSonicFile(modelPath.string());doc.object="solver";

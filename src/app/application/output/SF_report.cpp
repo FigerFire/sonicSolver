@@ -26,14 +26,6 @@ std::string multiPhaseSummary(
     std::ostringstream os;
     os << config.type;
     if (!flowLabel.empty()) os << ", flow=" << flowLabel;
-    if (!config.conservativeLayout.variables.empty()) {
-        os << ", conserved=[";
-        for (size_t i = 0; i < config.conservativeLayout.variables.size(); ++i) {
-            if (i != 0) os << ",";
-            os << config.conservativeLayout.variables[i];
-        }
-        os << "]";
-    }
     return os.str();
 }
 

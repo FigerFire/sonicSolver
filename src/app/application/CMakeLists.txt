@@ -1,4 +1,5 @@
 add_library(SF_caseAdapter STATIC
+    model/compatibility/private/SF_valueParser.cpp
     model/SF_model.cpp
     model/SF_output.cpp
     model/SF_nativeBinding.cpp
@@ -17,6 +18,7 @@ target_link_libraries(SF_caseAdapter PUBLIC SF_io SF_physics SF_solverConfig SF_
 set_lib_output(SF_caseAdapter application)
 
 add_library(SF_application STATIC
+    model/SF_caseTemplate.cpp
     SF_application.cpp
     SF_hostCapabilities.cpp
     SF_environment.cpp

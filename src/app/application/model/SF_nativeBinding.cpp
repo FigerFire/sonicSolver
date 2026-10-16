@@ -1,3 +1,5 @@
+#include "infrastructure/io/mesh/SF_meshParameters.h"
+#include "SF_meshGen.h"
 #include "compatibility/SF_compatibility.h"
 #include "infrastructure/io/mesh/SF_sfmMesh.h"
 #include <filesystem>
@@ -118,15 +120,15 @@ CaseConfig CaseAdapter::build(const Model::Description& m) {
         }
     }
     sections_.numerics=m.numerics;
-    Model::Schema{{{"files","array",true},{"generator","string"}},false}.validate(m.mesh,"mesh/mesh.yaml");
+    Model::Schema{{{"files","array",true},{"generation","object"}},false}.validate(m.mesh,"mesh/mesh.yaml");
     meshFiles_=m.mesh.at("files").get<std::vector<std::string>>();
-    if(m.runtime.value("createMesh",false)) {
-        // Geometry format adapter: blockMeshDict is a mesh format, not the model case format.
-        const std::string generator=m.mesh.at("generator");
-        std::ifstream input((std::filesystem::path(caseDir_)/generator).string());
-        if(!input)throw std::runtime_error("Missing mesh generator: "+generator);
-        meshGenerator_=generator;
+    if (!m.meshGeneration.empty()) {
+        auto parameters=std::make_shared<MeshParameters>();
+        MeshIO::decodeParameters(m.meshGeneration,*parameters);
+        meshParameters_=std::move(parameters);
     }
+    if (m.runtime.value("createMesh",false) && !meshParameters_)
+        throw std::runtime_error("createMesh requires registered mesh/generation.yaml (structuredMesh)");
     using Context=std::function<void(const std::string&,const P&)>;
     Model::FactoryRegistry<Context> factories;
     factories.add("stateRegistry",{{{"use","array",true}},false},
@@ -366,7 +368,7 @@ CaseConfig CaseAdapter::build(const Model::Description& m) {
         throw std::runtime_error("Authored HOW requires an explicit nonempty providerBindings WHICH collection; preset bindings are not silently inherited.");
     auto result=decodeNativeCase();if(!result)throw std::runtime_error("Cannot bind model "+m.name);
     result->caseName=m.name;
-    if(result->createMesh)result->meshParameterFile=meshGenerator_;
+    result->meshParameters=meshParameters_;
     result->modelDescription=std::make_shared<const Model::Description>(m);
     if (!composition.declared) {
         // The old adapter emits an explicit tuple once. Runtime never reads its label.

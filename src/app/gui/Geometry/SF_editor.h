@@ -20,8 +20,8 @@ class GeometryEditor : public QWidget {
 public:
     explicit GeometryEditor(QWidget* parent = nullptr);
 
-    /// @brief 从 blockMeshDict 或兼容几何配置文件加载并显示几何轮廓。
-    /// @param path `blockMeshDict` 或兼容几何配置文件。
+    /// @brief 从 native structuredMesh generation 文档加载并显示几何轮廓。
+    /// @param path native mesh/generation.yaml。
     /// @param error 失败时返回诊断信息。
     /// @return 是否成功解析并显示。
     bool loadFile(const QString& path, QString* error = nullptr);

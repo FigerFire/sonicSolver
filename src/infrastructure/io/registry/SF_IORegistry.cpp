@@ -27,6 +27,10 @@ void IORegistry::addDefaultFile(const std::string& object,const std::string& ent
     const Key key{normalized(object),normalized(entryName)};
     if(!defaultFiles_.emplace(key,file).second)throw std::runtime_error("Duplicate default SonicFile: "+object+"/"+entryName);
 }
+void IORegistry::reserveEntry(const std::string& object,const std::string& name,const std::string& role,bool singleton) {
+    if(!entryRules_.emplace(Key{normalized(object),normalized(name)},EntryRule{name,role,singleton}).second)
+        throw std::runtime_error("Duplicate reserved registry entry: "+object+"/"+name);
+}
 const IOHandler& IORegistry::find(const std::string& object,const std::string& type) const {
     const auto name=normalized(object),kind=normalized(type);
     auto it=handlers_.find({name,kind});
@@ -34,16 +38,27 @@ const IOHandler& IORegistry::find(const std::string& object,const std::string& t
     if(it==handlers_.end())throw std::runtime_error("No IO handler registered for object "+object+" type "+type);
     return *it->second;
 }
-RegistryEntry IORegistry::parseEntry(const std::string& name,const Model::Parameters& value,const std::string& source) const {
+RegistryEntry IORegistry::parseEntry(const std::string& object,const std::string& name,const Model::Parameters& value,const std::string& source) const {
     RegistryEntry result;result.name=name;
     if(value.is_string()) {
         // A scalar is a compact built-in selection: multiPhase: eulerianEulerian.
-        // The registry key remains the module type and therefore still matches the file title.
+        // This is still an explicit registration, never a search for unregistered files.
         result.type=name;result.selection=value.get<std::string>();
-        return result;
+    } else {
+        Model::Schema{{{"type","string",true},{"file","string"},{"selection","string"}},false}.validate(value,source+"/"+name);
+        result.type=value.at("type").get<std::string>();result.file=value.value("file",std::string());result.selection=value.value("selection",std::string());
     }
-    Model::Schema{{{"type","string",true},{"file","string"},{"selection","string"}},false}.validate(value,source+"/"+name);
-    result.type=value.at("type").get<std::string>();result.file=value.value("file",std::string());result.selection=value.value("selection",std::string());
+    if(name.empty() || result.type.empty() || normalized(name)=="registry" || normalized(result.type)=="registry")throw std::runtime_error(source+"/"+name+": invalid/reserved registry identity");
+    const auto rule=entryRules_.find({normalized(object),normalized(name)});
+    if(rule!=entryRules_.end() && rule->second.name!=name)
+        throw std::runtime_error(source+"/"+name+": reserved registry key requires exact identity "+rule->second.name);
+    if(rule!=entryRules_.end() && rule->second.role!=result.type)
+        throw std::runtime_error(source+"/"+name+": reserved registry role requires type "+rule->second.role+", got "+result.type);
+    for(const auto& item:entryRules_)if(item.second.singleton && normalized(item.second.role)==normalized(result.type)) {
+        if(item.second.role!=result.type)throw std::runtime_error(source+"/"+name+": reserved role requires exact type "+item.second.role);
+        if(item.first.object!=normalized(object))throw std::runtime_error(source+"/"+name+": reserved role "+result.type+" belongs to object "+item.first.object);
+        if(item.first.type!=normalized(name))throw std::runtime_error(source+"/"+name+": reserved role "+result.type+" requires registry key "+item.first.type);
+    }
     return result;
 }
 std::string IORegistry::resolveFile(const std::string& object,const RegistryEntry& entry,const std::string& source) const {

@@ -209,7 +209,7 @@ PhaseEquationAssembler::solvePressureCorrection() {
     if (config_.reference.referenceCell < 0
         || config_.reference.referenceCell >= rowMap_.total) {
         throw std::runtime_error(
-            "solverProperties referenceCell is outside pressure matrix.");
+            "Registered pressure referenceCell is outside pressure matrix.");
     }
     LinearAlgebra::SparseSystem matrix;
     matrix.firstRow = rowMap_.first;

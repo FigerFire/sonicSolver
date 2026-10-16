@@ -6,7 +6,7 @@ struct Document {
     Model::Parameters value;
     std::vector<std::string> comments;
 };
-/// @brief SonicFile 的统一文件身份和正文。标题既可写在 SonicFile 节内，也兼容旧的顶层写法。
+/// @brief SonicFile 的统一文件身份和正文；标题必须位于显式 SonicFile 节内。
 struct SonicDocument {
     std::string object, type, source;
     Model::Parameters body;
@@ -19,7 +19,8 @@ void write(const Model::Parameters& value,const std::string& path);
 Document readDocument(const std::string& path);
 /// @brief 写入模型并保留 readDocument 收集的注释。
 void writeDocument(const Document& document,const std::string& path);
-/// @brief 读取带 object/type 标题的 SonicFile。支持紧凑的 condition: value 边界语法。
+/// @brief 读取 object/文件身份标题；注册项内部角色由 IORegistry 独立校验。
+/// 支持紧凑的 condition: value 边界语法。
 SonicDocument readSonicFile(const std::string& path);
 /// @brief 写入可读的 SonicFile；compactConditions 将单键条件写为 patch: condition: value。
 void writeSonicFile(const SonicDocument& document,const std::string& path,

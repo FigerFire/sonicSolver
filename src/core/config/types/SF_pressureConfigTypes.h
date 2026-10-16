@@ -93,7 +93,7 @@ inline void validatePressureCorrectionConfig(const PressureCorrectionConfig& con
         || !std::isfinite(config.absoluteTolerance)
         || config.absoluteTolerance < 0.0) {
         throw std::invalid_argument(
-            "solverProperties has invalid corrector or relaxation controls.");
+            "Registered pressure configuration has invalid corrector or relaxation controls.");
     }
     if (coupling.preset == PressureCouplingPreset::PISO
         && coupling.outerCorrectors != 1)

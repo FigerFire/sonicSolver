@@ -3,7 +3,7 @@
 
 #include "private/SF_casePath.h"
 
-#include "private/SF_foamParser.h"
+
 
 #include <algorithm>
 #include <cctype>

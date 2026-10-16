@@ -21,8 +21,6 @@ void setupEquation(const Field& geometry,
                    TransportEquationState& equation,
                    const std::string& name) {
     equation.variable.setupLike(geometry, name);
-    equation.previousConserved.setupLike(
-        geometry, "previous." + name);
     equation.diffusivity.setupLike(
         geometry, "diffusivity." + name);
     equation.explicitSource.setupLike(
@@ -48,68 +46,6 @@ void applyInitial(const Field& geometry,
         const auto& indices = geometry.getSet(setting.name);
         for (int cell : indices) {
             field.values()[(size_t)cell] = setting.value;
-        }
-    }
-}
-
-void applyBoundary(const Field& geometry,
-                   const std::vector<BCSetting<double>>& settings,
-                   ScalarField& field) {
-    if (settings.empty()) {
-        throw std::runtime_error(
-            "Transported turbulence equation requires boundaryField entries.");
-    }
-    const int ng = geometry.NG();
-    const std::array<int,3> lower{ng, ng, ng};
-    const std::array<int,3> upper{
-        ng + geometry.NX() - 1,
-        ng + geometry.NY() - 1,
-        ng + geometry.NZ() - 1};
-    for (const auto& setting : settings) {
-        const int axis = setting.type == EMPTY
-            ? StructuredMesh::BoundaryGeometry::boundaryAxisForSet(
-                geometry, setting.name)
-            : StructuredMesh::BoundaryGeometry::activeBoundaryAxisForSet(
-                geometry, setting.name);
-        const auto& indices = geometry.getSet(setting.name);
-        for (int cell : indices) {
-            int i = 0, j = 0, k = 0;
-            geometry.getIJK(cell, i, j, k);
-            if (!StructuredMesh::BoundaryGeometry::isPhysicalPoint(
-                    geometry, i, j, k)) {
-                continue;
-            }
-            std::array<int,3> point{i,j,k};
-            const int sign = point[(size_t)axis]
-                == lower[(size_t)axis] ? -1 : 1;
-            std::array<int,3> adjacent = point;
-            adjacent[(size_t)axis] -= sign;
-            const int adjacentCell = geometry.getIdx(
-                adjacent[0], adjacent[1], adjacent[2]);
-            if (setting.type == FIXED_VALUE) {
-                field.values()[(size_t)cell] = setting.value;
-            } else {
-                field.values()[(size_t)cell] =
-                    field.values()[(size_t)adjacentCell];
-            }
-            for (int layer = 1; layer <= ng; ++layer) {
-                std::array<int,3> ghost = point;
-                ghost[(size_t)axis] += sign * layer;
-                const int ghostCell = geometry.getIdx(
-                    ghost[0], ghost[1], ghost[2]);
-                if (setting.type == FIXED_VALUE) {
-                    std::array<int,3> mirror = point;
-                    mirror[(size_t)axis] -= sign * layer;
-                    const int mirrorCell = geometry.getIdx(
-                        mirror[0], mirror[1], mirror[2]);
-                    field.values()[(size_t)ghostCell] =
-                        2.0 * setting.value
-                        - field.values()[(size_t)mirrorCell];
-                } else {
-                    field.values()[(size_t)ghostCell] =
-                        field.values()[(size_t)cell];
-                }
-            }
         }
     }
 }
@@ -189,10 +125,6 @@ void EquationSystem::initialize(
         }
         states_.push_back(std::move(state));
     }
-    applyBoundary(system);
-    prepare(system);
-    commit(system);
-    validate(system, "initialization");
 }
 
 bool EquationSystem::hasTransportEquations() const {
@@ -215,27 +147,6 @@ std::string EquationSystem::description() const {
     return model+" equations";
 }
 
-void EquationSystem::applyBoundary(
-        const Physics::PhaseSystems::PhaseSystem& system) {
-    if (!hasTransportEquations()) return;
-    for (auto& state : states_) {
-        ::SF::Turbulence::applyBoundary(
-            system.geometry(), config_.scalars.kBoundary,
-            state.kineticEnergy.variable);
-        ScalarField* second = nullptr;
-        const std::vector<BCSetting<double>>* secondBoundary = nullptr;
-        if (config_.model == FDM::TurbulenceModelKind::kEpsilon) {
-            second = &state.dissipation.variable;
-            secondBoundary = &config_.scalars.epsilonBoundary;
-        } else {
-            second = &state.specificDissipation.variable;
-            secondBoundary = &config_.scalars.omegaBoundary;
-        }
-        ::SF::Turbulence::applyBoundary(
-            system.geometry(), *secondBoundary, *second);
-    }
-}
-
 void EquationSystem::prepare(
         const Physics::PhaseSystems::PhaseSystem& system) {
     if (!active_ || config_.family == FDM::TurbulenceFamily::DNS) return;
@@ -247,20 +158,6 @@ void EquationSystem::prepare(
             prepareKEpsilon(system,config_,state);
         } else {
             prepareKOmegaSST(system,config_,state);
-        }
-    }
-}
-
-void EquationSystem::commit(
-        const Physics::PhaseSystems::PhaseSystem& system) {
-    for (auto& state : states_) {
-        const auto& mass = system.phases()[state.phaseIndex]
-                               .primary.phaseMass.values();
-        for (auto* equation : transportEquations(state)) {
-            for (size_t cell = 0; cell < mass.size(); ++cell) {
-                equation->previousConserved.values()[cell] =
-                    mass[cell]*equation->variable.values()[cell];
-            }
         }
     }
 }

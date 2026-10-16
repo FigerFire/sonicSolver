@@ -1,4 +1,4 @@
-# Physics model registry.
+# Explicit document registry.
 SonicFile:
   object: models
   type: registry
@@ -8,3 +8,9 @@ turbulence:
 cylinderSurface:
   type: geometry
   file: models/cylinderSurface.yaml
+thermoDynamics:
+  type: thermoDynamics
+  file: models/thermoDynamics.yaml
+IBM:
+  type: IBM
+  file: models/IBM.yaml

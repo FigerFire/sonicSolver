@@ -11,21 +11,19 @@ namespace SF {
 namespace Turbulence {
 namespace DNS {
 
-void DirectNumericalSimulationModel::initialize(const Field& flow,
-                                                ScalarFields& state,
-                                                const FDM::TurbulenceConfig& config) {
-    correct(flow, state, config, 0.0);
+void DirectNumericalSimulationModel::initialize(const Field&,
+                                                ScalarFields&,
+                                                const FDM::TurbulenceConfig&) {
 }
 
-void DirectNumericalSimulationModel::applyBoundary(const Field&,
+void DirectNumericalSimulationModel::applyPhysicalBoundary(const Field&,
                                                    ScalarFields&,
                                                    const FDM::TurbulenceConfig&) {
 }
 
-void DirectNumericalSimulationModel::correct(const Field& flow,
+void DirectNumericalSimulationModel::refreshClosure(const Field& flow,
                                              ScalarFields& state,
-                                             const FDM::TurbulenceConfig&,
-                                             double) {
+                                             const FDM::TurbulenceConfig&) {
     int ng = flow.NG();
     int nx = flow.NX();
     int ny = flow.NY();

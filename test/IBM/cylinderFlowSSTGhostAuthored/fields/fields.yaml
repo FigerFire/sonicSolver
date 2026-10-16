@@ -43,3 +43,11 @@ omega:
   location: point
   storage: primary
   output: true
+
+internalField:
+  type: internalField
+  file: fields/internalField.yaml
+
+boundaries:
+  type: boundary
+  file: fields/boundaries.yaml

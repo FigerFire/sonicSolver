@@ -61,9 +61,9 @@ System::PhysicsTemplateKind resolvePhysics(const CaseConfig& config) {
         return System::PhysicsTemplateKind::OneFluidInterface;
     }
 
-    // legacy mixture-like 及未显式匹配的多相模型，现有 builder 统一落到
-    // mixture-like 输入仍组合 homogeneous-mixture 物理状态族。
-    return System::PhysicsTemplateKind::HomogeneousMixture;
+    if (Physics::Multiphase::isThermalType(type)) return System::PhysicsTemplateKind::SingleFluid;
+    if (Physics::Multiphase::isMixtureType(type)) return System::PhysicsTemplateKind::HomogeneousMixture;
+    throw std::runtime_error("Unknown physical system contribution: "+type);
 }
 
 // @brief 将 turbulence model 枚举转换为字符串，便于在 CaseInspection 中使用。
@@ -130,6 +130,14 @@ CaseInspection inspectCase(const CaseConfig& config) {
                 config.multiPhase.levelSet.surfaceTension,config.multiPhase.levelSet.interfaceThickness});
         systemRequest.modelContributions.push_back(std::move(contribution));
     }
+    if (config.multiPhaseEnabled && config.multiPhase.enabled && Physics::Multiphase::isThermalType(config.multiPhase.type)) {
+        if (config.parallel.enabled || config.meshFiles.size()!=1)
+            throw std::runtime_error("Unsupported thermal transport: serial single patch boundary/halo binding required.");
+        System::SystemContribution contribution;
+        Physics::Multiphase::contributeThermal(contribution,config.multiPhase,
+            config.solver.boundaries.ilwEnabled,config.solver.boundaries.ilwOrder);
+        systemRequest.modelContributions.push_back(std::move(contribution));
+    }
     systemRequest.homogeneousThermodynamics =
         config.multiPhaseEnabled && config.multiPhase.enabled
         && Physics::Multiphase::isHomogeneousType(config.multiPhase.type);
@@ -156,7 +164,7 @@ CaseInspection inspectCase(const CaseConfig& config) {
             config.solver.turbulence.phaseNames,
             systemRequest.templateOrigin
                 == System::PhysicsTemplateKind::EulerianEulerian,
-            systemRequest.phaseNames});
+            systemRequest.phaseNames,config.solver.turbulence.stageConservativeTransport});
         systemRequest.modelContributions.push_back(std::move(contribution));
     }
     systemRequest.modelRequiresDiffusion =

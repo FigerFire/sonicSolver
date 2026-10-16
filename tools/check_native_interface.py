@@ -24,14 +24,16 @@ def main():
     args = parser.parse_args()
     solver, root = Path(args.solver).resolve(), Path(args.root).resolve()
     fixture = root / 'test/interface/nativeLevelSet'
-    with tempfile.TemporaryDirectory(prefix='sonic-interface-', dir=args.work_dir) as temporary:
+    work_dir = Path(args.work_dir) if args.work_dir else root / 'test/t'
+    work_dir.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix='sonic-interface-', dir=work_dir) as temporary:
         workspace = Path(temporary)
         def make_case(name):
             case = workspace / name
             shutil.copytree(root / 'test/Sod/sodCase_weno7', case,
                 ignore=shutil.ignore_patterns('result', '._*'))
             shutil.copyfile(fixture / 'mesh.sfm', case / 'mesh/mesh.sfm')
-            for file, directory in [('multiPhase.yaml', 'models'), ('numerics.yaml', 'solvers'), ('runtime.yaml', 'solvers')]:
+            for file, directory in [('multiPhase.yaml', 'models'), ('thermoDynamics.yaml', 'models'), ('numerics.yaml', 'solvers'), ('runtime.yaml', 'solvers')]:
                 shutil.copyfile(fixture / file, case / directory / file)
             with (case / 'models/models.yaml').open('a') as registry:
                 registry.write('multiPhase:\n  type: multiPhase\n  file: models/multiPhase.yaml\n')
@@ -66,8 +68,8 @@ def main():
                      {'equation': 'levelSetReinitialization', 'method': 'LevelSetReinitialization', 'inputs': ['levelSet.phi0']},
                      {'equation': 'interfaceGeometry', 'method': 'LevelSetGeometry'}]
         def write_how(case, nodes=children, choices=bindings):
-            (case / 'solvers/how.yaml').write_text(json.dumps({'SonicFile': {'object': 'solver', 'type': 'executionProgram'}, 'root': {'kind': 'Sequence', 'children': nodes}}))
-            (case / 'solvers/which.yaml').write_text(json.dumps({'SonicFile': {'object': 'solver', 'type': 'providerBindings'}, 'bindings': choices}))
+            (case / 'solvers/how.yaml').write_text(json.dumps({'SonicFile': {'object': 'solver', 'type': 'how'}, 'root': {'kind': 'Sequence', 'children': nodes}}))
+            (case / 'solvers/which.yaml').write_text(json.dumps({'SonicFile': {'object': 'solver', 'type': 'which'}, 'bindings': choices}))
             with (case / 'solvers/solvers.yaml').open('a') as registry:
                 registry.write('how:\n  type: executionProgram\n  file: solvers/how.yaml\nwhich:\n  type: providerBindings\n  file: solvers/which.yaml\n')
         write_how(authored)

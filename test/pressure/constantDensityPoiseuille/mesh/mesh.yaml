@@ -2,4 +2,6 @@ SonicFile:
   object: mesh
   type: registry
 files: [mesh/mesh.sfm]
-generator: mesh/blockMeshDict
+generation:
+  type: structuredMesh
+  file: mesh/generation.yaml

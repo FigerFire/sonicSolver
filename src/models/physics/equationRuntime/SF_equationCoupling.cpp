@@ -82,8 +82,11 @@ void CompositeTransportProvider::applyBoundary(const Field& field) {
     if (turbulence_) turbulence_->applyBoundary(field);
 }
 
-void CompositeTransportProvider::correct(const Field& field, double dt) {
-    if (turbulence_) turbulence_->correct(field, dt);
+void CompositeTransportProvider::refreshClosure(const Field& field) {
+    if (turbulence_) turbulence_->refreshClosure(field);
+}
+FDM::OnceStepTransportData CompositeTransportProvider::onceStepTransport() {
+    return turbulence_ ? turbulence_->onceStepTransport() : FDM::OnceStepTransportData{};
 }
 
 double CompositeTransportProvider::dynamicViscosity(
@@ -100,6 +103,27 @@ double CompositeTransportProvider::dynamicViscosity(
         mu = turbulence_->dynamicViscosity(field, i, j, k, mu);
     }
     return mu;
+}
+
+std::vector<std::string> CompositeTransportProvider::stageScalarTargets() const {
+    // The current stage coefficient port has one molecular transport binding.
+    // Mixture/interface combinations require their own resolved coefficient port.
+    if(!turbulence_ || multiPhase_ || interfaceModel_)return {};
+    return turbulence_->stageScalarTargets();
+}
+FDM::ITransportModel& CompositeTransportProvider::stageTransport() const {
+    if(stageScalarTargets().empty())throw std::runtime_error("Unsupported composite stage coefficient port: requires one active transport model, no mixture/interface coefficient composition.");
+    return *turbulence_;
+}
+FDM::TransportStageCoefficients CompositeTransportProvider::stageCoefficients(const Field& field,
+        const FDM::TransportStageSamples& samples,int i,int j,int k) const {
+    return stageTransport().stageCoefficients(field,samples,i,j,k);
+}
+FDM::ScalarEquationData CompositeTransportProvider::stageScalarData(const Field& field,const std::string& target) const {
+    return stageTransport().stageScalarData(field,target);
+}
+void CompositeTransportProvider::publishStageViscosity(const Field& field,const std::vector<double>& values) {
+    stageTransport().publishStageViscosity(field,values);
 }
 
 namespace {
@@ -164,19 +188,6 @@ MixtureEquationProvider::MixtureEquationProvider(
         FDM::IExecutionRuntime& runtime)
     : model_(model), rhs_(rhs), variables_(variables), runtime_(runtime) {}
 
-void MixtureEquationProvider::beginStep(Field& field, double dt) {
-    if (!model_.isMixture()) {
-        model_.advance(field, dt);
-        std::vector<Execution::FieldAccess> writes;
-        for (const auto& variable : variables_.variables()) {
-            writes.push_back(Execution::writeOwned(variable.descriptor.name));
-        }
-        if (!writes.empty()) {
-            runtime_.finalize({"multiphase mixture begin-step update", writes});
-        }
-    }
-}
-
 void MixtureEquationProvider::prepareRHS(Field& field, double) {
     model_.applyAuxiliaryBoundaryConditions(field);
     std::vector<Execution::FieldAccess> reads;
@@ -232,34 +243,6 @@ MultiPatchMixtureEquationProvider::MultiPatchMixtureEquationProvider(
     : mesh_(mesh), localPatchIds_(localPatchIds), runtime_(runtime)
     , models_(models), rhs_(rhs), variables_(variables)
     , transports_(transports) {}
-
-void MultiPatchMixtureEquationProvider::beginStep(
-        const std::vector<Field*>&, double dt) {
-    bool modified = false;
-    for (int patchId : localPatchIds_) {
-        auto& model = models_.at((size_t)patchId);
-        if (!model.isMixture()) {
-            model.advance(mesh_.block((size_t)patchId).field, dt);
-            modified = true;
-        }
-    }
-    std::vector<Execution::FieldAccess> writes;
-    for (const auto& registry : variables_) {
-        for (const auto& variable : registry.variables()) {
-            bool duplicate = false;
-            for (const auto& access : writes) {
-                duplicate |= access.field == variable.descriptor.name;
-            }
-            if (!duplicate) {
-                writes.push_back(Execution::writeOwned(
-                    variable.descriptor.name));
-            }
-        }
-    }
-    if (modified && !writes.empty()) {
-        runtime_.finalize({"multi-patch mixture begin-step update", writes});
-    }
-}
 
 void MultiPatchMixtureEquationProvider::prepareRHS(
         const std::vector<Field*>&, double) {

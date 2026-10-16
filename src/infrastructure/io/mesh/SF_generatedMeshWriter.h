@@ -18,6 +18,8 @@
 namespace SF {
 
 namespace GeneratedMeshWriter {
+/// @brief 每块、每 patch 的原始表面点集；不能先 union 后反推 face identity。
+using FacePatchRegions=std::vector<std::map<std::string,std::vector<std::vector<int>>>>;
 
 /// @brief 写出一个结构网格块的VTS文件。
 void writeBlockVTK(const std::string& filename,
@@ -39,7 +41,7 @@ void writeMultiZoneSFM(
     const std::vector<double>& allZ,
     const std::vector<int>& blockSizes,
     int nGhost,
-    const std::vector<std::map<std::string, std::vector<int>>>& facePatchSets,
+    const FacePatchRegions& facePatchSets,
     const std::vector<std::map<std::string, std::vector<int>>>& pointSets);
 
 /// @brief 写出VTM多块索引文件。

@@ -117,7 +117,8 @@ int runConservative(
         const std::string& name,
         std::function<void(int)> saveStep,
         std::function<void(double)> saveTime,
-        std::function<bool(bool)> globallyFinished) {
+        std::function<bool(bool)> globallyFinished,
+        const FDM::ThermalEquationData* thermal) {
     SolverAlgorithm::SingleFluidStepper solver(
         config,system.executableSystem,system.numericalSystem,
         system.solvePlan,system.runtime);
@@ -130,6 +131,7 @@ int runConservative(
     services.immersed = immersed;
     services.transportModel = transport;
     services.equationSystem = equations;
+    services.thermalEquation = thermal;
     services.levelSet = dynamic_cast<FDM::ILevelSetOperations*>(equations);
     solver.bindServices(services);
     return flowLoop(

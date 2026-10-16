@@ -14,7 +14,7 @@
 namespace SF {
 
 // ============================================================
-//  网格参数数据结构 (解析自 OpenFOAM system/blockMeshDict)
+//  网格参数数据结构 (解析自 native mesh/generation.yaml)
 // ============================================================
 
 struct MeshBlock {

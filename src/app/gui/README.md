@@ -1,94 +1,26 @@
-# sonicGui architecture
+# sonicGui native architecture
 
-`sonicGui` 使用分层静态库组织，界面层不直接解析求解器内部状态。
+GUI 只操作已注册的 SonicFile native case；不再创建或读取 OpenFOAM-like 配置、dictionary、Allrun/backend 或 .foam。数学与执行 authority 来自同一个 WHAT/STATE/HOW/WHICH compiler。
 
-- `GUI/`: 窗口、按钮、输入框、配置树和参数编辑控件。
-- `hotKey/`: 单键热键路由，把 G/M/S 映射到几何、网格、求解器模块。
-- `Geometry/`: 单块二维截面的线段/圆弧草图和网格参数生成。
-- `Controller/`: 接收界面信号，协调配置 IO、求解器进程、终端和预览。
-- `ViewerControls/`: 3D 预览工具栏、显示模式枚举和 ParaView 风格鼠标交互。
-- `VTKView/`: VTS、VTU、VTM、STL 的显示、线框切换和相机控制。
-- `IO/`: 工作项目和 OpenFOAM-like 文档模型，负责 `system/` 字典、模块模板与导入文件。
-- `Application/`: `SF_application.*` 管理 Qt 应用生命周期，`main.cpp` 只转发。
-- `Resources/`: 普通 UI 图标、配色素材和资源入口说明；按钮、菜单、树节点图标都从这里走。
-- `Splash/assets/frames/`: 启动动画帧，只放 VTK 压力切片这类启动图，不放普通按钮图标。
+|目录|真实职责|
+|---|---|
+|Application|Qt 应用、Splash、MainWindow/Controller 生命周期|
+|GUI|窗口、注册文档树、原生文本编辑、configured-enabled 菜单、结果任务与进度|
+|IO|CaseProject/ConfigDocument：CaseIO reader/writer、共享 native creation、staged validation/rollback|
+|Controller|typed case validation、QProcess 的 native serial/MPI、一步预览、mesh生成和结果加载|
+|Geometry|点/线/arc草图与native typed参数视图；不读取blockMeshDict|
+|VTKView|SFM/STL/VTS/VTU/VTM/PVD；Pressure/native p默认着色、相机/切片/时间帧|
+|ViewerControls/hotKey|显示控制与输入路由，不解释CFD数学|
+|Resources/Splash|图标、配色、启动动画；无runtime authority|
 
-CFD 求解和正式 case/mesh/result IO 不在 GUI 内重复实现：
+`CaseProject::open` 对空目录调用与 CLI init 相同的 `Application::createNativeCase`。非空旧格式目录拒绝；不覆盖已有项目。默认只有可信 compressibleSingleFluid 模板，其余 recipe Unsupported。文件 object 与目录对应，solvers 目录的 object 是 solver；所有子文件按唯一 registry显式注册，child identity与role双重验证。
 
-- `src/solver/algorithm/`: 显式/隐式、密度基/压力基的求解循环。
-- `src/solver/equation/`: 方程定义和装配。
-- `src/solver/discretization/`、`src/solver/boundary/`: 离散和边界策略。
-- `src/app/application/`: case 装配和运行入口。
-- `src/infrastructure/io/`: 求解器使用的 case、mesh、SFM、VTK/VTM IO。
+导航来自 CaseIO 真正加载的文档、文件头identity和typed对象。未注册文件不加载；模型存在与enabled:false区分。新增optional turbulence/IBM/MRF默认inactive并更新registry。复杂WHAT/HOW采用原生YAML文本编辑，保存先经过生产 reader/ModelLoader/inspection，再原子替换，失败恢复原文件；不使用regex模拟YAML AST，不新增GUI数学注册表。删除模块可编辑registry，保存仍检查其引用与数学依赖。
 
-`src/app/application/SF_application.*` 不包含 `main()`。
-命令行入口位于 `src/app/cli/main.cpp`，GUI 入口位于
-`src/app/gui/Application/main.cpp`。GUI 通过 `QProcess` 启动命令行前端，
-以隔离 MPI 生命周期、计算崩溃和停止操作。
+网格参数从registered generation（structuredMesh role）取得；同一MeshParameters冻结后由MeshGen生成SFM。GUI四角挤出/arc草图有native参数实现，复杂拓扑编辑UI明确Unsupported。SFM导入使用生产mesh loader验证，普通import不覆盖已有payload；显式regeneration可以原子替换并重新注册。STL导入是geometry contribution，不自动打开IBM。原几何/TFI数学保留。
 
-用户只选择工作文件夹。GUI 直接以 OpenFOAM-like case 目录为项目根；
-左侧固定显示几何、网格、求解器、湍流模型、初始条件、边界条件和输出，
-IBM、MRF、Parallel 通过模块菜单或树控件右键新增。
+GUI运行是 `sonicSolver run CASE`，MPI参数来自同一typed runtime，经QProcess隔离。预览复制到仓库test/guiNativePreview，执行 `sonicSolver steps 1 CASE`；正常完成后加载PVD，不能以首个输出事件杀进程来伪造一步。PVD标签为提交后的physical time，step只用于文件编号；任务/进度读取真实runtime与PVD。
 
-## 模块代码索引
+构建：`./sonicMake.sh -gui`。需要自定义树时支持 SONIC_BUILD_DIR、SONIC_CMAKE_GENERATOR、SONIC_JOBS；正常默认流程不变。Qt6/VTK9.6已在本轮构建验证；离屏平台不能创建OpenGL时只算Qt/QProcess验证，host Cocoa窗口截图才证明实际VTK渲染。
 
-`src/app/gui` 下每个目录都按“调度入口 + 实现文件”的方式组织：
-
-- `Application/`
-  - `SF_application.h/.cpp`: GUI 应用生命周期，创建 `QApplication`、Splash、
-    `MainWindow` 和 `GuiController`。
-  - `main.cpp`: GUI 可执行程序入口，只转发到 `Application::run()`。
-- `Controller/`
-  - `SF_controller.h/.cpp`: 界面信号到项目 IO、求解器进程、终端命令、
-    网格生成和结果刷新的协调层。
-- `GUI/`
-  - `SF_GUI.h`: 控件层调度入口。
-  - `SF_GUI.cpp`: 主窗口构造、菜单栏、信号连接、模块图标、全局样式。
-  - `SF_mainWindow.h`: `MainWindow` 对外接口、信号、内部控件成员。
-  - `SF_mainWindowLayout.cpp`: 左右布局、几何/网格视图栈、底部输出/终端/日志。
-  - `SF_mainWindowTree.cpp`: 左侧配置树、模块展开、双击编辑、右键新增、已启用菜单。
-  - `SF_switchButton.*`: true/false 配置项用的开关控件。
-  - `SF_viewModeSwitch.*`: 顶部 GEO/MESH 双态切换控件。
-- `hotKey/`
-  - `SF_hotKey.h/.cpp`: 主窗口热键路由。当前注册 `G` 几何、`M` 网格、
-    `S` 求解器；IBM/MRF 暂不注册。热键命中后复用
-    `MainWindow::focusModule(...)`，效果等同顶部模块下拉选择。
-- `ViewerControls/`
-  - `SF_viewerControls.h`: 3D 预览控制模块调度入口。
-  - `SF_toolbar.h/.cpp`: 类 ParaView 工具栏，包含 Slice、物理数据选择、
-    物理面/网格显示、透视/正交投影和六向视图按钮。
-  - `SF_interactorStyle.h/.cpp`: VTK 鼠标交互样式，左键拖拽旋转、右键拖拽平移。
-  - `SF_viewerTypes.h`: 工具栏和 VTKView 共享的显示模式、视角方向枚举。
-- `Geometry/`
-  - `SF_Geometry.h`: 几何模块调度入口。
-  - `SF_editor.h/.cpp`: 几何草图编辑器，负责点、边、圆弧和草图保存请求。
-- `IO/`
-  - `SF_IO.h`: GUI 配置 IO 调度入口。
-  - `SF_configDocument.h/.cpp`: GUI 配置文档解析、条目修改和写回。
-  - `SF_project.h/.cpp`: OpenFOAM-like 工作目录、模块文件、导入文件和模板管理。
-- `VTKView/`
-  - `SF_VTKView.h`: VTKView 调度入口。
-  - `SF_widget.h/.cpp`: VTS/VTU/VTM/STL 预览、线框开关、结果目录监听和刷新。
-- `Resources/`
-  - `SF_resources.qrc`: GUI 图标资源注册。
-  - `icons/`: 模块菜单、树节点、按钮和窗口图标。
-- `Splash/`
-  - `SF_splash.h/.cpp/.qrc`: 启动画面与启动动画资源。
-
-## 资源与图标
-
-当前 GUI 的模块下拉、左侧树节点和工作目录按钮图标都从
-`Resources/SF_resources.qrc` 打包。你自己画好的图标统一放在
-`Resources/icons/`，然后在 qrc 中通过 alias 暴露为
-`:/sonic/icons/<name>.png` 或 `:/sonic/icons/<name>.svg`。
-
-建议优先使用 SVG。SVG 不依赖 DPI，放大缩小最干净，适合左侧树、工具栏、
-下拉菜单和按钮图标。若必须用 PNG，按显示尺寸准备多倍图：
-
-- 小树节点/菜单图标：16px 显示，准备 `16x16`、`32x32(@2x)`。
-- 工具栏/按钮图标：20-24px 显示，准备 `24x24`、`48x48(@2x)`。
-- 启动画面或大卡片图片：按实际控件像素导出，当前 splash 动画帧单独放在
-  `Splash/assets/frames/`，按 `frame-00.png` 这种顺序名替换即可。
-
-PNG 文件的“DPI 数字”本身不重要，Qt 更关心像素尺寸和设备像素比。macOS
-Retina 屏优先准备 2x 资源；例如界面上显示 24px，就导出 48x48 的高清图。
+测试hooks仅用于仓库test/验收：SONIC_GUI_WORKSPACE、SONIC_GUI_TEST_ACTION（run/preview/mesh）、SONIC_GUI_TEST_RESULT、SONIC_GUI_SCREENSHOT。QtCore工程harness拒绝仓库test/之外的工作目录。实际source/命令/配置/结果与能力边界见[本轮报告](../../../docs/native-architecture-closure.md)及[IO契约](../../../docs/native-io-gui-contract.md)。

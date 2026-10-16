@@ -224,7 +224,7 @@ void MainWindow::buildUi()
 
 void MainWindow::showGeometryView()
 {
-    // Geometry 与 Mesh 共用同一 VTK 上下文；Geometry 只切换为参数化 blockMesh 预览。
+    // Geometry 与 Mesh 共用同一 VTK 上下文；Geometry 只切换为参数化 native mesh 预览。
     // QSignalBlocker 防止 setChecked(false) 反过来再次触发 toggled 信号。
     viewerStack_->setCurrentWidget(vtkView_);
     vtkView_->showGeometryScene();
@@ -297,8 +297,8 @@ void MainWindow::setVisualizationLoadedHandler(
 
 bool MainWindow::loadGeometry(const QString& path, QString* error)
 {
-    // blockMeshDict 是 Geometry 的唯一数据源；VTK 表示只是即时派生预览。
-    return vtkView_->loadBlockMeshGeometry(path, error);
+    // native mesh generation 是 Geometry 的唯一数据源；VTK 表示只是即时派生预览。
+    return vtkView_->loadNativeGeometry(path, error);
 }
 
 void MainWindow::watchResultDirectory(const QString& directory)

@@ -1,4 +1,4 @@
-# Solver registry.
+# Explicit document registry.
 SonicFile:
   object: solver
   type: registry
@@ -11,10 +11,9 @@ numerics:
 algorithm:
   type: algorithm
   file: solvers/algorithm.yaml
-flow:
+equations:
   type: equationSystem
-  file: models/equations.yaml
-IBM:
-  type: IBM
+  file: solvers/equations.yaml
 ILW:
   type: ILW
+  file: solvers/ILW.yaml

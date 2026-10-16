@@ -6,10 +6,10 @@
 /*----------code by LPF, 2026.03.23-----------*/
 
 #include "SF_state.h"
+#include "core/mesh/SF_meshBoundaryGeometry.h"
 #include "SF_geometry.h"
 #include "SF_hjWeno.h"
 #include "SF_properties.h"
-#include "SF_reinit.h"
 
 #include <algorithm>
 #include <cmath>
@@ -41,7 +41,7 @@ int inwardNeighborIdx(const Field& field,
                       int i,
                       int j,
                       int k,
-                      const std::string& setName) {
+                      const std::string& setName, int axis) {
     const int i0 = field.NG();
     const int i1 = field.NG() + field.NX() - 1;
     const int j0 = field.NG();
@@ -58,12 +58,12 @@ int inwardNeighborIdx(const Field& field,
         return field.getIdx(ii, jj, kk);
     };
 
-    if (i <= i0 && field.NX() > 1) return index(i + 1, j, k);
-    if (i >= i1 && field.NX() > 1) return index(i - 1, j, k);
-    if (j <= j0 && field.NY() > 1) return index(i, j + 1, k);
-    if (j >= j1 && field.NY() > 1) return index(i, j - 1, k);
-    if (k <= k0 && field.NZ() > 1) return index(i, j, k + 1);
-    if (k >= k1 && field.NZ() > 1) return index(i, j, k - 1);
+    if (axis == 0 && i <= i0 && field.NX() > 1) return index(i + 1, j, k);
+    if (axis == 0 && i >= i1 && field.NX() > 1) return index(i - 1, j, k);
+    if (axis == 1 && j <= j0 && field.NY() > 1) return index(i, j + 1, k);
+    if (axis == 1 && j >= j1 && field.NY() > 1) return index(i, j - 1, k);
+    if (axis == 2 && k <= k0 && field.NZ() > 1) return index(i, j, k + 1);
+    if (axis == 2 && k >= k1 && field.NZ() > 1) return index(i, j, k - 1);
 
     throw std::runtime_error(
         "LevelSet boundary: ZERO_GRADIENT set '" + setName
@@ -88,7 +88,7 @@ void LevelSetField::setupLike(const Field& field, double fillValue) {
     narrowBandMask_.assign((size_t)totalSize_, 0);
     density_.assign((size_t)totalSize_, 0.0);
     viscosity_.assign((size_t)totalSize_, 0.0);
-    hasMaterialProperties_ = false;
+    invalidateNormalStencil();
 }
 
 bool LevelSetField::isCompatibleWith(const Field& field) const {
@@ -257,7 +257,7 @@ void LevelSetField::initializeFromSets(const Field& field,
     std::fill(narrowBandMask_.begin(), narrowBandMask_.end(), 0);
     std::fill(density_.begin(), density_.end(), 0.0);
     std::fill(viscosity_.begin(), viscosity_.end(), 0.0);
-    hasMaterialProperties_ = false;
+    invalidateNormalStencil();
 }
 
 void LevelSetField::applyBoundaryConditions(
@@ -283,6 +283,10 @@ void LevelSetField::applyBoundaryConditions(
                 condition.value);
         }
 
+        if (it->second.empty()) return;
+        // A tangential partition endpoint is not this set's wall-normal donor direction.
+        const int axis = condition.type == ZERO_GRADIENT
+            ? StructuredMesh::BoundaryGeometry::activeBoundaryAxisForSet(field,condition.setName) : -1;
         for (int idx : it->second) {
             if (idx < 0 || idx >= totalSize_) {
                 throw std::runtime_error(
@@ -291,6 +295,7 @@ void LevelSetField::applyBoundaryConditions(
                     + ".");
             }
 
+            const double previous=phi_.values()[(size_t)idx];
             switch (condition.type) {
             case FIXED_VALUE:
                 phi_.values()[(size_t)idx] = condition.value;
@@ -301,7 +306,7 @@ void LevelSetField::applyBoundaryConditions(
                 int k = 0;
                 field.getIJK(idx, i, j, k);
                 const int donor =
-                    inwardNeighborIdx(field, i, j, k, condition.setName);
+                    inwardNeighborIdx(field, i, j, k, condition.setName, axis);
                 if (donor < 0 || donor >= totalSize_) {
                     throw std::runtime_error(
                         "LevelSet boundary: ZERO_GRADIENT set '"
@@ -319,6 +324,12 @@ void LevelSetField::applyBoundaryConditions(
                     "LevelSet boundary: SYMMETRY for [phi] is not implemented; "
                     "use ZERO_GRADIENT or EMPTY explicitly.");
             }
+            int i,j,k;field.getIJK(idx,i,j,k);
+            const int ng=field.NG();
+            if (previous!=phi_.values()[(size_t)idx]
+                && i>=ng && i<ng+field.NX() && j>=ng && j<ng+field.NY()
+                && k>=ng && k<ng+field.NZ() && field.isGlobalDofOwner(i,j,k))
+                boundaryModified_=true;
         }
     };
 
@@ -333,7 +344,7 @@ void LevelSetField::applyBoundaryConditions(
         applyCondition(condition);
     }
 
-    hasMaterialProperties_ = false;
+    invalidateNormalStencil();
 }
 
 void LevelSetField::computeGeometry(const Field& field,
@@ -341,25 +352,6 @@ void LevelSetField::computeGeometry(const Field& field,
     GeometryOptions options;
     options.gradientTolerance = gradientTolerance;
     Geometry::compute(field, *this, options);
-}
-
-void LevelSetField::reinitialize(const Field& field,
-                                 int pseudoSteps,
-                                 double pseudoTimeStep,
-                                 int order,
-                                 double wenoEpsilon,
-                                 double wenoPower,
-                                 double signSmoothingFactor,
-                                 const std::function<void()>& prepareStage) {
-    ReinitOptions options;
-    options.pseudoSteps = pseudoSteps;
-    options.pseudoTimeStep = pseudoTimeStep;
-    options.order = order;
-    options.wenoEpsilon = wenoEpsilon;
-    options.wenoPower = wenoPower;
-    options.signSmoothingFactor = signSmoothingFactor;
-    options.prepareStage = prepareStage;
-    Reinit::advance(field, *this, options);
 }
 
 void LevelSetField::updateMaterialProperties(const Field& field,

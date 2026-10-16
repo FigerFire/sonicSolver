@@ -70,7 +70,8 @@ int runConservative(
     const std::string& name,
     std::function<void(int)> saveStep,
     std::function<void(double)> saveTime,
-    std::function<bool(bool)> globallyFinished);
+    std::function<bool(bool)> globallyFinished,
+        const FDM::ThermalEquationData* thermal = nullptr);
 
 } // namespace Detail
 

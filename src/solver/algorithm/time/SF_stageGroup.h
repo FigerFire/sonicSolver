@@ -7,9 +7,9 @@ namespace SF::Time {
 /// @brief Stable numerical callbacks; the compiled plan owns phase ordering.
 struct TemporalCallbacks {
     std::string identity;
-    std::function<void()> snapshot, validatePublish, publish;
+    std::function<void()> snapshot, validatePublish, publish, publishCoefficients;
     std::function<double()> stepSize;
-    std::function<void(const Run::ExecutionContext&)> prepare, rhs, advance;
+    std::function<void(const Run::ExecutionContext&)> prepare, coefficients, rhs, advance;
 };
 void bindStageGroup(Run::OpRegistry&,const System::CompiledSolvePlan&,
     const System::CompiledNumericalSystem&,State::StateBundle&,

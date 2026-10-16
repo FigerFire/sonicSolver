@@ -9,6 +9,7 @@
 
 #include <cstddef>
 #include <functional>
+#include <ostream>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -279,6 +280,14 @@ public:
                 + name + "'.");
         }
         return false;
+    }
+
+    /// @brief 只读诊断：输出现有 generation、同步 generation 与可用深度，不推进版本。
+    void writeDiagnosticVersions(std::ostream& output, const std::string& prefix) const {
+        for (const auto& item : fields_)
+            output << prefix << ',' << item.view.name << ',' << item.view.blockId << ','
+                   << item.generation << ',' << item.synchronizedGeneration << ','
+                   << item.availableDepth << '\n';
     }
 
     void markSynchronized(const std::string& name, int depth) {

@@ -39,6 +39,15 @@ public:
     /// @brief 按 0/phi 中的 boundaryField 条件更新 Level Set 边界值。
     /// @param field 已加载网格和 set 的流场。
     /// @param config 多相配置。
+    /// @brief 消费边界真实 owner 写入标记，供现有 runtime 失效 halo。
+    /// @brief 曲率只能消费由同一次 phi 刷新产生并发布的 normal stencil。
+    void invalidateNormalStencil() { normalStencilReady_=false; curvatureStencilReady_=false; hasMaterialProperties_=false; }
+    void publishNormalStencil() { normalStencilReady_=true; }
+    bool normalStencilReady() const { return normalStencilReady_; }
+    void publishCurvatureStencil() { curvatureStencilReady_=true; }
+    bool curvatureStencilReady() const { return curvatureStencilReady_; }
+    bool takeBoundaryModification() { const bool value=boundaryModified_; boundaryModified_=false; return value; }
+
     void applyBoundaryConditions(const Field& field,
                                  const MultiPhaseConfig& config);
 
@@ -54,14 +63,7 @@ public:
     /// @param order WENO阶数, 仅支持3/5/7。
     /// @param wenoEpsilon,wenoPower HJ-WENO 非线性权重参数。
     /// @param signSmoothingFactor 符号函数平滑宽度相对网格尺度倍率。
-    void reinitialize(const Field& field,
-                      int pseudoSteps,
-                      double pseudoTimeStep,
-                      int order,
-                      double wenoEpsilon,
-                      double wenoPower,
-                      double signSmoothingFactor,
-                      const std::function<void()>& prepareStage = {});
+
 
     /// @brief 根据phi更新相态密度和黏度缓存。
     /// @param field 参考网格。
@@ -170,6 +172,9 @@ private:
     std::vector<unsigned char> narrowBandMask_;
     std::vector<double> density_;
     std::vector<double> viscosity_;
+    bool normalStencilReady_ = false;
+    bool curvatureStencilReady_ = false;
+    bool boundaryModified_ = false;
     bool hasMaterialProperties_ = false;
 };
 

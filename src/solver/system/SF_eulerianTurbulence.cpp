@@ -62,6 +62,13 @@ public:
             const NumericalBinding& binding) const override {
         if (!hasConstraint(system,"C_SHARED_PRESSURE") || !hasConstraint(system,"C_VOLUME_FRACTION")
             || binding.inputs.empty()) throw std::runtime_error("Eulerian turbulence requires explicit phase/model grouping and shared-pressure state.");
+        for(const auto& parameter:binding.parameters) {
+            const double supported=parameter.first=="closureGradientOrder" || parameter.first=="diffusionOrder" ? 2.0
+                : parameter.first=="convectionOrder" ? 1.0 : -1.0;
+            if(supported<0 || parameter.second!=supported)
+                throw std::runtime_error("Unsupported Eulerian turbulence numerical selection: "+parameter.first
+                    +"; closure gradient/diffusion require Central2, convection requires Upwind1.");
+        }
         CompiledEulerianTurbulenceContract contract;
         contract.equation=step.equation;contract.target=step.target;contract.method=std::string(id());
         contract.transport=transport_;
@@ -151,9 +158,12 @@ public:
         }
         add(transport_ ? OpIds::EeTurbulenceSolve : OpIds::EeTurbulencePrepare,
             "flow.eulerian-turbulence",OperationCapability::EulerianTurbulenceExecution);
+        if(transport_) for(const char* operation:{OpIds::EeTurbulenceBoundary,OpIds::EeTurbulenceValidate,OpIds::EeTurbulenceRefresh})
+            add(operation,"flow.eulerian-turbulence",OperationCapability::EulerianTurbulenceExecution);
         result.temporalMethod=transport_ ? "phase-mass weighted implicit transport; fixed physical old time" : "pre-predictor algebraic closure refresh";
         result.requirements={"complete ordered selected phase/model group","existing Upwind/diffusion/matrix and canonical mass flux","pre-predictor model coefficients stay lagged through transport; post-solve prepare refreshes caches",
-            "existing boundary/prepare/commit semantics"};
+            "closure gradient: Central2 (fixed provider capability); convection: Upwind1; diffusion: Central2",
+            "solver-owned old-time snapshot; solve/publication -> node boundary -> validation -> closure refresh -> physical commit"};
         result.providerContract=std::make_shared<const CompiledEulerianTurbulenceContract>(std::move(contract));
         return result;
     }

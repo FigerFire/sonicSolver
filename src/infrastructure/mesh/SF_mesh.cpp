@@ -106,15 +106,8 @@ namespace   SF{
     bool Mesh::createMesh(
         const CaseConfig& caseConfig,
         const MeshRuntimeConfig& config) {
-        const std::string paramPath = caseConfig.caseDir
-            + "/" + caseConfig.meshParameterFile;
-        SF::broadcast("createMesh mode: ", paramPath);
-
-        SF::MeshParameters params;
-        if (!SF::MeshIO::readParameters(paramPath, params)) {
-            SF::broadcast("Fatal: ", "Failed to parse mesh parameters.");
-            return false;
-        }
+        if (!caseConfig.meshParameters) throw std::runtime_error("createMesh requires frozen native mesh parameters");
+        const auto& params=*caseConfig.meshParameters;
         if (!validateGhostLayerCount(
                 params.nGhost, "Mesh parameters", config)) {
             return false;
@@ -126,7 +119,7 @@ namespace   SF{
 
         int nBlocks = (int)blockSizes.size() / 3;
         std::string targetMesh = caseConfig.meshFiles.empty()
-                               ? "constant/mesh.sfm"
+                               ? "mesh/mesh.sfm"
                                : caseConfig.meshFiles.front();
         targetMesh = meshOutputBaseFromTarget(targetMesh);
         std::string base = isDirectPath(targetMesh) ? targetMesh

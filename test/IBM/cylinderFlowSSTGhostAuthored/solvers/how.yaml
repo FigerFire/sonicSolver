@@ -1,7 +1,7 @@
 {
   "SonicFile": {
     "object": "solver",
-    "type": "executionProgram"
+    "type": "how"
   },
   "root": {
     "kind": "Sequence",

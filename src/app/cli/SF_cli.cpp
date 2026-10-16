@@ -1,3 +1,4 @@
+#include "app/application/model/SF_caseTemplate.h"
 /// @file SF_cli.cpp
 /// @brief 命令行解析；case 规则和系统解析均委托给 application。
 
@@ -332,78 +333,6 @@ int doctorCase(const std::string& path) {
     return 0;
 }
 
-void writeRecipe(const std::filesystem::path& directory,
-                 const std::string& recipe) {
-    const std::array<const char*, 5> recipes{
-        "compressibleSingleFluid", "compressibleFixedImmersedBody",
-        "compressibleMovingBody", "selfPropelledBody",
-        "levelSetSurfaceTension"};
-    bool known = false;
-    for (const char* value : recipes) known = known || recipe == value;
-    if (!known) throw std::runtime_error("unknown recipe '" + recipe + "'");
-    if (std::filesystem::exists(directory)
-        && !std::filesystem::is_empty(directory)) {
-        throw std::runtime_error("refusing to initialize non-empty directory: "
-                                 + directory.string());
-    }
-    std::filesystem::create_directories(directory / "solvers");
-    std::filesystem::create_directories(directory / "models");
-    std::filesystem::create_directories(directory / "mesh");
-    std::filesystem::create_directories(directory / "fields");
-    auto write = [&](const std::filesystem::path& path, const std::string& body) {
-        std::ofstream output(path);
-        if (!output) throw std::runtime_error("cannot write " + path.string());
-        output << body;
-    };
-    write(directory / "case.yaml",
-          "SonicFile:\n  object: case\n  type: registry\n"
-          "formatVersion: 1\nname: " + directory.filename().string() + "\n");
-    write(directory / "solvers/runtime.yaml",
-          "SonicFile:\n  object: solver\n  type: runtime\n"
-          "startTime: 0\nendTime: 1\nendStep: 100\nCFL: 0.5\n"
-          "writeControl: timeStep\nwriteInterval: 10\ncreateMesh: false\n"
-          "output:\n  jobName: case\n  outputDir: result\n");
-    write(directory / "solvers/numerics.yaml",
-          "SonicFile:\n  object: solver\n  type: numerics\n"
-          "time:\n  default: forwardEuler\nterms:\n"
-          "  convection: teno5Steger\n");
-    write(directory / "solvers/algorithm.yaml",
-          "SonicFile:\n  object: solver\n  type: algorithm\n");
-    write(directory / "solvers/solvers.yaml",
-          "SonicFile:\n  object: solver\n  type: registry\n"
-          "runtime:\n  type: runtime\n  file: solvers/runtime.yaml\n"
-          "numerics:\n  type: numerics\n  file: solvers/numerics.yaml\n"
-          "algorithm:\n  type: algorithm\n  file: solvers/algorithm.yaml\n");
-    for (const auto* category:{"state","equations","algorithms"})
-        std::filesystem::create_directories(directory/category);
-    write(directory/"state/state.yaml",
-          "SonicFile:\n  object: state\n  type: registry\nuse: [rho, rhoU, rhoE]\n");
-    write(directory/"equations/equations.yaml",
-          "SonicFile:\n  object: equations\n  type: registry\nuse: [Continuity, Momentum, Energy]\n");
-    write(directory/"algorithms/algorithms.yaml",
-          "SonicFile:\n  object: algorithms\n  type: registry\nExplicit: {}\n");
-    write(directory / "models/models.yaml",
-          "SonicFile:\n  object: models\n  type: registry\n"
-          "thermoDynamics:\n  type: thermoDynamics\n  file: models/thermoDynamics.yaml\n");
-    write(directory/"models/thermoDynamics.yaml",
-          "SonicFile:\n  object: models\n  type: thermoDynamics\n"
-          "thermoDynamics:\n  equationOfState: perfectGas\n  thermo: hConst\n  transport: const\n"
-          "properties:\n  equationOfState:\n    gamma: 1.4\n    R: 287.05\n"
-          "  transport:\n    mu: 0.0\n    Pr: 0.72\n");
-    write(directory / "mesh/mesh.yaml",
-          "SonicFile:\n  object: mesh\n  type: registry\n"
-          "files: [mesh/mesh.sfm]\n");
-    write(directory / "fields/fields.yaml",
-          "SonicFile:\n  object: fields\n  type: registry\n");
-    write(directory / "fields/internalField.yaml",
-          "SonicFile:\n  object: fields\n  type: internalField\n");
-    write(directory / "fields/boundaries.yaml",
-          "SonicFile:\n  object: fields\n  type: boundary\n");
-    printText("Initialized native case template: " + directory.string());
-    printText("Recipe: " + recipe);
-    printText("Next: add mesh/mesh.sfm and field declarations, then run sonicSolver check "
-              + directory.string());
-}
 
 } // namespace
 
@@ -460,12 +389,8 @@ int SF::CLI::run(int argc, char* argv[]) {
             return 0;
         }
         if (command == "recipes") {
-            printText("Recipes:");
-            printText("  compressibleSingleFluid");
-            printText("  compressibleFixedImmersedBody");
-            printText("  compressibleMovingBody");
-            printText("  selfPropelledBody");
-            printText("  levelSetSurfaceTension");
+            printText("compressibleSingleFluid  native executable template");
+            printText("Other presets: Unsupported as automatic templates; register modules explicitly.");
             return 0;
         }
         if (command == "init") {
@@ -492,7 +417,7 @@ int SF::CLI::run(int argc, char* argv[]) {
                 throw std::runtime_error(
                     "Usage: sonicSolver init [CASE] --recipe RECIPE");
             }
-            writeRecipe(casePath, recipe);
+            SF::Application::createNativeCase(casePath, recipe);
             return 0;
         }
         if (command == "run") return runCommand(argc, argv);

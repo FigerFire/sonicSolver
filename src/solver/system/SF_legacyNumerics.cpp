@@ -4,11 +4,7 @@
 #include <algorithm>
 namespace SF::System::Legacy {
 std::string selectOperationProvider(const ExecutableOperation& operation,
-        const ExecutableEquationSystem& equations,const CompiledNumericalSystem& numerics,
-        const std::vector<LegacyExecutionPolicy>& policies) {
-    const auto requires=[&](OperationCapability capability) {
-        return std::find(operation.requirements.begin(),operation.requirements.end(),capability)!=operation.requirements.end();
-    };
+        const ExecutableEquationSystem& equations) {
     const auto realization=compileStateRealization(equations.state,equations.constraints);
     const bool pressureOperation=std::any_of(operation.requirements.begin(),operation.requirements.end(),
         [](OperationCapability capability) {

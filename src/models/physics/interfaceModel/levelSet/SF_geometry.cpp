@@ -160,7 +160,7 @@ double divergenceOfNormal(const Field& field,
 
 } // namespace
 
-void Geometry::compute(const Field& field,
+void Geometry::computeNormals(const Field& field,
                        LevelSetField& levelSet,
                        const GeometryOptions& options) {
     if (!levelSet.isCompatibleWith(field)) {
@@ -173,12 +173,11 @@ void Geometry::compute(const Field& field,
             "LevelSet geometry: gradientTolerance must be finite and > 0.");
     }
 
+    levelSet.invalidateNormalStencil();
     requireCentralStencil(field);
     const std::vector<double> weights = centralWeights();
 
     std::fill(levelSet.normals().begin(), levelSet.normals().end(), Vector3());
-    std::fill(levelSet.curvatures().begin(), levelSet.curvatures().end(), 0.0);
-    std::fill(levelSet.interfaceMask().begin(), levelSet.interfaceMask().end(), 0);
 
     const int ng = field.NG();
     for (int k = ng; k < ng + field.NZ(); ++k) {
@@ -207,6 +206,19 @@ void Geometry::compute(const Field& field,
         }
     }
 
+}
+
+void Geometry::computeCurvature(const Field& field, LevelSetField& levelSet,
+                               const GeometryOptions& options) {
+    if (!levelSet.isCompatibleWith(field))
+        throw std::runtime_error("LevelSet curvature: incompatible storage.");
+    if (!levelSet.normalStencilReady())
+        throw std::runtime_error("LevelSet curvature: levelSetNormal stencil not published for current phi.");
+    requireCentralStencil(field);
+    const auto weights = centralWeights();
+    const int ng = field.NG();
+    std::fill(levelSet.curvatures().begin(),levelSet.curvatures().end(),0.0);
+    std::fill(levelSet.interfaceMask().begin(),levelSet.interfaceMask().end(),0);
     for (int k = ng; k < ng + field.NZ(); ++k) {
         for (int j = ng; j < ng + field.NY(); ++j) {
             for (int i = ng; i < ng + field.NX(); ++i) {
@@ -236,6 +248,14 @@ void Geometry::compute(const Field& field,
             }
         }
     }
+}
+
+void Geometry::compute(const Field& field, LevelSetField& levelSet,
+                       const GeometryOptions& options) {
+    computeNormals(field,levelSet,options);
+    levelSet.publishNormalStencil();
+    computeCurvature(field,levelSet,options);
+    levelSet.publishCurvatureStencil();
 }
 
 } // namespace Multiphase

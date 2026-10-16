@@ -127,7 +127,7 @@ KKTCorrectionSummary MonolithicKKT::correct(
     if(config_.linear.pressure.method!=FDM::KrylovMethod::FlexGMRES)
         throw std::runtime_error(
             "surface KKT is nonsymmetric and requires pressure solver "
-            "flexGMRES in system/solverProperties.");
+            "flexGMRES in the registered linear-solver configuration.");
     if(config_.coupling.momentumRelaxation!=1.0
         ||config_.coupling.pressureRelaxation!=1.0)
         throw std::runtime_error(

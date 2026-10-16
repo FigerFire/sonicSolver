@@ -4,5 +4,6 @@
 namespace SF::Physics::Multiphase {
 /// The physical model expands native mathematics and storage; no timestep ownership.
 void contributeHomogeneous(System::SystemContribution& system,const MultiPhaseConfig& config);
+void contributeThermal(System::SystemContribution&,const MultiPhaseConfig&,bool ilw,int order);
 void contributeMixture(System::SystemContribution& system,const MultiPhaseConfig& config);
 }

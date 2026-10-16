@@ -36,14 +36,20 @@ public:
     void setInterfaceModel(FDM::ITransportModel* model);
     bool active() const;
     void applyBoundary(const Field& field) override;
-    void correct(const Field& field, double dt) override;
+    void refreshClosure(const Field& field) override;
+    FDM::OnceStepTransportData onceStepTransport() override;
     double dynamicViscosity(
         const Field& field, int i, int j, int k,
         double laminarMu) const override;
+    std::vector<std::string> stageScalarTargets() const override;
+    FDM::TransportStageCoefficients stageCoefficients(const Field&,const FDM::TransportStageSamples&,int,int,int) const override;
+    FDM::ScalarEquationData stageScalarData(const Field&,const std::string&) const override;
+    void publishStageViscosity(const Field&,const std::vector<double>&) override;
     std::vector<std::string> distributedReadFields() const override;
     std::vector<std::string> distributedWriteFields() const override;
     int distributedHaloDepth() const override;
 private:
+    FDM::ITransportModel& stageTransport() const;
     FDM::ITransportModel* turbulence_ = nullptr;
     Physics::Multiphase::MultiPhaseModel* multiPhase_ = nullptr;
     FDM::ITransportModel* interfaceModel_ = nullptr;
@@ -68,7 +74,6 @@ public:
         std::vector<double>& rhs,
         State::VariableRegistry& variables,
         FDM::IExecutionRuntime& runtime);
-    void beginStep(Field& field, double dt) override;
     void prepareRHS(Field& field, double dt) override;
     void assembleRHS(Field& field, Residual& residual, double dt) override;
     void commitStep(Field& field, double dt) override;
@@ -91,7 +96,6 @@ public:
         std::vector<std::vector<double>>& rhs,
         std::vector<State::VariableRegistry>& variables,
         std::vector<CompositeTransportProvider>& transports);
-    void beginStep(const std::vector<Field*>& fields, double dt) override;
     void prepareRHS(const std::vector<Field*>& fields, double dt) override;
     void assembleRHS(const std::vector<Field*>& fields,
                      const std::vector<Residual*>& residuals, double dt) override;

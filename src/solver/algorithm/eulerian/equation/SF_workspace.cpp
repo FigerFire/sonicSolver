@@ -61,6 +61,13 @@ void PhaseSolverWorkspace::commitTimeLevel(
         throw std::runtime_error(
             "PhaseSolverWorkspace is not initialized for this PhaseSystem.");
     }
+    for (auto& entry : turbulenceOldTime) {
+        const auto& mass=system.phases().at(entry.phaseIndex).primary.phaseMass.values();
+        if (!entry.physical || entry.physical->values().size()!=mass.size()
+            || entry.previousConserved.values().size()!=mass.size()
+            || entry.physical->values().data()==entry.previousConserved.values().data())
+            throw std::runtime_error("Invalid Eulerian turbulence old-time backing.");
+    }
     for (size_t phase = 0; phase < system.phases().size(); ++phase) {
         previousPhaseMass[phase].values() =
             system.phases()[phase].primary.phaseMass.values();
@@ -76,6 +83,12 @@ void PhaseSolverWorkspace::commitTimeLevel(
         }
     }
     previousPressure.values() = system.sharedPressure().values();
+    for (auto& entry : turbulenceOldTime) {
+        const auto& mass=system.phases().at(entry.phaseIndex).primary.phaseMass.values();
+        for(size_t cell=0;cell<mass.size();++cell)
+            entry.previousConserved.values()[cell]=mass[cell]*entry.physical->values()[cell];
+    }
+
 }
 
 } // namespace SF::EulerianEulerian

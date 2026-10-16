@@ -24,6 +24,7 @@
 #include "core/system/SF_scheduleIds.h"
 #include "solver/system/SF_numericalCompiler.h"
 #include "SF_numericsPolicy.h"
+#include "solver/system/SF_scalarMethod.h"
 #include "SF_physicalState.h"
 #include "SF_rusanovEOS.h"
 
@@ -578,7 +579,8 @@ void FlowOperations::bindStageSources() {
 }
 Time::TemporalCallbacks FlowOperations::temporalParticipant() {
     if (state_->patches.size()!=1 || (services_.executionRuntime && services_.executionRuntime->distributed())
-        || services_.immersed.boundary || services_.immersed.constraint || services_.immersed.system || services_.equationSystem || services_.transportModel)
+        || services_.immersed.boundary || services_.immersed.constraint || services_.immersed.system || services_.equationSystem
+        || (services_.transportModel && !std::any_of(solve_.compiledProgram.steps.begin(),solve_.compiledProgram.steps.end(),[](const auto& call){return call.backendProvider==System::ScalarOps::StageTransportProvider;})))
         throw std::runtime_error("Unsupported shared flow stage group: serial single patch without auxiliary/immersed stage treatment required.");
     bindTemporalStateViews();
     auto owner=shared_from_this();Time::TemporalCallbacks result;result.identity="flow.conservative";
@@ -594,14 +596,25 @@ Time::TemporalCallbacks FlowOperations::temporalParticipant() {
                 ConservativeRHS::assembleAllPatches(patches,workspace,owner->config_,owner->rhsNumerics(),*owner->equations_,
                     *owner->state_,owner->services_,owner->boundaryApplicator_,time);
             });
+        const auto& recipe=System::NumericalCompiler::requireUniqueRecipe(owner->rhsNumerics(),FDM::TermRole::Convection);
+        auto& workspace=owner->workspaces_.front();
+        workspace.massFlux->publish(owner->state_->singlePatch(),workspace.convectiveFlux,
+            {owner->state_->step,c.stageIndex,owner->state_->time+owner->numerics_.time.recipe.stage(c.stageIndex).abscissa*owner->state_->dt},FDM::toString(recipe.id()));
     };
-    result.advance=[owner](const auto& c){owner->executeExplicitStage(c.stageIndex);};
+    result.advance=[owner](const auto& c){owner->executeExplicitStage(c.stageIndex);
+        for(auto& workspace:owner->workspaces_)workspace.massFlux->invalidate();};
     result.validatePublish=[owner] {
         if (owner->explicitWorkspace_.active) throw std::runtime_error("Flow publication before complete stages.");
         owner->validateDensityStateClosure(owner->state_->patches,"common stage final");
     };
     result.publish=[owner]{owner->prepareBoundaryState(owner->state_->patches,owner->state_->time+owner->state_->dt,owner->state_->dt);};
     return result;
+}
+
+StageMassFluxView FlowOperations::stageMassFlux(StageFluxIdentity stamp) const {
+    if(workspaces_.size()!=1)throw std::runtime_error("Shared canonical mass flux requires one participating patch.");
+    const auto& recipe=System::NumericalCompiler::requireUniqueRecipe(rhsNumerics(),FDM::TermRole::Convection);
+    return {workspaces_.front().massFlux,state_->singlePatch(),stamp,FDM::toString(recipe.id())};
 }
 
 void FlowOperations::resetStep() {

@@ -1,7 +1,7 @@
 {
   "SonicFile": {
     "object": "solver",
-    "type": "providerBindings"
+    "type": "which"
   },
   "bindings": [
     {

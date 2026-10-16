@@ -574,9 +574,10 @@ static void appendStructuredFacePoints(std::vector<int>& ids,
 
 static std::vector<std::map<std::string, std::vector<int>>> buildFacePatchSets(
     const MeshParameters& params,
-    const std::vector<int>& blockSizes) {
+    const std::vector<int>& blockSizes, GeneratedMeshWriter::FacePatchRegions& regions) {
     const int nBlocks = (int)blockSizes.size() / 3;
     std::vector<std::map<std::string, std::vector<int>>> sets((size_t)nBlocks);
+    regions.resize(static_cast<size_t>(nBlocks));
     if (params.facePatches.empty()) return sets;
 
     for (auto& blockSets : sets) {
@@ -612,9 +613,10 @@ static std::vector<std::map<std::string, std::vector<int>>> buildFacePatchSets(
                 const auto target = sortedFace(patchFace);
                 for (const LocalFace& local : localFaces) {
                     if (sortedFace(local.verts) != target) continue;
-                    appendStructuredFacePoints(sets[(size_t)b][patch.name],
-                                               nx, ny, nz,
-                                               local.axis, local.upper);
+                    std::vector<int> region;
+                    appendStructuredFacePoints(region,nx,ny,nz,local.axis,local.upper);
+                    auto& joined=sets[(size_t)b][patch.name];joined.insert(joined.end(),region.begin(),region.end());
+                    regions[(size_t)b][patch.name].push_back(std::move(region));
                 }
             }
         }
@@ -679,7 +681,8 @@ bool writeCombinedMesh(const std::string& baseName,
         return false;
     }
 
-    auto explicitFaceSets = buildFacePatchSets(params, blockSizes);
+    GeneratedMeshWriter::FacePatchRegions regions;
+    auto explicitFaceSets = buildFacePatchSets(params, blockSizes, regions);
     auto pointSetSections = buildBlockSetSections(blockSizes, explicitFaceSets);
     GeneratedInterfaceSummary interfaceSummary;
     const std::string interfaceReport = baseName + "_interfaces.txt";
@@ -696,7 +699,7 @@ bool writeCombinedMesh(const std::string& baseName,
     GeneratedMeshWriter::writeMultiZoneSFM(baseName + ".sfm",
                                            allX, allY, allZ,
                                            blockSizes, nGhost,
-                                           explicitFaceSets,
+                                           regions,
                                            pointSetSections);
 
     // 当前 SFM 已自包含 boundary/point sets。删除旧生成器遗留的 sidecar，

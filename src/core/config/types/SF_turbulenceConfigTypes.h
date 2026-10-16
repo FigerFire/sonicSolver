@@ -52,6 +52,7 @@ struct TurbulenceCoefficients {
 /// @brief 完整湍流配置值对象。
 struct TurbulenceConfig {
     bool enabled = false;
+    bool stageConservativeTransport = false;
     double laminarDynamicViscosity = 0.0;
     TurbulenceFamily family = TurbulenceFamily::None;
     TurbulenceModelKind model = TurbulenceModelKind::None;

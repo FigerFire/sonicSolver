@@ -3,6 +3,7 @@ add_library(SF_solverSystem STATIC
     SF_systemBuilder.cpp
     SF_eulerianRelations.cpp
     SF_eulerianCoupling.cpp
+    SF_thermalMethod.cpp
     SF_multiphaseMethods.cpp
     SF_levelSetMethods.cpp
     SF_immersedMethods.cpp

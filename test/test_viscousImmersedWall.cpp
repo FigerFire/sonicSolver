@@ -1,3 +1,4 @@
+#include "solver/algorithm/transport/SF_transportBinding.h"
 #include "models/ibm/method/ghost/SF_viscousWall.h"
 #include "models/ibm/SF_ibmSystemContribution.h"
 #include "models/ibm/descriptor/SF_algorithmDescriptor.h"
@@ -94,10 +95,11 @@ int main() {
         }
         FDM::TurbulenceConfig tc;tc.enabled=true;tc.family=FDM::TurbulenceFamily::RAS;tc.model=FDM::TurbulenceModelKind::kOmegaSST;tc.laminarDynamicViscosity=.00001;
         Turbulence::Manager manager(tc,&boundary);require(manager.initialize(frozen),"SST wall service did not initialize.");
+        SolverAlgorithm::initializeTransport(frozen,manager);
         auto& scalars=manager.scalarFields();
         for(auto& value:scalars.values(Turbulence::ScalarSlot::K))value=.01;
         for(auto& value:scalars.values(Turbulence::ScalarSlot::Omega))value=1;
-        manager.correct(frozen,1e-8);
+        SolverAlgorithm::updateOnceStepTransport(frozen,manager,1e-8);
         const double cached=manager.dynamicViscosity(frozen,3,3,1,.00001);
         frozen(3,4,1,RU)=4;
         require(manager.dynamicViscosity(frozen,3,3,1,.00001)==cached,"Flow stage recomputed the frozen SST coefficient.");

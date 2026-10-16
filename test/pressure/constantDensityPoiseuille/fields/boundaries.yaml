@@ -1,6 +1,6 @@
 SonicFile:
   object: fields
-  type: boundary
+  type: boundaries
 U:
   left: zeroGradient
   right: zeroGradient

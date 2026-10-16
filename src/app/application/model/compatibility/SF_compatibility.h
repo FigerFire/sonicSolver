@@ -104,7 +104,7 @@ private:
     std::string legacyFlowLabel_;
     std::string outputDir_;
     /// mesh generator 的相对路径；由 mesh/mesh.yaml 的 generator 提供。
-    std::string meshGenerator_;
+    std::shared_ptr<const MeshParameters> meshParameters_;
 
     std::vector<std::string> meshFiles_;
     std::vector<std::string> ibmGeometryFiles_;

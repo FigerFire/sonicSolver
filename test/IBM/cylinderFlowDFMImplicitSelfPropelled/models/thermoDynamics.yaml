@@ -1,0 +1,15 @@
+# Authoritative EOS and transport properties. mu is dynamic viscosity [Pa s].
+SonicFile:
+  object: models
+  type: thermoDynamics
+thermoDynamics:
+  equationOfState: perfectGas
+  thermo: hConst
+  transport: const
+properties:
+  equationOfState:
+    gamma: 1.4
+    R: 287.05
+  transport:
+    mu: 1.7894e-05
+    Pr: 0.72

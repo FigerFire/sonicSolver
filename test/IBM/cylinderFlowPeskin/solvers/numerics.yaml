@@ -12,8 +12,3 @@ convection:
   interfaceFlux: shared
 diffusion:
   default: CENTRAL2
-transport:
-  type: CENTRAL2
-  enable: true
-  mu: 1.7894e-05
-  Pr: 0.72

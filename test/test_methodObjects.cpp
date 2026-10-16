@@ -158,7 +158,7 @@ int main() {
     const auto staged=compileExecutionProgram(system,program,binding,methods,&rk,&rkMethod);
     require(std::count_if(staged.stateViews.begin(),staged.stateViews.end(),[](const auto& view) {
                 return view.kind==StateViewKind::Stage;
-            })==4 && staged.stateViews.size()==6 && system.state.size()==1,
+            })==4 && staged.stateViews.size()==7 && system.state.size()==1,
             "WHICH RK4 did not lazily request stage views from the same base STATE.");
 
     // Pressure methods lower five explicit HOW outputs to validated numerical

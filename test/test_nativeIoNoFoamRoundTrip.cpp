@@ -16,6 +16,7 @@
 #include <chrono>
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <string>
 
@@ -55,7 +56,8 @@ int main() {
     for(auto& object:description.objects)if(object.type=="thermoDynamics")
         object.parameters["properties"]={{"equationOfState",{{"gamma",1.4},{"R",287.05}}},
             {"transport",{{"mu",0.},{"Pr",.72}}}};
-    const auto typedCase=std::filesystem::path(SF_TEST_SOURCE_DIR)/"test/t/native-typed-authority";
+    const auto typedCase=std::filesystem::path(SF_TEST_SOURCE_DIR)/"test/t"/
+        ("native-typed-authority-"+std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
     SF::CaseIO::write(description,typedCase.string());
     std::filesystem::copy_file(caseDir/"mesh/mesh.sfm",typedCase/"mesh/mesh.sfm",std::filesystem::copy_options::overwrite_existing);
     SF::CaseAdapter adapter(caseDir.string());
@@ -148,6 +150,9 @@ int main() {
     const auto roundTrip=std::filesystem::path(SF_TEST_SOURCE_DIR)/"test/t"/
         ("sonic-explicit-state-io-"+std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
     SF::CaseIO::write(description,roundTrip.string());
+    for (const auto* directory:{"state","equations","algorithms"})
+        require(!std::filesystem::exists(roundTrip/directory),
+            std::string("Writer created a separate solver registry directory: ")+directory);
     const auto reread=SF::CaseIO::read(roundTrip.string());
     for (const auto* type:{"stateRegistry","equationRegistry","algorithmRegistry"}) {
         const auto find=[&](const auto& model) {
@@ -156,10 +161,30 @@ int main() {
         };
         const auto before=find(description),after=find(reread);
         require(before!=description.objects.end() && after!=reread.objects.end()
-            && before->parameters==after->parameters,
+            && before->parameters==after->parameters && after->category=="solver"
+            && std::filesystem::path(after->source).parent_path()==roundTrip/"solvers",
             std::string("Native registry round trip changed ")+type);
     }
+    std::filesystem::create_directory(roundTrip/"state");
+    {
+        std::ofstream duplicate(roundTrip/"state/state.yaml");
+        duplicate << "SonicFile:\n  object: state\n  type: registry\nuse: [rho, rhoU, rhoE]\n";
+    }
+    require(SF::CaseIO::read(roundTrip.string()).objects.size()==reread.objects.size(),
+        "Unregistered historical STATE file was auto-loaded");
+    std::filesystem::remove_all(roundTrip/"state");
+    {
+        std::ofstream wrongObject(roundTrip/"solvers/state.yaml");
+        wrongObject << "SonicFile:\n  object: state\n  type: stateRegistry\nuse: [rho, rhoU, rhoE]\n";
+    }
+    bool objectRejected=false;
+    try { (void)SF::CaseIO::read(roundTrip.string()); }
+    catch (const std::runtime_error& error) {
+        objectRejected=std::string(error.what()).find("expected object solver")!=std::string::npos;
+    }
+    require(objectRejected,"Solver registry accepted a different document object");
     std::filesystem::remove_all(roundTrip);
+    std::filesystem::remove_all(typedCase);
 
     std::cout << "typed native IO produced CaseConfig without a Foam document\n";
     return 0;

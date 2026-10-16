@@ -1,3 +1,4 @@
+#include "solver/algorithm/transport/SF_transportBinding.h"
 /// @file SF_singleFluid.cpp
 /// @brief 组装 conservative single-field state、providers 与 solver interfaces。
 ///
@@ -25,7 +26,7 @@
 #include "SF_factory.h"
 #include "SF_field.h"
 #include "SF_homogeneousPhaseChange.h"
-#include "models/physics/equationRuntime/SF_interfaceCoupling.h"
+#include "solver/algorithm/interface/SF_levelSetOperations.h"
 #include "SF_interfaceModel.h"
 #include "models/physics/interfaceModel/levelSet/SF_state.h"
 #include "SF_parallelContext.h"
@@ -66,9 +67,8 @@ int executeConservativeEquations(
     using Report::multiPhaseSummary;
     using SF::Equation::Coupling::CompositeTransportProvider;
     using SF::Equation::Coupling::HomogeneousPhaseChangeProvider;
-    using SF::Equation::Coupling::InterfaceEquationProvider;
+    using SF::SolverAlgorithm::InterfaceEquationProvider;
     using SF::Equation::Coupling::MixtureEquationProvider;
-    using SF::Equation::Coupling::registerInterfaceState;
     using SF::Equation::Coupling::registerMixtureState;
     using Output::multiPhaseVTKScalars;
     using Output::interfaceVTKScalars;
@@ -89,13 +89,14 @@ int executeConservativeEquations(
     std::unique_ptr<SF::Physics::InterfaceModels::Model> interfaceModel;
     const bool legacyMultiPhaseActive =
         System::requiresProvider(system,"equation.mixture");
+    const bool thermalActive = System::requiresProvider(system,"equation.thermal");
     const bool interfaceActive =
         System::requiresProvider(system,"equation.level-set");
     const bool usesHomogeneousThermodynamics =
         System::requiresProvider(system,"thermodynamics.homogeneous");
     const bool constantDensityState =
         System::requiresProvider(system,"flow.pressure-operators");
-    const bool multiPhaseActive = legacyMultiPhaseActive || interfaceActive;
+    const bool multiPhaseActive = legacyMultiPhaseActive || thermalActive || interfaceActive;
     if (interfaceActive && !solverConfig.numerics.timeRecipeDeclared) {
         throw std::runtime_error(
             "OneFluidInterface requires an explicit "
@@ -161,7 +162,7 @@ int executeConservativeEquations(
                 "singleFluid/perfectGas cold start");
         }
     }
-    if (legacyMultiPhaseActive) {
+    if (legacyMultiPhaseActive || thermalActive) {
         multiPhaseModel.configure(caseConfig.multiPhase);
         multiPhaseModel.configureBoundaryNumerics(
             solverConfig.boundaries.ilwEnabled,
@@ -283,6 +284,14 @@ int executeConservativeEquations(
         immersedPorts.constraint = &immersedConstraint;
         immersedPorts.system = &ibm;
     }
+    FDM::ThermalEquationData thermalData;
+    if(thermalActive) {
+        thermalData.temperature=&multiPhaseModel.temperature();
+        thermalData.boundaries=caseConfig.multiPhase.temperature.boundaryConditions;
+        State::VariableDescriptor variable;variable.name=multiPhaseModel.temperature().name();
+        variable.updatePolicy=State::UpdatePolicy::ExternalExplicit;variable.unit="K";
+        stateBundle.transported.add(variable,*thermalData.temperature);
+    }
     std::vector<double> multiPhaseAlphaRHS;
     std::unique_ptr<MixtureEquationProvider>
         legacyMultiphaseCoupling;
@@ -297,16 +306,15 @@ int executeConservativeEquations(
                 multiPhaseModel, multiPhaseAlphaRHS,
                 stateBundle.transported, executionRuntime);
     } else if (interfaceActive) {
-        registerInterfaceState(
-            *interfaceModel, field, stateBundle.transported);
         interfaceCoupling = std::make_unique<InterfaceEquationProvider>(
-            *interfaceModel, stateBundle.transported, executionRuntime);
+            *interfaceModel, stateBundle.transported, executionRuntime,field);
         coupledTransport.setInterfaceModel(interfaceModel.get());
     }
     const bool turbulenceActive = turbulenceManager.initialize(field);
     if (System::requiresProvider(system,"flow.turbulence") && !turbulenceActive)
         throw std::runtime_error("Compiled flow.turbulence owner requires an initialized turbulence implementation.");
     if (turbulenceActive) {
+        SolverAlgorithm::initializeTransport(field,turbulenceManager);
         coupledTransport.setTurbulence(&turbulenceManager);
         SF::broadcast("Turbulence active : ", turbulenceManager.description());
     } else if (solverConfig.turbulence.enabled) {
@@ -400,7 +408,7 @@ int executeConservativeEquations(
             }});
         }
         std::vector<SF::ResultWriter::ScalarField> phaseScalars;
-        if (legacyMultiPhaseActive) {
+        if (legacyMultiPhaseActive || thermalActive) {
             phaseScalars = multiPhaseVTKScalars(
                 multiPhaseModel, &stateBundle.transported);
         } else if (interfaceActive) {
@@ -437,8 +445,7 @@ int executeConservativeEquations(
 
     auto saveStepVTK = [&](int outStep) {
         auto scalars = solverVTKScalars();
-        if (parallel.active()) writer.save(field, outStep, localBlockId, scalars);
-        else               writer.save(field, outStep, scalars);
+        writer.saveStep(field,outStep,stateBundle.time,scalars,parallel.active()?localBlockId:-1);
     };
     auto saveTimeVTK = [&](double outTime) {
         auto scalars = solverVTKScalars();
@@ -462,7 +469,7 @@ int executeConservativeEquations(
     if (interfaceActive) {
         auto* levelSet = interfaceModel->levelSetState();
         if (levelSet) {
-            stateBundle.distributed.add(Equation::Coupling::interfaceNormalView(*interfaceModel,field,localBlockId));
+            stateBundle.distributed.add(SolverAlgorithm::interfaceNormalView(*interfaceModel,field,localBlockId));
             stateBundle.distributed.add(State::workspaceView(
                 "levelSetCurvature", localBlockId, field,
                 levelSet->curvatures(), 1));
@@ -485,6 +492,8 @@ int executeConservativeEquations(
             {::SF::Execution::readHalo("conservative", conservativeHaloDepth)}});
     }
 
+    if (interfaceCoupling) interfaceCoupling->preparePressureCorrection(field);
+
     if (initialOutputOnly) {
         if (caseConfig.time.writeByStep) saveStepVTK(0);
         else            saveTimeVTK(caseConfig.time.startTime);
@@ -502,7 +511,7 @@ int executeConservativeEquations(
         equationProvider = legacyMultiphaseCoupling.get();
     }
     if (interfaceCoupling) equationProvider = interfaceCoupling.get();
-    return runConservative(
+    const int status = runConservative(
         solverConfig,system,plan,stateBundle,boundaryPipeline,
         executionRuntime,solverObserver,immersedPorts,
         coupledTransport.active() ? &coupledTransport : nullptr,
@@ -512,7 +521,14 @@ int executeConservativeEquations(
         saveTimeVTK,
         [&](bool finished) {
             return parallelCoordinator.allRanksAgree(finished);
-        });
+        },thermalActive ? &thermalData : nullptr);
+    if (std::getenv("SF_LEVEL_SET_CHECKPOINT_DIR")) {
+        const auto& counts=executionRuntime.statistics();
+        std::cout<<"[SF D1 runtime] haloRequests="<<counts.haloRequests
+            <<" haloExchanges="<<counts.haloExchanges<<" freshHaloReuses="<<counts.freshHaloReuses
+            <<" canonicalFaces="<<counts.canonicalFaceAssemblies<<" globalDofSUM="<<counts.globalDofAssemblies<<'\n';
+    }
+    return status;
 }
 
 } // namespace SF::Application::Execution::Detail

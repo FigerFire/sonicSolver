@@ -74,6 +74,9 @@ public:
     void configurePieces(std::vector<PieceLayout> pieces);
     void clearPieces();
 
+    /// @brief 文件名保留 step，PVD 使用调用方提交的 physical time；writer 不持有 clock。
+    void saveStep(const Field&,int step,double physicalTime,const std::vector<ScalarField>&,int blockId=-1);
+    void savePiecesStep(const std::vector<FieldPiece>&,int step,double physicalTime);
     void save(const Field& field, int step);
     void save(const Field& field, double time);
     void save(const Field& field, int step, int blockId);

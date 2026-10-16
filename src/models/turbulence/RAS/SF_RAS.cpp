@@ -18,16 +18,9 @@ void RASModelBase::initializeScalar(const Field& flow,
     applyScalarInitialConditions(flow, settings, state, slot);
 }
 
-void RASModelBase::applyScalarBC(const Field& flow,
+void RASModelBase::refreshClosure(const Field& flow,
                                  ScalarFields& state,
-                                 const std::vector<BCSetting<double>>& settings,
-                                 ScalarSlot slot) const {
-    applyScalarBoundaryConditions(flow, settings, state, slot);
-}
-
-void RASModelBase::refreshEddyMu(const Field& flow,
-                                 ScalarFields& state,
-                                 const FDM::TurbulenceConfig& config) const {
+                                 const FDM::TurbulenceConfig& config) {
     int ng = flow.NG();
     int nx = flow.NX();
     int ny = flow.NY();

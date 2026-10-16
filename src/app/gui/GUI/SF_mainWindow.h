@@ -27,7 +27,6 @@ class QTreeWidgetItem;
 namespace SF::GUI {
 
 class GeometryEditor;
-class SwitchButton;
 class ViewModeSwitch;
 class ViewerToolbar;
 class VTKView;
@@ -108,7 +107,7 @@ signals:
     void importSfmRequested();
     /// @brief 用户请求按当前 Mesh backend 生成网格。
     void generateMeshRequested();
-    /// @brief 用户请求校验当前 OpenFOAM polyMesh。
+    /// @brief 用户请求校验当前 native SFM mesh。
     void checkMeshRequested();
     /// @brief 用户点击“打开 PVD/VTK 结果”。
     void importVtkRequested();
@@ -117,7 +116,6 @@ signals:
     /// @brief 用户右键或菜单新增 IBM/MRF/Parallel 模块。
     void addModuleRequested(ProjectModuleKind kind);
     /// @brief 从初始/边界条件根节点新增 0/ 字段文件。
-    void fieldAddRequested(ProjectModuleKind kind, const QString& fieldName);
     /// @brief 几何编辑器要求保存草图。
     void geometrySaveRequested(const GeometrySketch& sketch);
     void geometryHoverBlock(int blockId);
@@ -145,21 +143,7 @@ signals:
                            const QString& value);
     /// @brief 用户通过右键菜单新增配置行。
     /// @param newSection true 表示新建一个重复 section，例如新的 [blocks]。
-    void configAssignmentsRequested(int documentIndex,
-                                    const QString& section,
-                                    const QStringList& assignments,
-                                    bool newSection);
-    /// @brief 用户请求新增或编辑 blockMesh patch 及其四边形面。
-    void blockMeshPatchAddRequested(int documentIndex, const QString& name,
-                                    const QString& type);
-    void blockMeshPatchFaceAddRequested(int documentIndex,
-                                        const QString& patchName,
-                                        const QString& face);
-    void blockMeshPatchRenameRequested(int documentIndex,
-                                       const QString& oldName,
-                                       const QString& newName);
-    void blockMeshPatchRemoveRequested(int documentIndex, const QString& name);
-    void configEntryRemoveRequested(int documentIndex, int entryIndex);
+    /// @brief 用户请求新增或编辑 native mesh patch 及其四边形面。
     /// @brief 用户在底部终端输入了一条命令。
     void terminalCommandRequested(const QString& command);
 
@@ -183,7 +167,7 @@ private:
         OutputActionRole,
         /// @brief 属性树中用于比较的原始显示值，避免重复提交未变更内容。
         OriginalValueRole,
-        /// @brief blockMesh patch 的名称，用于右键新增/删除 face 与 patch。
+        /// @brief native mesh patch 的名称，用于右键新增/删除 face 与 patch。
         BlockIDRole,
         PatchIDRole,
         FaceIDRole,

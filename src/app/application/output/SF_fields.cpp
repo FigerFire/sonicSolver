@@ -112,15 +112,16 @@ std::vector<ResultWriter::ScalarField> interfaceVTKScalars(
         return 1.0 - liquid;
     }});
     scalars.push_back({"LevelSetCurvature", [state](int i, int j, int k) {
+        if (!state->curvatureStencilReady()) throw std::runtime_error("Interface output: LevelSetCurvature references unpublished geometry.");
         return state->curvature(i, j, k);
     }});
     scalars.push_back({"PhaseDensity", [state](int i, int j, int k) {
-        return state->hasMaterialProperties()
-            ? state->density(i, j, k) : 0.0;
+        if (!state->hasMaterialProperties()) throw std::runtime_error("Interface output: PhaseDensity references unpublished material properties.");
+        return state->density(i,j,k);
     }});
     scalars.push_back({"PhaseViscosity", [state](int i, int j, int k) {
-        return state->hasMaterialProperties()
-            ? state->viscosity(i, j, k) : 0.0;
+        if (!state->hasMaterialProperties()) throw std::runtime_error("Interface output: PhaseViscosity references unpublished material properties.");
+        return state->viscosity(i,j,k);
     }});
     scalars.push_back({"LevelSetBand", [state](int i, int j, int k) {
         return state->inNarrowBand(i, j, k) ? 1.0 : 0.0;

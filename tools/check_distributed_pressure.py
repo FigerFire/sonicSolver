@@ -66,9 +66,9 @@ def prepare(solver, source, parent, name, split, preset='PISO', steps=2,
         if preset == 'SIMPLE':
             text = text.replace('pressureCorrectors: 2', 'pressureCorrectors: 1')
     algorithm.write_text(text)
-    semantic=case/'algorithms/algorithms.yaml'
+    semantic=case/'solvers/execution.yaml'
     if semantic.exists():
-        semantic.write_text('SonicFile:\n  object: algorithms\n  type: registry\n'+preset+': {}\n')
+        semantic.write_text('SonicFile:\n  object: solver\n  type: execution\n'+preset+': {}\n')
     if name.startswith('equilibrium'):
         boundary = case / 'fields/boundaries.yaml'
         boundary.write_text(boundary.read_text().replace('[1, 0, 0]', '[0, 0, 0]'))
@@ -199,7 +199,9 @@ def main():
     parser.add_argument('--poiseuille',type=Path,required=True)
     parser.add_argument('--output',type=Path)
     args=parser.parse_args()
-    directory=args.output or Path(tempfile.mkdtemp(prefix='sonic-distributed-pressure-'))
+    temp_root=Path(__file__).resolve().parents[1]/'test/t'
+    temp_root.mkdir(parents=True,exist_ok=True)
+    directory=args.output or Path(tempfile.mkdtemp(prefix='sonic-distributed-pressure-',dir=temp_root))
     directory.mkdir(parents=True,exist_ok=True)
     solver=args.solver.resolve()
     for label,source,preset,steps in [

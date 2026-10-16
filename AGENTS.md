@@ -1213,3 +1213,17 @@ Euler/slip 圆柱算例作为壁面物理验收。
 - 展示云图时注明变量/分量或Magnitude、时间帧、数值min/max及色标范围；对照使用统一固定色标。误差云图需明确误差量级，避免自动缩放将浮点微差误示为有限量级流场扰动。
 
 设置以实际使用的配置和运行日志为准，不凭算例名称或旧报告推测。缺省/继承设置须如实标注；不适用的项目写明不适用。后续报告沿用这些要求，不为补齐说明而改动算例或数值算法。
+
+
+## 34. Native IO 单目录与注册身份（用户于 2026-10-11 明确要求）
+
+文件结构与 IO object 对应。solver 配置全部放在 `solvers/`，object 为 `solver`；models、fields、mesh 使用自己的同名目录和 object。每个 object 目录只有一个 `type: registry` 入口。不得再新建 state/、equations/、algorithms/ 等 solver 子目录。
+
+- 母 registry 的键是子文件身份；子文件的 `SonicFile.type` 必须与键逐字相同，`SonicFile.object` 必须与母文件逐字相同。
+- 注册项内部 `type` 是 handler/模型角色，不是子文件身份。`state: {type: stateRegistry, file: solvers/state.yaml}` 的子文件头必须是 `object: solver, type: state`。此角色保留在 typed description 中。
+- 保留键/角色双重核验：state ↔ stateRegistry、equationRegistry ↔ equationRegistry、execution ↔ algorithmRegistry；runtime/numerics/algorithm 的键和角色相同。不得冒用保留键或为单例角色换名注册第二份 authority。
+- 默认方程系统用 `equations: {type: equationSystem, file: solvers/equations.yaml}`，不再使用 flow 键。WHAT 选择表独立使用 equationRegistry，避免与 equations 键冲突。
+- 只加载已注册子文件；不根据文件存在自动加载 STATE/WHAT/HOW、初值或边界。fields registry 显式注册 internalField 和 boundaries；后者内部角色是 boundary，子文件身份是 boundaries。未注册文件不参与求解。
+- 显式 file reference 必须直接位于对应 object 目录；拒绝跨 object、路径逃逸、重复文件引用（含规范化路径和 symlink）、第二份 registry。注册的缺失文件报错，不搜索替代文件。
+- EOS/thermo/transport、IBM、turbulence 和物理 source 由 models 注册；ILW 等 solver 数值配置由 solver 注册。CLI init、writer、正式算例与测试工具遵守同一契约。
+- 历史冻结输入只保留作对照。旧式文件头/分散布局需显式转换，生产 reader 不提供 hidden fallback。迁移输入格式不改变数学 ownership、storage、clock、执行顺序或并行语义。

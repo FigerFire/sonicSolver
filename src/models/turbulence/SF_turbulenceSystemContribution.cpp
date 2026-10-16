@@ -67,6 +67,7 @@ void contribute(
         "model.turbulence","turbulence equation/closure contribution");
     system.requireProvider("closure.turbulence",
                            "bind turbulence closure and transported equations");
+    if(spec.stageConservativeTransport && (spec.eulerian || spec.model!="kOmegaSST"))throw std::runtime_error("Stage conservative turbulence currently supports single-fluid SST only.");
     const bool kEpsilon = spec.model == "kEpsilon";
     const bool kOmega = spec.model == "kOmegaSST";
     if (!kEpsilon && !kOmega) {
@@ -97,8 +98,8 @@ void contribute(
     }
     if (!spec.eulerian) {
         system.requireState("rho");system.requireState("U");
-        system.placement.push_back({{},"equation:k",{},{"first-of:equation:continuity|equation:momentum"}});
-        system.placement.push_back({{},"equation:"+std::string(kEpsilon ? "epsilon" : "omega"),{"equation:k"},{"first-of:equation:continuity|equation:momentum"}});
+        system.placement.push_back(spec.stageConservativeTransport?System::PlacementRequirement{{},"equation:k",{"equation:energy"},{"kind:Commit"}}:System::PlacementRequirement{{},"equation:k",{},{"first-of:equation:continuity|equation:momentum"}});
+        system.placement.push_back({{},"equation:"+std::string(kEpsilon ? "epsilon" : "omega"),{"equation:k"},{spec.stageConservativeTransport?"kind:Commit":"first-of:equation:continuity|equation:momentum"}});
         const std::string second=kEpsilon ? "epsilon" : "omega";
         for (const auto& id:std::vector<std::string>{"k",second,"mu_t"}) {
             System::StateSymbol symbol;
@@ -109,6 +110,7 @@ void contribute(
             symbol.nameSpace="turbulence";
             if (id=="mu_t") {
                 symbol.evaluation=System::StateEvaluation::Materialized;
+                if(spec.stageConservativeTransport)symbol.stageCoefficientResource="transportStageCoefficients";
                 symbol.dependencies={"k",second,"rho","U"};
             }
             symbol.origin={System::OriginKind::Model,spec.model};
@@ -116,13 +118,19 @@ void contribute(
             symbol.initializationRequired=symbol.boundaryRequired=id!="mu_t";
             system.addState(std::move(symbol));
         }
+        if(spec.stageConservativeTransport)for(const auto& id:{"SST.nu.k","SST.nu.omega","SST.production.k","SST.production.omega","SST.sink.k","SST.sink.omega","SST.cross"}) {
+            System::StateSymbol coefficient;coefficient.id=coefficient.name=coefficient.storageKey=id;
+            coefficient.role=System::StateRole::Derived;coefficient.outputEligible=false;coefficient.storageBinding=System::StorageBinding::TransientWorkspace;coefficient.runtimeStorageRequired=false;
+            coefficient.stageCoefficientResource="transportStageCoefficients";
+            coefficient.initializationRequired=coefficient.boundaryRequired=coefficient.restartEligible=false;system.addState(std::move(coefficient));
+        }
         for (const auto& id:std::vector<std::string>{"k",second}) {
-            system.addEquation(transportMathematics(second,id));
+            system.addEquation(spec.stageConservativeTransport?stageTransportMathematics(id):transportMathematics(second,id));
             System::ExecutionScope call;
             call.kind=System::ExecutionKind::EquationCall;
             call.step={id,{id}};
             system.addExecution(std::move(call));
-            system.bindNumerics({id,"TurbulenceTransport",{"k",second}});
+            system.bindNumerics({id,spec.stageConservativeTransport?"SSTStageTransport":"TurbulenceTransport",{"k",second}});
         }
         system.addClosure("mu_t from "+spec.model);
         return;

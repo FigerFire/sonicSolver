@@ -16,6 +16,7 @@ struct SystemContributionSpec {
     bool eulerian = false;
     /// @brief 完整 PhaseSystem 声明顺序；selected phases 可以是子集或不同顺序。
     std::vector<std::string> phaseOrder;
+    bool stageConservativeTransport=false;
 };
 
 void contribute(

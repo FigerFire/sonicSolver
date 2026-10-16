@@ -1,7 +1,7 @@
 # Boundary conditions. SonicFile accepts patch: condition: value.
 SonicFile:
   object: fields
-  type: boundary
+  type: boundaries
 T:
   inlet: fixedValue: 374.0
   liquidInlet: fixedValue: 374.0

@@ -121,6 +121,40 @@ def main() -> int:
             duplicate_errors.append(f"expanded duplicate basename {name}: {paths}")
 
     authority_errors = []
+    unused_allowed=set(allowed)-{key for key,_ in known_debt}
+    if unused_allowed:
+        authority_errors.append("stale dependency allowlist entries: "+repr(sorted(unused_allowed)))
+
+    # Single-fluid once-step RAS exposes physics, never a second dt/sweep entry.
+    transport_port=(root/"src/core/interfaces/SF_transportModel.h").read_text()
+    if re.search(r'\bcorrect\s*\(',transport_port):
+        authority_errors.append("ITransportModel restored a model-owned timestep entry")
+    for path in (root/"src/models/turbulence").rglob("*"):
+        if path.suffix not in SOURCE_SUFFIXES or path.name.startswith("._"):
+            continue
+        text=path.read_text()
+        if re.search(r'\b(?:correct|scalarTurbulentDiffusion|sstScalarDiffusion|applyScalarBoundaryConditions|applyScalarBC)\s*\(',text):
+            authority_errors.append("Turbulence restored numerical advance/generic boundary execution: "+relative(root,path))
+    for name in ("SF_kEpsilon.cpp","SF_kOmegaSST.cpp"):
+        text=(root/"src/models/turbulence/RAS"/name).read_text()
+        if re.search(r'\bdouble\s+dt\b',text):
+            authority_errors.append("RAS model regained physical dt ownership: "+name)
+
+    # File identity comes from the registry key; role dispatch is independently resolved.
+    case_io = (root / "src/infrastructure/io/case/SF_case.cpp").read_text()
+    io_registry = (root / "src/infrastructure/io/registry/SF_IORegistry.cpp").read_text()
+    for token in ('dispatch("fields/internalField.yaml"', 'dispatch("fields/boundaries.yaml"',
+                  'dispatch("state/state.yaml"', 'dispatch("equations/equations.yaml"',
+                  'dispatch("algorithms/algorithms.yaml"',
+                  'registry.find(document.object,document.type)'):
+        if token in case_io:
+            authority_errors.append("CaseIO reintroduced implicit file loading/raw header dispatch: " + token)
+    for token in ('document.object!=expectedObject', 'document.type!=fileType',
+                  'registry.find(expectedObject,expectedType)', 'context.entryType'):
+        if token not in case_io:
+            authority_errors.append("CaseIO lost registry identity/role validation: " + token)
+    if 'reserved registry role' not in io_registry or 'requires registry key' not in io_registry:
+        authority_errors.append("IORegistry lost reserved key/role validation")
     authority_checks = {
         "src/solver/equation/compressible/SF_compressible.cpp": [
             ("definition_.add", "compressible adapter recreates equation definitions"),
@@ -1304,6 +1338,17 @@ def main() -> int:
     if re.search(r"\btransportedTurbulence\b",re.sub(r"/\*.*?\*/|//[^\n]*","",app,flags=re.S)):
         authority_errors.append("application independently selects transported turbulence execution")
 
+    # A stage mass-flux publication borrows the one solver-owned flux array.
+    flux_view=(root / "src/solver/algorithm/SF_stageFlux.h").read_text()
+    if "const FluxField* flux" not in flux_view or re.search(r"std::vector\s*<|\bFluxField\s+\w+\s*[;{]",flux_view):
+        authority_errors.append("canonical stage flux view acquired a second numerical flux storage")
+    scalar_binding=(root / "src/solver/algorithm/scalar/SF_scalarBinding.cpp").read_text()
+    if re.search(r"(?:->|\.)correct\s*\(|Time::Explicit|forwardEuler|RK4\s*\(",scalar_binding):
+        authority_errors.append("stage scalar binding acquired model-owned temporal advance/tableau")
+    stage_group=(root / "src/solver/algorithm/time/SF_stageGroup.cpp").read_text()
+    if not all(token in stage_group for token in ("coefficientsReady","coefficientPrepare","coefficientPublish")):
+        authority_errors.append("common stage group lost explicit coefficient publication barriers")
+
     phase_pack=cpp_body((root / "src/solver/system/SF_presets.cpp").read_text(),"void addPhaseEquationPack(")
     if "legacyExecution" in phase_pack or not all(token in phase_pack for token in ("addExecution(","bindNumerics(","eulerianPhaseRelations(")):
         authority_errors.append("Eulerian phase pack is not native WHAT/HOW/WHICH")
@@ -1334,6 +1379,17 @@ def main() -> int:
         authority_errors.append("Eulerian turbulence lacks native contribution channels")
     if "EeTurbulenceSolve" in methods or "EeTurbulencePrepare" in methods:
         authority_errors.append("flow Eulerian provider still inserts turbulence numerical updates")
+    model_transport=(root/"src/models/turbulence/SF_equationSystem.cpp").read_text()
+    model_transport_header=(root/"src/models/turbulence/SF_equationSystem.h").read_text()
+    if "previousConserved" in model_transport+model_transport_header or "EquationSystem::commit" in model_transport \
+        or "void applyBoundary(" in model_transport or "EquationSystem::applyBoundary" in model_transport:
+        authority_errors.append("Eulerian turbulence model owns numerical old-time or generic boundary execution")
+    for model_source in (root/"src/models/turbulence").glob("*.cpp"):
+        if not model_source.name.startswith("._") and "PhaseEquationAssembler::" in model_source.read_text():
+            authority_errors.append("Model directory implements Eulerian numerical assembler: "+model_source.name)
+    transport=(root/"src/solver/algorithm/eulerian/equation/SF_transport.cpp").read_text()
+    if not all(token in transport for token in ("PhaseEquationAssembler::solveTurbulence", "workspace_.turbulenceOldTime", "coefficientEpoch_", "Boundary::applyNodeScalarBoundary")):
+        authority_errors.append("Eulerian turbulence lost solver-owned transport, frozen coefficients or boundary binding")
     native_turbulence=(root/"src/solver/system/SF_eulerianTurbulence.cpp").read_text()
     if "legacyAdapter" in native_turbulence or not all(token in native_turbulence for token in
         ('"flow.eulerian-turbulence"',"fusionMembers=members","canonicalFormula", "validateEulerianTurbulenceBindings")):
@@ -1351,9 +1407,31 @@ def main() -> int:
         code=re.sub(r"/\*.*?\*/|//[^\n]*", "",(root / relative_path).read_text(),flags=re.S)
         if re.search(r"\b(?:EquationDescriptor|TermKind|Definition|addLegacyExecution|legacyExecution|legacyEquations)\b",code):
             authority_errors.append("native interface/multiphase contribution reintroduced flat authority: "+relative_path)
-    interface_runtime=(root / "src/models/physics/equationRuntime/SF_interfaceCoupling.cpp").read_text()
+    interface_runtime=(root / "src/solver/algorithm/interface/SF_levelSetOperations.cpp").read_text()
     if "for (int step" in interface_runtime or "Reinit::advance" in interface_runtime:
         authority_errors.append("interface operations regained hidden pseudo-time loop authority")
+
+    # Native IO is the only production parser; numerical mesh generation remains typed.
+    for removed in ("src/infrastructure/io/SF_meshDictReader.cpp",
+                    "src/infrastructure/io/private/SF_foamParser.cpp",
+                    "src/infrastructure/io/private/SF_foamParser.h"):
+        if (root/removed).exists(): authority_errors.append("Removed production IO returned: "+removed)
+    for path in (root/"src/app/gui").rglob("*"):
+        if path.suffix not in (".h",".cpp") or path.name.startswith("._"): continue
+        code=re.sub(r"/\*.*?\*/|//[^\n]*", "",path.read_text(),flags=re.S)
+        if re.search(r"vtkOpenFOAMReader|\b(?:foamValue|foamBlock|createControlDict|loadBlockMeshGeometry)\s*\(",code):
+            authority_errors.append("GUI retained legacy IO backend: "+str(path.relative_to(root)))
+    for path in (root/"src/models/physics/interfaceModel").rglob("*"):
+        if path.suffix in (".h",".cpp") and not path.name.startswith("._"):
+            code=re.sub(r"/\*.*?\*/|//[^\n]*", "",path.read_text(),flags=re.S)
+            if re.search(r"Reinit::Workspace|assembleTransportRHS|primaryScalarRHS|advanceForwardEuler",code):
+                authority_errors.append("Interface model regained solver workspace/time execution: "+str(path.relative_to(root)))
+    for relative_file in ("src/models/physics/multiphase/SF_multiphase.cpp",
+                     "src/models/physics/equationRuntime/SF_equationCoupling.cpp"):
+        if re.search(r"advanceTemperature|advanceForwardEuler|model_?\.advance\(", (root/relative_file).read_text()):
+            authority_errors.append("Model retained hidden thermal advancement: "+relative_file)
+    if "resolvedMultiPhaseSolverKind" in (root/"src/models/physics/multiphase/SF_phaseProperties.cpp").read_text():
+        authority_errors.append("Multiphase models infer a solver family")
 
     # Native Eulerian assembly is AST/provider-owned; flat DSL remains scoped compatibility.
     # Generic contracts must inspect declared capabilities, not module pair names.

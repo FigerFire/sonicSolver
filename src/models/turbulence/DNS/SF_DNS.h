@@ -36,7 +36,7 @@ public:
     /// @param flow 主流场。
     /// @param state 湍流标量存储。
     /// @param config 强类型湍流配置。
-    void applyBoundary(const Field& flow,
+    void applyPhysicalBoundary(const Field& flow,
                        ScalarFields& state,
                        const FDM::TurbulenceConfig& config) override;
 
@@ -44,11 +44,9 @@ public:
     /// @param flow 主流场。
     /// @param state 湍流标量存储。
     /// @param config 强类型湍流配置。
-    /// @param dt 当前时间步长。
-    void correct(const Field& flow,
+    void refreshClosure(const Field& flow,
                  ScalarFields& state,
-                 const FDM::TurbulenceConfig& config,
-                 double dt) override;
+                 const FDM::TurbulenceConfig& config) override;
 
     /// @brief 返回0，表示不添加湍流附加粘度。
     /// @param flow 主流场。

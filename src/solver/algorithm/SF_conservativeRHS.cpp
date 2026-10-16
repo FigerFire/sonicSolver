@@ -177,6 +177,7 @@ void assembleAllPatches(
         Field* field = fields[index];
         if (!field) continue;
         auto& workspace = workspaces[index];
+        workspace.massFlux->invalidate();
         workspace.ensureFor(*field);
         equations.begin(workspace.convectiveFlux, workspace.residual);
         if (trace) HighOrderTrace::workspaceAfterClear(*field, workspace, index);
@@ -204,6 +205,7 @@ void assembleAllPatches(
         for (auto& workspace : workspaces) residuals.push_back(&workspace.residual);
         services.executionRuntime->synchronizeCanonicalFaceFluxes(fields, fluxes, residuals);
     }
+    for(auto& workspace:workspaces)workspace.massFlux->finalizeCanonical();
     if (trace) {
         HighOrderTrace::flux("face flux after canonical COPY", fields, traceWorkspaces);
         HighOrderTrace::residual("directional residual after canonical COPY",

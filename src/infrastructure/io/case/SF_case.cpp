@@ -1,3 +1,5 @@
+#include "mesh/SF_meshParameters.h"
+#include "SF_meshGen.h"
 #include "SF_case.h"
 #include "infrastructure/io/field/SF_field.h"
 #include "infrastructure/io/registry/SF_IORegistry.h"
@@ -17,7 +19,6 @@ std::string lower(std::string value) {
     for(char& c:value)c=static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
     return value;
 }
-bool same(const std::string& a,const std::string& b) { return b.empty()||lower(a)==lower(b); }
 P compactBoundary(const P& value) {
     if(value.is_string())return {{"type",value.get<std::string>()}};
     if(!value.is_object())throw std::runtime_error("Boundary value must be a condition name or mapping");
@@ -50,8 +51,11 @@ P simpleBoundaries(const P& value) {
     return result;
 }
 void addObject(Model::Description& model,Model::ObjectDescriptor object,const std::string& source) {
+    const bool registry=object.type=="stateRegistry" || object.type=="equationRegistry"
+        || object.type=="algorithmRegistry";
     const auto duplicate=std::find_if(model.objects.begin(),model.objects.end(),[&](const auto& current) {
-        return current.name==object.name&&current.category==object.category;
+        return (current.name==object.name&&current.category==object.category)
+            || (registry&&current.type==object.type);
     });
     if(duplicate!=model.objects.end())throw std::runtime_error(source+": duplicate "+object.category+" object "+object.name);
     object.source=source;
@@ -71,8 +75,9 @@ std::string semanticType(const std::string& type) {
 }
 std::string canonicalCategory(const Model::ObjectDescriptor& object) {
     const auto type=semanticType(object.type);
-    if(type=="IBM") return "models"; // Physical contribution; old explicit solver references remain readable.
-    if(type=="ILW" || type=="equationSystem") return "solver";
+    if(type=="IBM") return "models"; // Physical contribution belongs to the model object folder.
+    if(type=="ILW" || type=="equationSystem" || type=="stateRegistry"
+        || type=="equationRegistry" || type=="algorithmRegistry") return "solver";
     if(object.category!="models" && object.category!="solver")
         throw std::runtime_error("Unsupported object category '"+object.category+"' for "+object.name);
     return object.category;
@@ -103,12 +108,17 @@ std::optional<Model::FieldDescriptor> builtinField(
 
 IO::IORegistry nativeRegistry() {
     IO::IORegistry registry;
+    for(const auto& rule:std::vector<std::pair<std::string,std::string>>{{"runtime","runtime"},{"numerics","numerics"},{"algorithm","algorithm"},{"state","stateRegistry"},{"equationRegistry","equationRegistry"},{"execution","algorithmRegistry"}})
+        registry.reserveEntry("solver",rule.first,rule.second,true);
+    registry.reserveEntry("solver","equations","equationSystem");
+    registry.reserveEntry("fields","internalField","internalField",true);
+    registry.reserveEntry("fields","boundaries","boundary",true);
     registry.add("fields","registry",[](IO::LoadContext& context,const Sonic& document) {
         if(!document.body.is_object())throw std::runtime_error(document.source+": fields registry body must be a mapping");
         const auto defaultValue=document.body.contains("default")?document.body.at("default"):P();
         std::set<std::string> symbols;
         for(auto it=document.body.begin();it!=document.body.end();++it) {
-            if(it.key()=="default")continue;
+            if(it.key()=="default" || it.key()=="internalField" || it.key()=="boundaries")continue;
             const auto& value=it.value().is_null()&&!defaultValue.is_null()?defaultValue:it.value();
             Model::FieldDescriptor field;
             if (value.is_object() && !value.contains("type")) {
@@ -143,6 +153,11 @@ IO::IORegistry nativeRegistry() {
             if(!symbols.insert(field.symbol).second)throw std::runtime_error(document.source+": duplicate field symbol "+field.symbol);
             context.model.fields.push_back(std::move(field));
         }
+        // Definitions precede their registered data consumers regardless of YAML mapping order.
+        for(const auto* name:{"internalField","boundaries"})if(document.body.contains(name)) {
+            const auto entry=context.registry.parseEntry(document.object,name,document.body.at(name),document.source);
+            context.loadFile(context.registry.resolveFile(document.object,entry,document.source),entry.name,document.object,entry.type,entry.selection);
+        }
     });
     registry.add("fields","internalField",[](IO::LoadContext& context,const Sonic& document) {
         if(!document.body.is_object())throw std::runtime_error(document.source+": internalField body must be a mapping");
@@ -173,7 +188,7 @@ IO::IORegistry nativeRegistry() {
     const auto loadRegistry=[](IO::LoadContext& context,const Sonic& document) {
         if(!document.body.is_object())throw std::runtime_error(document.source+": registry body must be a mapping");
         for(auto it=document.body.begin();it!=document.body.end();++it) {
-            const auto entry=context.registry.parseEntry(it.key(),it.value(),document.source);
+            const auto entry=context.registry.parseEntry(document.object,it.key(),it.value(),document.source);
             const auto file=context.registry.resolveFile(document.object,entry,document.source);
             context.loadFile(file,entry.name,document.object,entry.type,entry.selection);
         }
@@ -192,15 +207,6 @@ IO::IORegistry nativeRegistry() {
         if(!context.model.solver.empty())throw std::runtime_error(document.source+": algorithm is already loaded");
         context.model.solver=document.body;
     });
-    registry.add("equations","registry",[](IO::LoadContext& context,const Sonic& document) {
-        addObject(context.model,{"equations","equations","equationRegistry",{},document.body,{}},document.source);
-    });
-    registry.add("state","registry",[](IO::LoadContext& context,const Sonic& document) {
-        addObject(context.model,{"state","state","stateRegistry",{},document.body,{}},document.source);
-    });
-    registry.add("algorithms","registry",[](IO::LoadContext& context,const Sonic& document) {
-        addObject(context.model,{"algorithms","algorithms","algorithmRegistry",{},document.body,{}},document.source);
-    });
     registry.add("solver","*",[](IO::LoadContext& context,const Sonic& document) {
         if(context.entryName.empty())throw std::runtime_error(document.source+": a solver module requires a registry name");
         auto parameters=document.body;const auto expression=parameters.value("expression",std::string());
@@ -208,7 +214,7 @@ IO::IORegistry nativeRegistry() {
             parameters.erase("expression");
             if(parameters.contains("parameters"))parameters=parameters.at("parameters");
         }
-        addObject(context.model,{context.entryName,"solver",document.type,expression,parameters,context.selection},document.source);
+        addObject(context.model,{context.entryName,"solver",context.entryType,expression,parameters,context.selection},document.source);
     });
     registry.add("models","*",[](IO::LoadContext& context,const Sonic& document) {
         if(context.entryName.empty())throw std::runtime_error(document.source+": a model module requires a registry name");
@@ -217,15 +223,25 @@ IO::IORegistry nativeRegistry() {
             parameters.erase("expression");
             if(parameters.contains("parameters"))parameters=parameters.at("parameters");
         }
-        addObject(context.model,{context.entryName,"models",document.type,expression,parameters,context.selection},document.source);
+        addObject(context.model,{context.entryName,"models",context.entryType,expression,parameters,context.selection},document.source);
+    });
+    registry.reserveEntry("mesh","generation","structuredMesh",true);
+    registry.add("mesh","structuredMesh",[](IO::LoadContext& context,const Sonic& document) {
+        if (!context.model.meshGeneration.empty()) throw std::runtime_error("Duplicate mesh generation authority");
+        MeshParameters parameters;MeshIO::decodeParameters(document.body,parameters);
+        context.model.meshGeneration=document.body;
     });
     registry.add("mesh","registry",[](IO::LoadContext& context,const Sonic& document) {
         if(!context.model.mesh.empty())throw std::runtime_error(document.source+": mesh is already loaded");
         context.model.mesh=document.body;
+        Model::Schema{{{"files","array",true},{"generation","object"}},false}.validate(document.body,document.source);
+        if (document.body.contains("generation")) {
+            const auto entry=context.registry.parseEntry("mesh","generation",document.body.at("generation"),document.source);
+            context.loadFile(context.registry.resolveFile("mesh",entry,document.source),entry.name,"mesh",entry.type,entry.selection);
+        }
     });
     // Declarations only: the generic registry resolver needs no IBM/ILW branch.
-    registry.addDefaultFile("solver","IBM","models/IBM.yaml");
-    registry.addDefaultFile("solver","ILW","models/ILW.yaml");
+    registry.addDefaultFile("solver","ILW","solvers/ILW.yaml");
     registry.addDefaultFile("models","multiPhase","models/multiPhase.yaml");
     registry.addDefaultFile("models","turbulence","models/turbulence.yaml");
     registry.addDefaultFile("models","thermoDynamics","models/thermoDynamics.yaml");
@@ -241,39 +257,35 @@ Model::Description read(const std::string& path) {
     std::set<std::filesystem::path> loadedFiles;
     std::function<void(const std::string&,const std::string&,const std::string&,const std::string&,const std::string&)> dispatch;
     dispatch=[&](const std::string& relative,const std::string& entryName,const std::string& expectedObject,const std::string& expectedType,const std::string& selection) {
+        const auto folder=expectedObject=="solver"?"solvers":expectedObject;
+        const auto reference=fs::path(relative).lexically_normal();
+        if(reference.is_absolute() || reference.parent_path()!=fs::path(folder))
+            throw std::runtime_error(relative+": registered object "+expectedObject+" must stay in "+folder+"/");
         const auto full=(directory/relative).lexically_normal();
         const auto identity=fs::weakly_canonical(full);
+        if(identity.parent_path()!=fs::weakly_canonical(directory/folder))
+            throw std::runtime_error(relative+": referenced file leaves its object directory "+folder+"/");
         if(!loadedFiles.insert(identity).second)
             throw std::runtime_error(relative+": duplicate referenced file (object "+entryName+").");
         const auto document=Serialization::readSonicFile(full.string());
         const auto shown=fs::relative(full,directory).string();
         model.comments[shown]=document.comments;
-        if(!same(document.object,expectedObject)||!same(document.type,expectedType))
-            throw std::runtime_error(shown+": expected object "+expectedObject+" type "+expectedType+
+        const auto fileType=entryName.empty()?expectedType:entryName;
+        if(document.object!=expectedObject || document.type!=fileType)
+            throw std::runtime_error(shown+": expected object "+expectedObject+" type "+fileType+" (registry role "+expectedType+")"+
                                      ", got object "+document.object+" type "+document.type);
-        IO::LoadContext context{model,registry,directory,entryName,selection,dispatch};
-        registry.find(document.object,document.type).load(context,document);
+        IO::LoadContext context{model,registry,directory,entryName,expectedType,selection,dispatch};
+        registry.find(expectedObject,expectedType).load(context,document);
     };
     const auto meta=Serialization::readSonicFile((directory/"case.yaml").string());
     model.comments["case.yaml"]=meta.comments;
-    if(!same(meta.object,"case")||!same(meta.type,"registry"))throw std::runtime_error("case.yaml: expected object case type registry");
+    if(meta.object!="case"||meta.type!="registry")throw std::runtime_error("case.yaml: expected object case type registry");
     Model::Schema{{{"formatVersion","integer",true},{"name","string",true}},false}.validate(meta.body,"case.yaml");
     model.formatVersion=meta.body.at("formatVersion");model.name=meta.body.at("name");
     if(model.formatVersion!=1)throw std::runtime_error("case.yaml: unsupported formatVersion "+std::to_string(model.formatVersion));
     dispatch("mesh/mesh.yaml","","mesh","registry","");
     dispatch("fields/fields.yaml","","fields","registry","");
-    dispatch("fields/internalField.yaml","","fields","internalField","");
-    dispatch("fields/boundaries.yaml","","fields","boundary","");
     dispatch("solvers/solvers.yaml","","solver","registry","");
-    if (fs::exists(directory/"equations/equations.yaml")) {
-        dispatch("equations/equations.yaml","","equations","registry","");
-    }
-    if (fs::exists(directory/"algorithms/algorithms.yaml")) {
-        dispatch("algorithms/algorithms.yaml","","algorithms","registry","");
-    }
-    if (fs::exists(directory/"state/state.yaml")) {
-        dispatch("state/state.yaml","","state","registry","");
-    }
     dispatch("models/models.yaml","","models","registry","");
     return model;
 }
@@ -303,8 +315,15 @@ void write(const Model::Description& model,const std::string& directory) {
             found==model.comments.end()?std::vector<std::string>{}:found->second},compactConditions});
     };
     writeFile("case.yaml","case","registry",{{"formatVersion",model.formatVersion},{"name",model.name}});
-    writeFile("mesh/mesh.yaml","mesh","registry",model.mesh);
+    P mesh=model.mesh;
+    if (!model.meshGeneration.empty()) {
+        mesh["generation"]={{"type","structuredMesh"},{"file","mesh/generation.yaml"}};
+        writeFile("mesh/generation.yaml","mesh","generation",model.meshGeneration);
+    }
+    writeFile("mesh/mesh.yaml","mesh","registry",mesh);
     P fieldRegistry=P::object();
+    fieldRegistry["internalField"]={{"type","internalField"},{"file","fields/internalField.yaml"}};
+    fieldRegistry["boundaries"]={{"type","boundary"},{"file","fields/boundaries.yaml"}};
     for(const auto& field:model.fields) {
         if(fieldRegistry.contains(field.name))throw std::runtime_error("Duplicate field registry name: "+field.name);
         fieldRegistry[field.name]=FieldIO::encodeRegistry(field);
@@ -322,7 +341,7 @@ void write(const Model::Description& model,const std::string& directory) {
     }
     writeFile("fields/internalField.yaml","fields","internalField",internal);
     P boundaries=P::object();for(const auto& field:model.fields)boundaries[field.name]=simpleBoundaries(field.boundaries);
-    writeFile("fields/boundaries.yaml","fields","boundary",boundaries,true);
+    writeFile("fields/boundaries.yaml","fields","boundaries",boundaries,true);
 
     P solverRegistry=P::object();
     solverRegistry["runtime"]={{"type","runtime"},{"file","solvers/runtime.yaml"}};
@@ -339,9 +358,21 @@ void write(const Model::Description& model,const std::string& directory) {
         const auto origin="name="+object.name+" category="+object.category+" source="+
             (object.source.empty()?"in-memory description":object.source);
         if (object.type=="stateRegistry" || object.type=="equationRegistry" || object.type=="algorithmRegistry") {
-            const std::string category=object.type=="stateRegistry"?"state":object.type=="equationRegistry"?"equations":"algorithms";
-            if(object.category!=category)throw std::runtime_error("Registry category mismatch: "+object.name+" expected "+category);
-            writeFile(category+"/"+category+".yaml",category,"registry",object.parameters,false,origin);
+            const std::string oldCategory=object.type=="stateRegistry"?"state":object.type=="equationRegistry"?"equations":"algorithms";
+            if(object.category!="solver" && object.category!=oldCategory)
+                throw std::runtime_error("Registry category mismatch: "+object.name+" expected solver");
+            const std::string name=object.type=="stateRegistry"?"state":object.type=="equationRegistry"?"equationRegistry":"execution";
+            const std::string file=object.type=="equationRegistry"?"equationRegistry":name;
+            const auto [previous,inserted]=usedSolverNames.emplace(name,origin);
+            if(!inserted)throw std::runtime_error("Duplicate/reserved solver registry object: "+origin+" conflicts with "+previous->second);
+            const std::string relative="solvers/"+file+".yaml";
+            writeFile(relative,"solver",name,object.parameters,false,origin);
+            if(pending.back().document.comments.empty()&&!object.source.empty()) {
+                const auto old=std::filesystem::path(object.source).lexically_relative(model.caseDir).string();
+                const auto found=model.comments.find(old);
+                if(found!=model.comments.end())pending.back().document.comments=found->second;
+            }
+            solverRegistry[name]={{"type",object.type},{"file",relative}};
             continue;
         }
         const auto type=semanticType(object.type);
@@ -353,7 +384,7 @@ void write(const Model::Description& model,const std::string& directory) {
         const std::string relative=std::string(solver?"solvers/":"models/")+safeFileName(object.name)+".yaml";
         P body=object.parameters.is_null()?P::object():object.parameters;
         if(!object.expression.empty())body={{"expression",object.expression},{"parameters",body}};
-        writeFile(relative,solver?"solver":"models",type,body,false,origin);
+        writeFile(relative,solver?"solver":"models",object.name,body,false,origin);
         if(pending.back().document.comments.empty()&&!object.source.empty()) {
             const auto old=std::filesystem::path(object.source).lexically_relative(model.caseDir).string();
             const auto found=model.comments.find(old);
@@ -365,6 +396,10 @@ void write(const Model::Description& model,const std::string& directory) {
     }
     writeFile("solvers/solvers.yaml","solver","registry",solverRegistry);
     writeFile("models/models.yaml","models","registry",modelRegistry);
+    const auto registry=nativeRegistry();
+    for(const auto& group:std::vector<std::pair<std::string,P>>{{"solver",solverRegistry},{"models",modelRegistry}})
+        for(auto it=group.second.begin();it!=group.second.end();++it)
+            registry.parseEntry(group.first,it.key(),it.value(),"output registry");
     for(const auto& file:pending)
         Serialization::writeSonicFile(file.document,(dir/file.relative).string(),file.compact);
 }

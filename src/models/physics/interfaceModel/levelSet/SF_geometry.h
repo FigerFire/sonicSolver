@@ -22,6 +22,10 @@ struct GeometryOptions {
 /// @brief 从 Level Set 场计算法向和曲率。
 class Geometry {
 public:
+    /// @brief 计算物理点法向；跨分区 stencil 必须在曲率计算前由 runtime COPY。
+    static void computeNormals(const Field&, LevelSetField&, const GeometryOptions&);
+    /// @brief 消费已发布的法向 stencil，不清零或重算法向。
+    static void computeCurvature(const Field&, LevelSetField&, const GeometryOptions&);
     /// @brief 计算 normal = grad(phi)/|grad(phi)| 和符号变化邻域的 kappa = div(normal)。
     /// @param field 参考网格。
     /// @param levelSet Level Set 场及几何缓存。

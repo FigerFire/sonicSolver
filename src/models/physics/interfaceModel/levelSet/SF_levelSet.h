@@ -1,7 +1,7 @@
 #pragma once
 
 /// @file SF_levelSet.h
-/// @brief Level Set 界面模型调度器。
+/// @brief Level Set 物理状态与几何/表面力数学。
 
 #include "SF_interfaceModel.h"
 #include "SF_state.h"
@@ -22,18 +22,13 @@ public:
         return config_;
     }
     void initialize(const Field& field) override;
-    void beginTimeStep(double dt) override;
-    void assembleTransportRHS(const Field& field) override;
-    void completeTimeStep(Field& field, double dt) override;
     void refresh(const Field& field) override;
+    void computeNormals(const Field& field) override;
+    void refreshFromNormals(const Field& field) override;
     void addSourceTerms(Field& field, Residual& residual) const override;
     ScalarField& primaryScalar() override { return state_.scalar(); }
     const ScalarField& primaryScalar() const override {
         return state_.scalar();
-    }
-    std::vector<double>& primaryScalarRHS() override { return rhs_; }
-    const std::vector<double>& primaryScalarRHS() const override {
-        return rhs_;
     }
     Multiphase::LevelSetField* levelSetState() noexcept override {
         return &state_;
@@ -44,11 +39,11 @@ public:
     const Multiphase::ConservationDiagnostics& conservation() const override {
         return diagnostics_;
     }
+    void publishConservation(double phaseIndicator,double flowMass) override;
     FDM::InterfacePressureJump pressureJump(
         const Field& field, int i, int j, int k, int axis) const override;
 
     void applyBoundary(const Field& field) override;
-    void correct(const Field& field, double dt) override;
     double dynamicViscosity(const Field& field,
                             int i, int j, int k,
                             double laminarMu) const override;
@@ -56,9 +51,9 @@ public:
 private:
     Multiphase::MultiPhaseConfig config_;
     Multiphase::LevelSetField state_;
-    std::vector<double> rhs_;
     Multiphase::ConservationDiagnostics diagnostics_;
     bool initialized_ = false;
+    bool diagnosticsPublished_ = false;
 
     void requireInitialized(const char* operation) const;
     void updateDiagnostics(const Field& field, bool resetReference);

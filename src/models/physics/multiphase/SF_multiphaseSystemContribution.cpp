@@ -65,6 +65,30 @@ void contributeHomogeneous(System::SystemContribution& system,const MultiPhaseCo
     System::ExecutionScope commit;commit.kind=System::ExecutionKind::Commit;commit.id="physicalStep.commit";commit.order=1000000;
     system.addExecution(std::move(commit));
 }
+void contributeThermal(System::SystemContribution& system,const MultiPhaseConfig& config,bool ilw,int order) {
+    const auto& t=config.temperature;
+    if (!t.enabled) throw std::runtime_error("Thermal equation requires an enabled transported temperature.");
+    system.recordContribution("model.thermal","independent transported temperature; does not replace EOS T");
+    addState(system,"thermal.T",t.fieldName,0,1,false);
+    if(t.transportEnabled)system.requireState("U");
+    auto lhs=E::op("ddt",{E::symbol("thermal.T")});
+    if (t.transportEnabled) lhs=E::add(std::move(lhs),E::op("div",{E::symbol("U"),E::symbol("thermal.T")}));
+    auto rhs=t.diffusionEnabled ? E::op("diffusion",{E::constantValue(t.diffusivity),E::symbol("thermal.T")}) : E::constantValue(0);
+    system.addEquation(System::Equation{"thermalTemperature",std::move(lhs),std::move(rhs),{},true});
+    System::ExecutionScope call;call.kind=System::ExecutionKind::EquationCall;call.order=20;
+    call.step={"thermalTemperature",{"thermal.T"}};system.addExecution(std::move(call));
+    const auto mode=normalizeModelType(t.boundMode);
+    const double boundMode=(mode=="none" || mode=="off") ? 0. :
+        (mode=="diagnose" || mode=="warn" || mode.empty()) ? 1. :
+        (mode=="project" || mode=="clip" || mode=="bounded") ? 2. : -1.;
+    if(boundMode<0)throw std::runtime_error("Unknown thermal boundMode: "+t.boundMode);
+    System::NumericalBinding binding{"thermalTemperature","ThermalEulerTransport"};
+    binding.parameters={{"convection",t.transportEnabled?1.:0.},{"diffusion",t.diffusionEnabled?1.:0.},
+        {"D",t.diffusivity},{"bounded",t.bounded?1.:0.},{"lower",t.lowerBound},{"upper",t.upperBound},
+        {"boundMode",boundMode},
+        {"ilw",ilw?1.:0.},{"ilwOrder",(double)order}};
+    system.bindNumerics(std::move(binding));
+}
 void contributeMixture(System::SystemContribution& system,const MultiPhaseConfig& config) {
     if (config.alpha.phaseName.empty()) throw std::runtime_error("Mixture contribution requires a tracked phase.");
     const auto mass="phaseMass."+config.alpha.phaseName;

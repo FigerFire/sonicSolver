@@ -114,54 +114,6 @@ double blendingF2(const Field& flow,
     return std::tanh(std::pow(std::max(arg2, 0.0), 2.0));
 }
 
-double sstScalarDiffusion(const Field& flow,
-                          const ScalarFields& state,
-                          ScalarSlot slot,
-                          double sigma,
-                          double laminarMu,
-                          int i, int j, int k) {
-    double result = 0.0;
-    double Jcell = 1.0 / std::max(std::abs(flow.Jac(i, j, k)), 1.0e-30);
-
-    auto gammaAt = [&](int ii, int jj, int kk) -> double {
-        return std::max(laminarMu, 0.0)
-             + sigma * std::max(state.EddyMu(ii, jj, kk), 0.0);
-    };
-
-    auto phiAt = [&](int ii, int jj, int kk) -> double {
-        return state.slot(slot, ii, jj, kk);
-    };
-
-    auto addDirection = [&](Math::Dir d) {
-        if (!Math::isDirectionActive(d)) return;
-
-        int di, dj, dk;
-        Math::dirOffset(d, di, dj, dk);
-
-        double cfL[4], cfR[4];
-        Math::faceMetrics(flow, i - di, j - dj, k - dk, d, cfL);
-        Math::faceMetrics(flow, i,      j,      k,      d, cfR);
-
-        double JgL = (cfL[0] * cfL[0] + cfL[1] * cfL[1] + cfL[2] * cfL[2])
-                   / std::max(cfL[3], 1.0e-30);
-        double JgR = (cfR[0] * cfR[0] + cfR[1] * cfR[1] + cfR[2] * cfR[2])
-                   / std::max(cfR[3], 1.0e-30);
-
-        double gamL = 0.5 * (gammaAt(i - di, j - dj, k - dk) + gammaAt(i, j, k));
-        double gamR = 0.5 * (gammaAt(i, j, k) + gammaAt(i + di, j + dj, k + dk));
-
-        double fluxL = gamL * JgL * (phiAt(i, j, k) - phiAt(i - di, j - dj, k - dk));
-        double fluxR = gamR * JgR * (phiAt(i + di, j + dj, k + dk) - phiAt(i, j, k));
-
-        result += (fluxR - fluxL) * Jcell;
-    };
-
-    addDirection(Math::XI);
-    addDirection(Math::ETA);
-    addDirection(Math::ZETA);
-
-    return result;
-}
 
 } // namespace
 
@@ -170,15 +122,11 @@ void KOmegaSSTModel::initialize(const Field& flow,
                                 const FDM::TurbulenceConfig& config) {
     initializeScalar(flow, state, config.scalars.kInitial, ScalarSlot::K);
     initializeScalar(flow, state, config.scalars.omegaInitial, ScalarSlot::Omega);
-    applyBoundary(flow, state, config);
-    refreshEddyMu(flow, state, config);
 }
 
-void KOmegaSSTModel::applyBoundary(const Field& flow,
+void KOmegaSSTModel::applyPhysicalBoundary(const Field& flow,
                                    ScalarFields& state,
                                    const FDM::TurbulenceConfig& config) {
-    applyScalarBC(flow, state, config.scalars.kBoundary, ScalarSlot::K);
-    applyScalarBC(flow, state, config.scalars.omegaBoundary, ScalarSlot::Omega);
 
     int ng = flow.NG();
     int nx = flow.NX();
@@ -197,72 +145,43 @@ void KOmegaSSTModel::applyBoundary(const Field& flow,
         state.values(ScalarSlot::K),state.values(ScalarSlot::Omega),state.values(ScalarSlot::EddyMu));
 }
 
-void KOmegaSSTModel::correct(const Field& flow,
-                             ScalarFields& state,
-                             const FDM::TurbulenceConfig& config,
-                             double dt) {
+FDM::TransportCellClosure KOmegaSSTModel::onceStepClosure(const Field& flow,const ScalarFields& state,
+        const FDM::TurbulenceConfig& config,int i,int j,int k) const {
     const auto& coeff = config.coefficients;
     const SSTConstants c;
 
-    int ng = flow.NG();
-    int nx = flow.NX();
-    int ny = flow.NY();
-    int nz = flow.NZ();
+    double rho   = std::max(flow(i, j, k, RHO), 1.0e-12);
+    double kVal  = clampPositive(state.K(i, j, k),     coeff.kFloor);
+    double wVal  = clampPositive(state.Omega(i, j, k), coeff.omegaFloor);
 
-    for (int k = ng; k < nz + ng; ++k) {
-        for (int j = ng; j < ny + ng; ++j) {
-            for (int i = ng; i < nx + ng; ++i) {
-                if (flow.CellFlag(i, j, k) != FLUID_CELL) continue;
+    double sMag = strainRateMagnitude(flow, i, j, k);
+    double muT  = eddyDynamicViscosity(flow, state, config, i, j, k);
+    double f1 = blendingF1(
+        flow, state, i, j, k, rho, kVal, wVal,
+        config.laminarDynamicViscosity, c,wall_!=nullptr);
+    double sigmaK = f1 * c.sigmaK1 + (1.0 - f1) * c.sigmaK2;
+    double sigmaW = f1 * c.sigmaW1 + (1.0 - f1) * c.sigmaW2;
+    double beta = f1 * c.beta1 + (1.0 - f1) * c.beta2;
+    double gamma = f1 * c.gamma1 + (1.0 - f1) * c.gamma2;
 
-                double rho   = std::max(flow(i, j, k, RHO), 1.0e-12);
-                double kVal  = clampPositive(state.K(i, j, k),     coeff.kFloor);
-                double wVal  = clampPositive(state.Omega(i, j, k), coeff.omegaFloor);
+    double production = std::min(muT * sMag * sMag,
+                                 20.0 * c.betaStar * rho * kVal * wVal);
 
-                double sMag = strainRateMagnitude(flow, i, j, k);
-                double muT  = eddyDynamicViscosity(flow, state, config, i, j, k);
-                double f1 = blendingF1(
-                    flow, state, i, j, k, rho, kVal, wVal,
-                    config.laminarDynamicViscosity, c,wall_!=nullptr);
-                double sigmaK = f1 * c.sigmaK1 + (1.0 - f1) * c.sigmaK2;
-                double sigmaW = f1 * c.sigmaW1 + (1.0 - f1) * c.sigmaW2;
-                double beta = f1 * c.beta1 + (1.0 - f1) * c.beta2;
-                double gamma = f1 * c.gamma1 + (1.0 - f1) * c.gamma2;
+    double dk = production / rho
+              - c.betaStar * kVal * wVal;
+    double domega = gamma * production / std::max(muT, 1.0e-30)
+                  - beta * wVal * wVal;
 
-                double production = std::min(muT * sMag * sMag,
-                                             20.0 * c.betaStar * rho * kVal * wVal);
-
-                double dk = production / rho
-                          - c.betaStar * kVal * wVal;
-                double domega = gamma * production / std::max(muT, 1.0e-30)
-                              - beta * wVal * wVal;
-
-                const Vector3 gradK = scalarPhysicalGradient(
-                    flow, state, ScalarSlot::K, i, j, k);
-                const Vector3 gradW = scalarPhysicalGradient(
-                    flow, state, ScalarSlot::Omega, i, j, k);
-                double crossDiff = 2.0 * (1.0 - f1) * rho * c.sigmaW2
-                                 * SF::dot(gradK, gradW)
-                                 / std::max(wVal, coeff.omegaFloor);
-
-                // ---- SST diffusion  ∇·((μ + σ μ_t) ∇φ) / ρ ----
-                double diffK = sstScalarDiffusion(
-                    flow, state, ScalarSlot::K, sigmaK,
-                    config.laminarDynamicViscosity, i, j, k);
-                double diffW = sstScalarDiffusion(
-                    flow, state, ScalarSlot::Omega, sigmaW,
-                    config.laminarDynamicViscosity, i, j, k);
-
-                dk     += diffK / rho;
-                domega += (diffW + crossDiff) / rho;
-
-                state.K(i, j, k)     = clampPositive(kVal + dt * dk,     coeff.kFloor);
-                state.Omega(i, j, k) = clampPositive(wVal + dt * domega, coeff.omegaFloor);
-            }
-        }
-    }
-
-    applyBoundary(flow, state, config);
-    refreshEddyMu(flow, state, config);
+    const Vector3 gradK = scalarPhysicalGradient(
+        flow, state, ScalarSlot::K, i, j, k);
+    const Vector3 gradW = scalarPhysicalGradient(
+        flow, state, ScalarSlot::Omega, i, j, k);
+    double crossDiff = 2.0 * (1.0 - f1) * rho * c.sigmaW2
+                     * SF::dot(gradK, gradW)
+                     / std::max(wVal, coeff.omegaFloor);
+    FDM::TransportCellClosure result;result.density=rho;
+    result.values={kVal,wVal};result.source={dk,domega};result.diffusionWeight={sigmaK,sigmaW};result.crossDiffusion=crossDiff;
+    return result;
 }
 
 double KOmegaSSTModel::eddyDynamicViscosity(const Field& flow,
@@ -279,6 +198,34 @@ double KOmegaSSTModel::eddyDynamicViscosity(const Field& flow,
     double omegaMag = vorticityMagnitude(flow, i, j, k);
     return rho * c.a1 * kVal
          / std::max(c.a1 * omegaVal, omegaMag * f2);
+}
+
+FDM::TransportStageCoefficients KOmegaSSTModel::stageCoefficients(const Field& flow,
+        const FDM::TransportStageSamples& samples,const FDM::TurbulenceConfig& config,int i,int j,int k) const {
+    const SSTConstants c;
+    const double rho=flow(i,j,k,RHO),kv=samples[0](i,j,k),wv=samples[1](i,j,k);
+    if(!std::isfinite(rho) || rho<=0 || !std::isfinite(kv) || kv<=0 || !std::isfinite(wv) || wv<=0)
+        throw std::runtime_error("Stage SST requires positive finite rho/k/omega; no positivity repair.");
+    const auto gradK=CENTRAL2::gradSampled(flow,samples[0],i,j,k);
+    const auto gradW=CENTRAL2::gradSampled(flow,samples[1],i,j,k);
+    const double product=dot(gradK,gradW),d=wallDistance(flow,i,j,k,wall_!=nullptr);
+    const double nu=laminarKinematicViscosity(rho,config.laminarDynamicViscosity);
+    const double cd=std::max(2*rho*c.sigmaW2*product/std::max(wv,1e-30),1e-20);
+    const double t1=std::sqrt(kv)/std::max(c.betaStar*wv*d,1e-30);
+    const double t2=500*nu/std::max(d*d*wv,1e-30);
+    const double t3=4*rho*c.sigmaW2*kv/std::max(cd*d*d,1e-30);
+    FDM::TransportStageCoefficients value;
+    value.blending1=std::tanh(std::pow(std::max(std::min(std::max(t1,t2),t3),0.),4.));
+    value.blending2=std::tanh(std::pow(std::max(std::max(2*t1,t2),0.),2.));
+    value.dynamicViscosity=rho*c.a1*kv/std::max(c.a1*wv,vorticityMagnitude(flow,i,j,k)*value.blending2);
+    const double f1=value.blending1,s=strainRateMagnitude(flow,i,j,k);
+    const double production=std::min(value.dynamicViscosity*s*s,20*c.betaStar*rho*kv*wv);
+    value.diffusivity={(config.laminarDynamicViscosity+(f1*c.sigmaK1+(1-f1)*c.sigmaK2)*value.dynamicViscosity)/rho,
+        (config.laminarDynamicViscosity+(f1*c.sigmaW1+(1-f1)*c.sigmaW2)*value.dynamicViscosity)/rho};
+    value.production={production,rho*(f1*c.gamma1+(1-f1)*c.gamma2)*production/std::max(value.dynamicViscosity,1e-30)};
+    value.sink={c.betaStar*rho*wv,(f1*c.beta1+(1-f1)*c.beta2)*rho*wv};
+    value.crossSource=2*(1-f1)*rho*c.sigmaW2*product/std::max(wv,config.coefficients.omegaFloor);
+    return value;
 }
 
 } // namespace RAS

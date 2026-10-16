@@ -10,7 +10,7 @@ namespace SF::GUI {
 ViewModeSwitch::ViewModeSwitch(QWidget* parent)
     : QAbstractButton(parent)
 {
-    // 和 SwitchButton 一样，这也是一个 checked/unchecked 双态按钮。
+    // GEO/MESH 是 checked/unchecked 双态视图按钮。
     // unchecked 表示 GEO，checked 表示 MESH。
     setCheckable(true);
     setCursor(Qt::PointingHandCursor);

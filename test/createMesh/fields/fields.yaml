@@ -2,3 +2,11 @@
 SonicFile:
   object: fields
   type: registry
+
+internalField:
+  type: internalField
+  file: fields/internalField.yaml
+
+boundaries:
+  type: boundary
+  file: fields/boundaries.yaml

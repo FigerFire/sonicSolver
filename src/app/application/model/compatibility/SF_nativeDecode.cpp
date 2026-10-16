@@ -1,5 +1,5 @@
 /// @file SF_nativeDecode.cpp
-/// @brief Native JSON decoding of OpenFOAM-compatible case documents.
+/// @brief Native typed description decoding.
 
 #include "SF_compatibility.h"
 #include "app/application/model/SF_configParser.h"
@@ -11,7 +11,7 @@
 #include "SF_multiphase.h"
 #include "SF_config.h"
 #include "private/SF_casePath.h"
-#include "private/SF_foamParser.h"
+#include "private/SF_valueParser.h"
 #include "private/SF_sourceParserUtils.h"
 
 #include <algorithm>
@@ -128,7 +128,7 @@ auto parseLevelSet = [&](const P* block) {
     std::string v = jsonValueAfterKey(block, "advectionOrder");
     if (!v.empty()) {
         config.levelSet.advectionOrder =
-            foamIntValue(v, config.levelSet.advectionOrder);
+            valueIntValue(v, config.levelSet.advectionOrder);
     }
     v = jsonValueAfterKey(block, "advectionTimeScheme");
     if (v.empty()) v = jsonValueAfterKey(block, "timeScheme");
@@ -141,78 +141,78 @@ auto parseLevelSet = [&](const P* block) {
     v = jsonValueAfterKey(block, "wenoEpsilon");
     if (!v.empty()) {
         config.levelSet.wenoEpsilon =
-            foamDoubleValue(v, config.levelSet.wenoEpsilon);
+            valueDoubleValue(v, config.levelSet.wenoEpsilon);
     }
     v = jsonValueAfterKey(block, "wenoPower");
     if (!v.empty()) {
         config.levelSet.wenoPower =
-            foamDoubleValue(v, config.levelSet.wenoPower);
+            valueDoubleValue(v, config.levelSet.wenoPower);
     }
     v = jsonValueAfterKey(block, "advectFluidCellsOnly");
     if (!v.empty()) {
-        const std::string key = foamLower(foamUnquote(v));
+        const std::string key = valueLower(valueUnquote(v));
         if (key != "true" && key != "false" && key != "yes" && key != "no"
             && key != "on" && key != "off" && key != "1" && key != "0") {
             fatalCaseConfig(
                 "[levelSet].advectFluidCellsOnly must be an explicit boolean.");
         }
-        config.levelSet.advectFluidCellsOnly = foamBoolValue(v, false);
+        config.levelSet.advectFluidCellsOnly = valueBoolValue(v, false);
         config.levelSet.advectFluidCellsOnlyDeclared = true;
     }
     v = jsonValueAfterKey(block, "reinitializationOrder");
     if (!v.empty()) {
         config.levelSet.reinitializationOrder =
-            foamIntValue(v, config.levelSet.reinitializationOrder);
+            valueIntValue(v, config.levelSet.reinitializationOrder);
     }
     v = jsonValueAfterKey(block, "reinitializationSteps");
     if (!v.empty()) {
         config.levelSet.reinitializationSteps =
-            foamIntValue(v, config.levelSet.reinitializationSteps);
+            valueIntValue(v, config.levelSet.reinitializationSteps);
     }
     v = jsonValueAfterKey(block, "pseudoTimeStep");
     if (!v.empty()) {
         config.levelSet.pseudoTimeStep =
-            foamDoubleValue(v, config.levelSet.pseudoTimeStep);
+            valueDoubleValue(v, config.levelSet.pseudoTimeStep);
     }
     v = jsonValueAfterKey(block, "signSmoothingFactor");
     if (!v.empty()) {
         config.levelSet.signSmoothingFactor =
-            foamDoubleValue(v, config.levelSet.signSmoothingFactor);
+            valueDoubleValue(v, config.levelSet.signSmoothingFactor);
     }
     v = jsonValueAfterKey(block, "geometryGradientTolerance");
     if (!v.empty()) {
         config.levelSet.geometryGradientTolerance =
-            foamDoubleValue(v, config.levelSet.geometryGradientTolerance);
+            valueDoubleValue(v, config.levelSet.geometryGradientTolerance);
     }
     v = jsonValueAfterKey(block, "interfaceThickness");
     if (!v.empty()) {
         config.levelSet.interfaceThickness =
-            foamDoubleValue(v, config.levelSet.interfaceThickness);
+            valueDoubleValue(v, config.levelSet.interfaceThickness);
     }
     v = jsonValueAfterKey(block, "narrowBandWidth");
     if (!v.empty()) {
         config.levelSet.narrowBandWidth =
-            foamDoubleValue(v, config.levelSet.narrowBandWidth);
+            valueDoubleValue(v, config.levelSet.narrowBandWidth);
     }
     v = jsonValueAfterKey(block, "surfaceTension");
     if (!v.empty()) {
         config.levelSet.surfaceTension =
-            foamDoubleValue(v, config.levelSet.surfaceTension);
+            valueDoubleValue(v, config.levelSet.surfaceTension);
     }
     v = jsonValueAfterKey(block, "surfaceTensionModel");
     if (!v.empty()) {
-        config.levelSet.surfaceTensionModel = foamUnquote(v);
+        config.levelSet.surfaceTensionModel = valueUnquote(v);
         config.levelSet.surfaceTensionModelDeclared = true;
     }
     v = jsonValueAfterKey(block, "massCorrection");
     if (!v.empty()) {
-        const std::string key = foamLower(foamUnquote(v));
+        const std::string key = valueLower(valueUnquote(v));
         if (key != "true" && key != "false" && key != "yes" && key != "no"
             && key != "on" && key != "off" && key != "1" && key != "0") {
             fatalCaseConfig(
                 "[levelSet].massCorrection must be an explicit boolean.");
         }
-        config.levelSet.massCorrection = foamBoolValue(v, false);
+        config.levelSet.massCorrection = valueBoolValue(v, false);
         config.levelSet.massCorrectionDeclared = true;
     }
 };
@@ -222,10 +222,10 @@ parseLevelSet(jsonBlockAfterKey(text, "levelSet"));
 auto parseMixture = [&](const P* block) {
     if (!block) return;
     std::string v = jsonValueAfterKey(block, "phases");
-    if (!v.empty()) config.mixture.phaseNames = foamWordList(v);
+    if (!v.empty()) config.mixture.phaseNames = valueWordList(v);
     for (const std::string& raw :
          jsonValuesAfterKey(block, "phaseFraction")) {
-        for (const std::string& fieldName : foamWordList(raw)) {
+        for (const std::string& fieldName : valueWordList(raw)) {
             if (!fieldName.empty()
                 && std::find(config.mixture.phaseFractionFields.begin(),
                              config.mixture.phaseFractionFields.end(),
@@ -253,60 +253,60 @@ auto parseAlpha = [&](const P* block) {
     if (!block) return;
     std::string v = jsonValueAfterKey(block, "fieldName");
     if (v.empty()) v = jsonValueAfterKey(block, "name");
-    if (!v.empty()) config.alpha.fieldName = foamUnquote(v);
+    if (!v.empty()) config.alpha.fieldName = valueUnquote(v);
     v = jsonValueAfterKey(block, "phase");
     if (v.empty()) v = jsonValueAfterKey(block, "alphaPhase");
-    if (!v.empty()) config.alpha.phaseName = foamUnquote(v);
+    if (!v.empty()) config.alpha.phaseName = valueUnquote(v);
     v = jsonValueAfterKey(block, "defaultAlpha");
     if (v.empty()) v = jsonValueAfterKey(block, "defaultValue");
     if (v.empty()) v = jsonValueAfterKey(block, "value");
     if (!v.empty()) {
         config.alpha.defaultValue =
-            foamDoubleValue(v, config.alpha.defaultValue);
+            valueDoubleValue(v, config.alpha.defaultValue);
     }
     v = jsonValueAfterKey(block, "transport");
     if (v.empty()) v = jsonValueAfterKey(block, "transportEnabled");
     if (v.empty()) v = jsonValueAfterKey(block, "enabled");
     if (!v.empty()) {
         config.alpha.transportEnabled =
-            foamBoolValue(v, config.alpha.transportEnabled);
+            valueBoolValue(v, config.alpha.transportEnabled);
     }
     v = jsonValueAfterKey(block, "diffusion");
     if (v.empty()) v = jsonValueAfterKey(block, "diffusionEnabled");
     if (!v.empty()) {
         config.alpha.diffusionEnabled =
-            foamBoolValue(v, config.alpha.diffusionEnabled);
+            valueBoolValue(v, config.alpha.diffusionEnabled);
     }
     v = jsonValueAfterKey(block, "diffusivity");
     if (v.empty()) v = jsonValueAfterKey(block, "D");
     if (v.empty()) v = jsonValueAfterKey(block, "Dalpha");
     if (!v.empty()) {
         config.alpha.diffusivity =
-            foamDoubleValue(v, config.alpha.diffusivity);
+            valueDoubleValue(v, config.alpha.diffusivity);
         config.alpha.diffusionEnabled = config.alpha.diffusivity > 0.0;
     }
     v = jsonValueAfterKey(block, "bounded");
     if (!v.empty()) {
         config.alpha.bounded =
-            foamBoolValue(v, config.alpha.bounded);
+            valueBoolValue(v, config.alpha.bounded);
     }
     v = jsonValueAfterKey(block, "boundMode");
     if (v.empty()) v = jsonValueAfterKey(block, "boundsMode");
-    if (!v.empty()) config.alpha.boundMode = foamUnquote(v);
+    if (!v.empty()) config.alpha.boundMode = valueUnquote(v);
     v = jsonValueAfterKey(block, "lowerBound");
     if (v.empty()) v = jsonValueAfterKey(block, "min");
     if (!v.empty()) {
         config.alpha.lowerBound =
-            foamDoubleValue(v, config.alpha.lowerBound);
+            valueDoubleValue(v, config.alpha.lowerBound);
     }
     v = jsonValueAfterKey(block, "upperBound");
     if (v.empty()) v = jsonValueAfterKey(block, "max");
     if (!v.empty()) {
         config.alpha.upperBound =
-            foamDoubleValue(v, config.alpha.upperBound);
+            valueDoubleValue(v, config.alpha.upperBound);
     }
     v = jsonValueAfterKey(block, "bounds");
-    const std::vector<double> bounds = foamNumbers(v);
+    const std::vector<double> bounds = valueNumbers(v);
     if (bounds.size() >= 2) {
         config.alpha.lowerBound = bounds[0];
         config.alpha.upperBound = bounds[1];
@@ -322,61 +322,61 @@ auto parseTemperature = [&](const P* block) {
     if (v.empty()) v = jsonValueAfterKey(block, "solve");
     if (!v.empty()) {
         config.temperature.enabled =
-            foamBoolValue(v, config.temperature.enabled);
+            valueBoolValue(v, config.temperature.enabled);
     }
     v = jsonValueAfterKey(block, "fieldName");
     if (v.empty()) v = jsonValueAfterKey(block, "name");
-    if (!v.empty()) config.temperature.fieldName = foamUnquote(v);
+    if (!v.empty()) config.temperature.fieldName = valueUnquote(v);
     v = jsonValueAfterKey(block, "defaultValue");
     if (v.empty()) v = jsonValueAfterKey(block, "defaultTemperature");
     if (v.empty()) v = jsonValueAfterKey(block, "T0");
     if (!v.empty()) {
         config.temperature.defaultValue =
-            foamDoubleValue(v, config.temperature.defaultValue);
+            valueDoubleValue(v, config.temperature.defaultValue);
     }
     v = jsonValueAfterKey(block, "transport");
     if (v.empty()) v = jsonValueAfterKey(block, "transportEnabled");
     if (!v.empty()) {
         config.temperature.transportEnabled =
-            foamBoolValue(v, config.temperature.transportEnabled);
+            valueBoolValue(v, config.temperature.transportEnabled);
     }
     v = jsonValueAfterKey(block, "diffusion");
     if (v.empty()) v = jsonValueAfterKey(block, "diffusionEnabled");
     if (!v.empty()) {
         config.temperature.diffusionEnabled =
-            foamBoolValue(v, config.temperature.diffusionEnabled);
+            valueBoolValue(v, config.temperature.diffusionEnabled);
     }
     v = jsonValueAfterKey(block, "diffusivity");
     if (v.empty()) v = jsonValueAfterKey(block, "D");
     if (v.empty()) v = jsonValueAfterKey(block, "DT");
     if (!v.empty()) {
         config.temperature.diffusivity =
-            foamDoubleValue(v, config.temperature.diffusivity);
+            valueDoubleValue(v, config.temperature.diffusivity);
         config.temperature.diffusionEnabled =
             config.temperature.diffusivity > 0.0;
     }
     v = jsonValueAfterKey(block, "bounded");
     if (!v.empty()) {
         config.temperature.bounded =
-            foamBoolValue(v, config.temperature.bounded);
+            valueBoolValue(v, config.temperature.bounded);
     }
     v = jsonValueAfterKey(block, "boundMode");
     if (v.empty()) v = jsonValueAfterKey(block, "boundsMode");
-    if (!v.empty()) config.temperature.boundMode = foamUnquote(v);
+    if (!v.empty()) config.temperature.boundMode = valueUnquote(v);
     v = jsonValueAfterKey(block, "lowerBound");
     if (v.empty()) v = jsonValueAfterKey(block, "min");
     if (!v.empty()) {
         config.temperature.lowerBound =
-            foamDoubleValue(v, config.temperature.lowerBound);
+            valueDoubleValue(v, config.temperature.lowerBound);
     }
     v = jsonValueAfterKey(block, "upperBound");
     if (v.empty()) v = jsonValueAfterKey(block, "max");
     if (!v.empty()) {
         config.temperature.upperBound =
-            foamDoubleValue(v, config.temperature.upperBound);
+            valueDoubleValue(v, config.temperature.upperBound);
     }
     v = jsonValueAfterKey(block, "bounds");
-    const std::vector<double> bounds = foamNumbers(v);
+    const std::vector<double> bounds = valueNumbers(v);
     if (bounds.size() >= 2) {
         config.temperature.lowerBound = bounds[0];
         config.temperature.upperBound = bounds[1];
@@ -387,51 +387,48 @@ parseTemperature(jsonBlockAfterKey(text, "temperature"));
 
 auto parsePhaseChange = [&](const P* block) {
     if (!block) return;
+    config.phaseChange.enabled = true;
     std::string v = jsonValueAfterKey(block, "enabled");
     if (v.empty()) v = jsonValueAfterKey(block, "enable");
     if (!v.empty()) {
         config.phaseChange.enabled =
-            foamBoolValue(v, config.phaseChange.enabled);
+            valueBoolValue(v, config.phaseChange.enabled);
     }
     v = jsonValueAfterKey(block, "model");
     if (v.empty()) v = jsonValueAfterKey(block, "type");
     if (!v.empty()) {
-        config.phaseChange.model = foamUnquote(v);
-        if (Physics::Multiphase::normalizeModelType(
-                config.phaseChange.model) != "none") {
-            config.phaseChange.enabled = true;
-        }
+        config.phaseChange.model = valueUnquote(v);
     }
     v = jsonValueAfterKey(block, "saturationTemperature");
     if (v.empty()) v = jsonValueAfterKey(block, "Tsat");
     if (!v.empty()) {
         config.phaseChange.saturationTemperature =
-            foamDoubleValue(v, config.phaseChange.saturationTemperature);
+            valueDoubleValue(v, config.phaseChange.saturationTemperature);
     }
     v = jsonValueAfterKey(block, "evaporationCoefficient");
     if (v.empty()) v = jsonValueAfterKey(block, "evaporationRate");
     if (v.empty()) v = jsonValueAfterKey(block, "coefficient");
     if (!v.empty()) {
         config.phaseChange.evaporationCoefficient =
-            foamDoubleValue(v, config.phaseChange.evaporationCoefficient);
+            valueDoubleValue(v, config.phaseChange.evaporationCoefficient);
     }
     v = jsonValueAfterKey(block, "condensationCoefficient");
     if (v.empty()) v = jsonValueAfterKey(block, "condensationRate");
     if (v.empty()) v = jsonValueAfterKey(block, "coefficient");
     if (!v.empty()) {
         config.phaseChange.condensationCoefficient =
-            foamDoubleValue(v, config.phaseChange.condensationCoefficient);
+            valueDoubleValue(v, config.phaseChange.condensationCoefficient);
     }
     v = jsonValueAfterKey(block, "latentHeat");
     if (v.empty()) v = jsonValueAfterKey(block, "L");
     if (!v.empty()) {
         config.phaseChange.latentHeat =
-            foamDoubleValue(v, config.phaseChange.latentHeat);
+            valueDoubleValue(v, config.phaseChange.latentHeat);
     }
     v = jsonValueAfterKey(block, "energyCoupling");
     if (!v.empty()) {
         config.phaseChange.energyCoupling =
-            foamBoolValue(v, config.phaseChange.energyCoupling);
+            valueBoolValue(v, config.phaseChange.energyCoupling);
     }
 };
 parsePhaseChange(jsonBlockAfterKey(text, "phaseChange"));
@@ -459,7 +456,7 @@ void appendPhaseBlock(
         }
     }
     if (!v.empty()) {
-        phase.thermoModel = foamUnquote(v);
+        phase.thermoModel = valueUnquote(v);
         const std::string modelKey = sourceTokenKey(phase.thermoModel);
         if (modelKey == "perfectliquid") {
             phase.role = MP::PhaseRole::Liquid;
@@ -478,7 +475,7 @@ void appendPhaseBlock(
         }
     }
     if (!v.empty()) {
-        phase.role = MP::parsePhaseRole(foamUnquote(v));
+        phase.role = MP::parsePhaseRole(valueUnquote(v));
         phase.roleDeclared = phase.role != MP::PhaseRole::Unknown;
     }
     if (phase.role == MP::PhaseRole::Unknown) {
@@ -487,11 +484,11 @@ void appendPhaseBlock(
     v = jsonValueAfterKey(block, "density");
     if (v.empty()) v = jsonValueAfterKey(block, "rho0");
     if (v.empty()) v = jsonValueAfterKey(block, "rho");
-    if (!v.empty()) phase.density = foamDoubleValue(v, phase.density);
+    if (!v.empty()) phase.density = valueDoubleValue(v, phase.density);
     v = jsonValueAfterKey(block, "viscosity");
     if (v.empty()) v = jsonValueAfterKey(block, "mu");
     if (!v.empty()) {
-        phase.viscosity = foamDoubleValue(v, phase.viscosity);
+        phase.viscosity = valueDoubleValue(v, phase.viscosity);
     }
     v = jsonValueAfterKey(block, "specificHeat");
     if (v.empty()) v = jsonValueAfterKey(block, "heatCapacity");
@@ -500,42 +497,42 @@ void appendPhaseBlock(
     if (v.empty()) v = jsonValueAfterKey(block, "Cv");
     if (!v.empty()) {
         phase.specificHeat =
-            foamDoubleValue(v, phase.specificHeat);
+            valueDoubleValue(v, phase.specificHeat);
     }
     v = jsonValueAfterKey(block, "Cv");
     if (v.empty()) v = jsonValueAfterKey(block, "cv");
-    if (!v.empty()) phase.Cv = foamDoubleValue(v, phase.Cv);
+    if (!v.empty()) phase.Cv = valueDoubleValue(v, phase.Cv);
     v = jsonValueAfterKey(block, "e0");
-    if (!v.empty()) phase.e0 = foamDoubleValue(v, phase.e0);
+    if (!v.empty()) phase.e0 = valueDoubleValue(v, phase.e0);
     v = jsonValueAfterKey(block, "T_ref");
     if (v.empty()) v = jsonValueAfterKey(block, "Tref");
-    if (!v.empty()) phase.T_ref = foamDoubleValue(v, phase.T_ref);
+    if (!v.empty()) phase.T_ref = valueDoubleValue(v, phase.T_ref);
     v = jsonValueAfterKey(block, "gamma");
-    if (!v.empty()) phase.gamma = foamDoubleValue(v, phase.gamma);
+    if (!v.empty()) phase.gamma = valueDoubleValue(v, phase.gamma);
     v = jsonValueAfterKey(block, "gasConstant");
     if (v.empty()) v = jsonValueAfterKey(block, "R");
-    if (!v.empty()) phase.gasConstant = foamDoubleValue(v, phase.gasConstant);
+    if (!v.empty()) phase.gasConstant = valueDoubleValue(v, phase.gasConstant);
     v = jsonValueAfterKey(block, "pInfinity");
     if (v.empty()) v = jsonValueAfterKey(block, "pInf");
-    if (!v.empty()) phase.pInfinity = foamDoubleValue(v, phase.pInfinity);
+    if (!v.empty()) phase.pInfinity = valueDoubleValue(v, phase.pInfinity);
     v = jsonValueAfterKey(block, "volumeFraction");
     if (v.empty()) v = jsonValueAfterKey(block, "alpha");
     if (!v.empty()) {
-        phase.volumeFraction = foamDoubleValue(v, phase.volumeFraction);
+        phase.volumeFraction = valueDoubleValue(v, phase.volumeFraction);
         phase.initialAlphaDeclared = true;
     }
     v = jsonValueAfterKey(block, "temperature");
     if (v.empty()) v = jsonValueAfterKey(block, "T0");
     if (v.empty()) v = jsonValueAfterKey(block, "T");
     if (!v.empty()) {
-        phase.initialTemperature = foamDoubleValue(v, phase.initialTemperature);
+        phase.initialTemperature = valueDoubleValue(v, phase.initialTemperature);
         phase.initialTemperatureDeclared = true;
     }
     v = jsonValueAfterKey(block, "velocity");
     if (v.empty()) v = jsonValueAfterKey(block, "U0");
     if (v.empty()) v = jsonValueAfterKey(block, "U");
     if (!v.empty()) {
-        if (!foamVectorValue(v, &phase.initialVelocity)) {
+        if (!valueVectorValue(v, &phase.initialVelocity)) {
             fatalCaseConfig("phase '" + name + "' has invalid velocity/U0.");
         }
         phase.initialVelocityDeclared = true;
@@ -547,7 +544,7 @@ void appendPhaseBlock(
     if (v.empty()) v = jsonValueAfterKey(block, "k");
     if (!v.empty()) {
         phase.thermalConductivity =
-            foamDoubleValue(v, phase.thermalConductivity);
+            valueDoubleValue(v, phase.thermalConductivity);
     }
     auto parseTemperatureLaw = [&](const std::string& key,
                                    MP::TemperaturePropertyLaw& law) {
@@ -559,21 +556,21 @@ void appendPhaseBlock(
         if (lawValue.empty()) {
             lawValue = jsonValueAfterKey(lawBlock, "model");
         }
-        if (!lawValue.empty()) law.model = foamUnquote(lawValue);
+        if (!lawValue.empty()) law.model = valueUnquote(lawValue);
         lawValue = jsonValueAfterKey(
             lawBlock, "referenceTemperature");
         if (lawValue.empty()) {
             lawValue = jsonValueAfterKey(lawBlock, "Tref");
         }
         if (!lawValue.empty()) {
-            law.referenceTemperature = foamDoubleValue(
+            law.referenceTemperature = valueDoubleValue(
                 lawValue, law.referenceTemperature);
         }
         lawValue = jsonValueAfterKey(lawBlock, "validTemperature");
         if (lawValue.empty()) {
             lawValue = jsonValueAfterKey(lawBlock, "temperatureRange");
         }
-        const auto range = foamNumbers(lawValue);
+        const auto range = valueNumbers(lawValue);
         if (range.size() == 2) {
             law.minimumTemperature = range[0];
             law.maximumTemperature = range[1];
@@ -582,7 +579,7 @@ void appendPhaseBlock(
         if (lawValue.empty()) {
             lawValue = jsonValueAfterKey(lawBlock, "coeffs");
         }
-        law.coefficients = foamNumbers(lawValue);
+        law.coefficients = valueNumbers(lawValue);
     };
     parseTemperatureLaw("density", phase.densityLaw);
     parseTemperatureLaw("rho", phase.densityLaw);
@@ -595,18 +592,18 @@ void appendPhaseBlock(
         "thermalConductivity", phase.thermalConductivityLaw);
     parseTemperatureLaw("k", phase.thermalConductivityLaw);
     v = jsonValueAfterKey(block, "diameterModel");
-    if (!v.empty()) phase.diameterModel = foamUnquote(v);
+    if (!v.empty()) phase.diameterModel = valueUnquote(v);
     const P* diameterBlock = jsonBlockAfterKey(block, phase.diameterModel + "Coeffs");
     if (!diameterBlock) {
         diameterBlock = jsonBlockAfterKey(block, "diameter");
     }
     v = jsonValueAfterKey(diameterBlock, "d");
     if (v.empty()) v = jsonValueAfterKey(diameterBlock, "diameter");
-    if (!v.empty()) phase.diameter = foamDoubleValue(v, phase.diameter);
+    if (!v.empty()) phase.diameter = valueDoubleValue(v, phase.diameter);
     v = jsonValueAfterKey(block, "residualAlpha");
     if (!v.empty()) {
         phase.residualAlpha =
-            foamDoubleValue(v, phase.residualAlpha);
+            valueDoubleValue(v, phase.residualAlpha);
     }
     const P* speciesBlock = jsonBlockAfterKey(block, "species");
     for (const auto& [speciesName, speciesText] : jsonChildBlocks(speciesBlock)) {
@@ -614,7 +611,7 @@ void appendPhaseBlock(
         species.name = speciesName;
         std::string y = jsonValueAfterKey(speciesText, "massFraction");
         if (y.empty()) y = jsonValueAfterKey(speciesText, "Y");
-        if (!y.empty()) species.massFraction = foamDoubleValue(y, species.massFraction);
+        if (!y.empty()) species.massFraction = valueDoubleValue(y, species.massFraction);
         phase.species.push_back(std::move(species));
     }
     config.phases.push_back(phase);
@@ -651,7 +648,7 @@ void parseEulerianProperties(
 if (MP::isEulerianEulerianType(config.type)) {
     value = jsonValueAfterKey(multiPhase, "phases");
     if (value.empty()) value = jsonValueAfterKey(text, "phases");
-    config.eulerianEulerian.phaseNames = foamWordList(value);
+    config.eulerianEulerian.phaseNames = valueWordList(value);
     for (const std::string& phaseName :
          config.eulerianEulerian.phaseNames) {
         const P* block = jsonBlockAfterKey(text, phaseName);
@@ -661,11 +658,11 @@ if (MP::isEulerianEulerianType(config.type)) {
     }
     value = jsonValueAfterKey(multiPhase, "referencePhase");
     if (value.empty()) value = jsonValueAfterKey(text, "referencePhase");
-    config.eulerianEulerian.referencePhase = foamUnquote(value);
+    config.eulerianEulerian.referencePhase = valueUnquote(value);
     value = jsonValueAfterKey(multiPhase, "geometryModel");
     if (value.empty()) value = jsonValueAfterKey(text, "geometryModel");
     const std::string geometryModel =
-        FDM::normalizeToken(foamUnquote(value));
+        FDM::normalizeToken(valueUnquote(value));
     if (!geometryModel.empty()
         && geometryModel != "cartesian"
         && geometryModel != "axisymmetric") {
@@ -680,7 +677,7 @@ if (MP::isEulerianEulerianType(config.type)) {
         value = jsonValueAfterKey(text, "radialCoordinate");
     }
     const std::string radial =
-        FDM::normalizeToken(foamUnquote(value));
+        FDM::normalizeToken(valueUnquote(value));
     if (!radial.empty()) {
         if (radial == "x") config.eulerianEulerian.radialCoordinate = 0;
         else if (radial == "y") config.eulerianEulerian.radialCoordinate = 1;
@@ -709,9 +706,9 @@ if (MP::isEulerianEulerianType(config.type)) {
         MP::PhasePairModelOptions pair;
         pair.name = pairName;
         value = jsonValueAfterKey(pairBlock, "continuousPhase");
-        pair.continuousPhase = foamUnquote(value);
+        pair.continuousPhase = valueUnquote(value);
         value = jsonValueAfterKey(pairBlock, "dispersedPhase");
-        pair.dispersedPhase = foamUnquote(value);
+        pair.dispersedPhase = valueUnquote(value);
 
         const P* drag = jsonBlockAfterKey(pairBlock, "drag");
         const P* lift = jsonBlockAfterKey(pairBlock, "lift");
@@ -723,65 +720,65 @@ if (MP::isEulerianEulerianType(config.type)) {
 
         value = jsonValueAfterKey(drag, "model");
         if (value.empty()) value = jsonValueAfterKey(drag, "type");
-        if (!value.empty()) pair.dragModel = foamUnquote(value);
+        if (!value.empty()) pair.dragModel = valueUnquote(value);
         value = jsonValueAfterKey(drag, "particleDiameter");
         if (value.empty()) value = jsonValueAfterKey(drag, "diameter");
         if (!value.empty()) {
             pair.particleDiameter =
-                foamDoubleValue(value, pair.particleDiameter);
+                valueDoubleValue(value, pair.particleDiameter);
         }
         value = jsonValueAfterKey(lift, "model");
         if (value.empty()) value = jsonValueAfterKey(lift, "type");
-        if (!value.empty()) pair.liftModel = foamUnquote(value);
+        if (!value.empty()) pair.liftModel = valueUnquote(value);
         value = jsonValueAfterKey(lift, "coefficient");
         if (!value.empty()) {
             pair.liftCoefficient =
-                foamDoubleValue(value, pair.liftCoefficient);
+                valueDoubleValue(value, pair.liftCoefficient);
         }
         value = jsonValueAfterKey(virtualMass, "model");
         if (value.empty()) {
             value = jsonValueAfterKey(virtualMass, "type");
         }
         if (!value.empty()) {
-            pair.virtualMassModel = foamUnquote(value);
+            pair.virtualMassModel = valueUnquote(value);
         }
         value = jsonValueAfterKey(virtualMass, "coefficient");
         if (!value.empty()) {
             pair.virtualMassCoefficient =
-                foamDoubleValue(value, pair.virtualMassCoefficient);
+                valueDoubleValue(value, pair.virtualMassCoefficient);
         }
         value = jsonValueAfterKey(heat, "model");
         if (value.empty()) value = jsonValueAfterKey(heat, "type");
         if (!value.empty()) {
-            pair.heatTransferModel = foamUnquote(value);
+            pair.heatTransferModel = valueUnquote(value);
         }
         value = jsonValueAfterKey(wall, "model");
         if (!value.empty()) {
-            pair.wallLubricationModel = foamUnquote(value);
+            pair.wallLubricationModel = valueUnquote(value);
         }
         value = jsonValueAfterKey(wall, "wallPatch");
         if (value.empty()) value = jsonValueAfterKey(wall, "patch");
-        if (!value.empty()) pair.wallPatch = foamUnquote(value);
+        if (!value.empty()) pair.wallPatch = valueUnquote(value);
         value = jsonValueAfterKey(wall, "C1");
         if (!value.empty()) {
             pair.wallLubricationC1 =
-                foamDoubleValue(value, pair.wallLubricationC1);
+                valueDoubleValue(value, pair.wallLubricationC1);
         }
         value = jsonValueAfterKey(wall, "C2");
         if (!value.empty()) {
             pair.wallLubricationC2 =
-                foamDoubleValue(value, pair.wallLubricationC2);
+                valueDoubleValue(value, pair.wallLubricationC2);
         }
         value = jsonValueAfterKey(dispersion, "model");
         if (!value.empty()) {
-            pair.turbulentDispersionModel = foamUnquote(value);
+            pair.turbulentDispersionModel = valueUnquote(value);
         }
         value = jsonValueAfterKey(dispersion, "C0");
         if (value.empty()) value = jsonValueAfterKey(
             dispersion, "coefficient");
         if (!value.empty()) {
             pair.turbulentDispersionCoefficient =
-                foamDoubleValue(
+                valueDoubleValue(
                     value, pair.turbulentDispersionCoefficient);
         }
         value = jsonValueAfterKey(
@@ -789,7 +786,7 @@ if (MP::isEulerianEulerianType(config.type)) {
         if (value.empty()) value = jsonValueAfterKey(dispersion, "nuT");
         if (!value.empty()) {
             pair.turbulentKinematicViscosity =
-                foamDoubleValue(
+                valueDoubleValue(
                     value, pair.turbulentKinematicViscosity);
         }
         value = jsonValueAfterKey(dispersion, "sigmaAlpha");
@@ -798,19 +795,19 @@ if (MP::isEulerianEulerianType(config.type)) {
         }
         if (!value.empty()) {
             pair.turbulentSchmidtNumber =
-                foamDoubleValue(value, pair.turbulentSchmidtNumber);
+                valueDoubleValue(value, pair.turbulentSchmidtNumber);
         }
         value = jsonValueAfterKey(surfaceTension, "model");
         if (value.empty()) {
             value = jsonValueAfterKey(surfaceTension, "type");
         }
         if (!value.empty()) {
-            pair.surfaceTensionModel = foamUnquote(value);
+            pair.surfaceTensionModel = valueUnquote(value);
         }
         value = jsonValueAfterKey(surfaceTension, "sigma");
         if (!value.empty()) {
             pair.surfaceTension =
-                foamDoubleValue(value, pair.surfaceTension);
+                valueDoubleValue(value, pair.surfaceTension);
         }
         config.eulerianEulerian.phasePairs.push_back(std::move(pair));
     }
@@ -819,7 +816,7 @@ if (MP::isEulerianEulerianType(config.type)) {
     for (const auto& [name, tension] :
          jsonChildBlocks(tensionRegistry)) {
         const auto names =
-            foamWordList(jsonValueAfterKey(tension, "phases"));
+            valueWordList(jsonValueAfterKey(tension, "phases"));
         if (names.size() != 2) {
             fatalCaseConfig(
                 "surfaceTension entry '" + name
@@ -845,10 +842,10 @@ if (MP::isEulerianEulerianType(config.type)) {
         }
         value = jsonValueAfterKey(tension, "type");
         if (value.empty()) value = jsonValueAfterKey(tension, "model");
-        match->surfaceTensionModel = foamUnquote(value);
+        match->surfaceTensionModel = valueUnquote(value);
         value = jsonValueAfterKey(tension, "sigma");
         match->surfaceTension =
-            foamDoubleValue(value, match->surfaceTension);
+            valueDoubleValue(value, match->surfaceTension);
     }
 }
 
@@ -876,7 +873,7 @@ for (const auto& [name, block] : jsonChildBlocks(sets)) {
     assignment.setName = name;
     value = jsonValueAfterKey(block, "phase");
     if (value.empty()) value = jsonValueAfterKey(block, "value");
-    assignment.phaseName = foamUnquote(value);
+    assignment.phaseName = valueUnquote(value);
     config.setPhases.push_back(assignment);
 }
 if (sets != nullptr && sets->is_object()) {
@@ -885,7 +882,7 @@ if (sets != nullptr && sets->is_object()) {
         const std::string setName = it.key();
         std::size_t p = 0;
         const std::string tokenText = token(it.value());
-        const std::string phaseName = readFoamWord(tokenText, &p);
+        const std::string phaseName = readValueWord(tokenText, &p);
         if (!phaseName.empty()) {
             MP::SetPhaseAssignment assignment;
             assignment.setName = setName;
@@ -911,40 +908,40 @@ void CaseAdapter::decodeRuntimeSection() {
     const P* text = &sections_.runtime;
 
     std::string value = jsonValueAfterKey(text, "createMesh");
-    caseConfig_.createMesh = !value.empty() && foamBoolValue(value, false);
+    caseConfig_.createMesh = !value.empty() && valueBoolValue(value, false);
 
     value = jsonValueAfterKey(text, "startTime");
     if (!value.empty()) caseConfig_.time.startTime =
-        foamDoubleValue(value, caseConfig_.time.startTime);
+        valueDoubleValue(value, caseConfig_.time.startTime);
     value = jsonValueAfterKey(text, "endTime");
     if (!value.empty()) caseConfig_.time.endTime =
-        foamDoubleValue(value, caseConfig_.time.endTime);
+        valueDoubleValue(value, caseConfig_.time.endTime);
     value = jsonValueAfterKey(text, "endStep");
     if (!value.empty()) caseConfig_.time.endStep = std::max(
-        0, foamIntValue(value, caseConfig_.time.endStep));
+        0, valueIntValue(value, caseConfig_.time.endStep));
     // CFL / maxDeltaT 是数值 HOW，直接写进 typed numerics，不再经过
     // parser 全局暂存变量。
     value = jsonValueAfterKey(text, "CFL");
     if (!value.empty()) {
-        caseConfig_.solver.numerics.cfl = foamDoubleValue(
+        caseConfig_.solver.numerics.cfl = valueDoubleValue(
             value, caseConfig_.solver.numerics.cfl);
     }
     value = jsonValueAfterKey(text, "maxDeltaT");
     if (!value.empty()) {
-        caseConfig_.solver.numerics.maxDeltaT = foamDoubleValue(
+        caseConfig_.solver.numerics.maxDeltaT = valueDoubleValue(
             value, caseConfig_.solver.numerics.maxDeltaT);
     }
 
     value = jsonValueAfterKey(text, "writeInitial");
     if (!value.empty()) caseConfig_.writeInitial =
-        foamBoolValue(value, caseConfig_.writeInitial);
+        valueBoolValue(value, caseConfig_.writeInitial);
 
     const std::string writeControl =
-        foamLower(foamUnquote(jsonValueAfterKey(text, "writeControl")));
+        valueLower(valueUnquote(jsonValueAfterKey(text, "writeControl")));
     if (writeControl != "timestep" && writeControl != "runtime") {
         fatalCaseConfig(
             context + " has unsupported writeControl '"
-            + foamUnquote(jsonValueAfterKey(text, "writeControl"))
+            + valueUnquote(jsonValueAfterKey(text, "writeControl"))
             + "'. Supported values are timeStep and runTime.");
     }
     value = jsonValueAfterKey(text, "writeInterval");
@@ -952,11 +949,11 @@ void CaseAdapter::decodeRuntimeSection() {
         if (writeControl == "timestep") {
             caseConfig_.time.writeByStep = true;
             caseConfig_.time.writeIntervalSteps = std::max(
-                1, foamIntValue(
+                1, valueIntValue(
                     value, caseConfig_.time.writeIntervalSteps));
         } else {
             caseConfig_.time.writeByStep = false;
-            caseConfig_.time.writeIntervalTime = foamDoubleValue(
+            caseConfig_.time.writeIntervalTime = valueDoubleValue(
                 value, caseConfig_.time.writeIntervalTime);
         }
     }
@@ -975,13 +972,13 @@ void CaseAdapter::decodeOutputSection() {
     if (value.empty()) {
         fatalCaseConfig(context + " must set jobName.");
     }
-    jobName_ = foamUnquote(value);
+    jobName_ = valueUnquote(value);
 
     value = jsonValueAfterKey(text, "outputDir");
     if (value.empty()) {
         fatalCaseConfig(context + " must set outputDir.");
     }
-    outputDir_ = foamUnquote(value);
+    outputDir_ = valueUnquote(value);
 }
 
 void CaseAdapter::decodeNumericsSection() {
@@ -997,9 +994,9 @@ void CaseAdapter::decodeNumericsSection() {
     if (terms) {
         numerics.termRecipesDeclared = true;
         value = jsonValueAfterKey(terms, "convection");
-        if (!value.empty()) convectionRecipeName = foamUnquote(value);
+        if (!value.empty()) convectionRecipeName = valueUnquote(value);
         value = jsonValueAfterKey(terms, "diffusion");
-        if (!value.empty()) diffusionRecipeName = foamUnquote(value);
+        if (!value.empty()) diffusionRecipeName = valueUnquote(value);
     }
     if (numerics.termRecipesDeclared) {
         // Native term 输入是完整选择边界：缺失的 role 必须保持缺失，让
@@ -1031,7 +1028,7 @@ void CaseAdapter::decodeNumericsSection() {
         value = jsonValueAfterKey(time, "default");
         if (!value.empty()) {
             numerics.timeRecipe =
-                FDM::resolveTimeRecipe(foamUnquote(value));
+                FDM::resolveTimeRecipe(valueUnquote(value));
             numerics.timeRecipeDeclared = true;
         }
         numerics.recipes.time = numerics.timeRecipe;
@@ -1042,26 +1039,26 @@ void CaseAdapter::decodeNumericsSection() {
         value = jsonValueAfterKey(convection, "default");
         if (!value.empty()) {
             numerics.convection =
-                FDM::parseConvectionScheme(foamUnquote(value));
+                FDM::parseConvectionScheme(valueUnquote(value));
         }
         value = jsonValueAfterKey(convection, "formulation");
         if (!value.empty()) {
             numerics.formulation =
-                FDM::parseEquationFormulation(foamUnquote(value));
+                FDM::parseEquationFormulation(valueUnquote(value));
         }
         value = jsonValueAfterKey(convection, "reconstruction");
         if (!value.empty()) {
             numerics.reconstruction =
-                FDM::parseReconstructionVariable(foamUnquote(value));
+                FDM::parseReconstructionVariable(valueUnquote(value));
         }
         value = jsonValueAfterKey(convection, "flux");
         if (!value.empty()) {
-            numerics.flux = FDM::parseFluxSplitter(foamUnquote(value));
+            numerics.flux = FDM::parseFluxSplitter(valueUnquote(value));
         }
         value = jsonValueAfterKey(convection, "interfaceFlux");
         if (!value.empty()) {
             numerics.interfaceFlux =
-                FDM::parseInterfaceFluxPolicy(foamUnquote(value));
+                FDM::parseInterfaceFluxPolicy(valueUnquote(value));
         }
     }
 
@@ -1070,14 +1067,14 @@ void CaseAdapter::decodeNumericsSection() {
         value = jsonValueAfterKey(diffusion, "default");
         if (!value.empty()) {
             numerics.viscous =
-                FDM::parseViscousScheme(foamUnquote(value));
+                FDM::parseViscousScheme(valueUnquote(value));
         }
     }
 
     const P* sources = jsonBlockAfterKey(text, "sources");
     if (sources) {
         value = jsonValueAfterKey(sources, "default");
-        if (!value.empty()) sourceScheme_ = foamUnquote(value);
+        if (!value.empty()) sourceScheme_ = valueUnquote(value);
     }
 
     // transport / pressureCorrection 是数值控制语义块。旧的外部字典
@@ -1087,21 +1084,21 @@ void CaseAdapter::decodeNumericsSection() {
         value = jsonValueAfterKey(transport, "type");
         if (!value.empty()) {
             numerics.viscous =
-                FDM::parseViscousScheme(foamUnquote(value));
+                FDM::parseViscousScheme(valueUnquote(value));
         }
         value = jsonValueAfterKey(transport, "enable");
         if (!value.empty()) {
             numerics.viscousEnabled =
-                foamBoolValue(value, numerics.viscousEnabled);
+                valueBoolValue(value, numerics.viscousEnabled);
         }
         value = jsonValueAfterKey(transport, "mu");
         if (!value.empty()) {
-            numerics.dynamicViscosity = foamDoubleValue(
+            numerics.dynamicViscosity = valueDoubleValue(
                 value, numerics.dynamicViscosity);
         }
         value = jsonValueAfterKey(transport, "Pr");
         if (!value.empty()) {
-            numerics.prandtl = foamDoubleValue(value, numerics.prandtl);
+            numerics.prandtl = valueDoubleValue(value, numerics.prandtl);
         }
     }
 
@@ -1111,19 +1108,19 @@ void CaseAdapter::decodeNumericsSection() {
             caseConfig_.solver.pressure;
         value = jsonValueAfterKey(pressure, "maxIterations");
         if (!value.empty()) pressureConfig.maxIterations =
-            foamIntValue(value, pressureConfig.maxIterations);
+            valueIntValue(value, pressureConfig.maxIterations);
         value = jsonValueAfterKey(pressure, "relativeTolerance");
         if (!value.empty()) pressureConfig.relativeTolerance =
-            foamDoubleValue(value, pressureConfig.relativeTolerance);
+            valueDoubleValue(value, pressureConfig.relativeTolerance);
         value = jsonValueAfterKey(pressure, "absoluteTolerance");
         if (!value.empty()) pressureConfig.absoluteTolerance =
-            foamDoubleValue(value, pressureConfig.absoluteTolerance);
+            valueDoubleValue(value, pressureConfig.absoluteTolerance);
         value = jsonValueAfterKey(pressure, "pressureRelaxation");
         if (!value.empty()) pressureConfig.relaxation =
-            foamDoubleValue(value, pressureConfig.relaxation);
+            valueDoubleValue(value, pressureConfig.relaxation);
         value = jsonValueAfterKey(pressure, "velocityRelaxation");
         if (!value.empty()) pressureConfig.velocityRelaxation =
-            foamDoubleValue(value, pressureConfig.velocityRelaxation);
+            valueDoubleValue(value, pressureConfig.velocityRelaxation);
     }
 
     // source 启用状态只能由 sourceScheme 推导；数值块不选择物理模型。
@@ -1135,23 +1132,23 @@ void CaseAdapter::decodeParallelSection() {
     const P* parallel = &sections_.parallel;
 
     std::string value = jsonValueAfterKey(parallel, "enabled");
-    if (!value.empty()) caseConfig_.parallel.enabled = foamBoolValue(
+    if (!value.empty()) caseConfig_.parallel.enabled = valueBoolValue(
         value, caseConfig_.parallel.enabled);
     value = jsonValueAfterKey(parallel, "nProcs");
-    if (!value.empty()) caseConfig_.parallel.processCount = foamIntValue(
+    if (!value.empty()) caseConfig_.parallel.processCount = valueIntValue(
         value, caseConfig_.parallel.processCount);
     value = jsonValueAfterKey(parallel, "split");
     std::array<int, 3> split{};
-    if (!value.empty() && foamIntegerTriple(value, &split)) {
+    if (!value.empty() && valueIntegerTriple(value, &split)) {
         caseConfig_.parallel.partitionSplit = split;
         caseConfig_.parallel.automaticPartition = false;
         caseConfig_.parallel.processCount = split[0] * split[1] * split[2];
-    } else if (!value.empty() && foamLower(foamUnquote(value)) == "auto") {
+    } else if (!value.empty() && valueLower(valueUnquote(value)) == "auto") {
         caseConfig_.parallel.automaticPartition = true;
     }
     value = jsonValueAfterKey(parallel, "haloTolerance");
     if (!value.empty()) {
-        caseConfig_.parallel.haloTolerance = foamDoubleValue(
+        caseConfig_.parallel.haloTolerance = valueDoubleValue(
             value, caseConfig_.parallel.haloTolerance);
     }
 }
@@ -1166,7 +1163,7 @@ void CaseAdapter::decodeAlgorithmSection() {
     const P* text = &sections_.algorithm;
     FDM::PressureCorrectionConfig config;
     std::string value = jsonValueAfterKey(text, "type");
-    const std::string type = FDM::normalizeToken(foamUnquote(value));
+    const std::string type = FDM::normalizeToken(valueUnquote(value));
     // Legacy 兼容标签：只在这里翻译，向 composition root 传递"请求哪一组方程"。
     // 它不再是 runtime 求解器身份，也不进入 ResolvedSimulationSystem。
     if (!sections_.nativeAlgorithm.empty()) {
@@ -1181,7 +1178,7 @@ void CaseAdapter::decodeAlgorithmSection() {
     }
 
     value = jsonValueAfterKey(text, "algorithm");
-    const std::string algorithm = FDM::normalizeToken(foamUnquote(value));
+    const std::string algorithm = FDM::normalizeToken(valueUnquote(value));
     if (algorithm == "simple") config.coupling.preset = FDM::PressureCouplingPreset::SIMPLE;
     else if (algorithm == "piso") config.coupling.preset = FDM::PressureCouplingPreset::PISO;
     else if (algorithm == "pimple") config.coupling.preset = FDM::PressureCouplingPreset::PIMPLE;
@@ -1192,15 +1189,15 @@ void CaseAdapter::decodeAlgorithmSection() {
     }
 
     caseConfig_.pressureCouplingDeclared=!algorithm.empty() && algorithm!="explicit";
-    const P* algorithmBlock = jsonBlockAfterKey(text, algorithm.empty() ? "PIMPLE" : foamUnquote(value));
+    const P* algorithmBlock = jsonBlockAfterKey(text, algorithm.empty() ? "PIMPLE" : valueUnquote(value));
     const P* controls = algorithmBlock ? algorithmBlock : text;
     auto readInt = [&](const char* key, int& target) {
         const std::string raw = jsonValueAfterKey(controls, key);
-        if (!raw.empty()) target = foamIntValue(raw, target);
+        if (!raw.empty()) target = valueIntValue(raw, target);
     };
     auto readDouble = [&](const char* key, double& target) {
         const std::string raw = jsonValueAfterKey(controls, key);
-        if (!raw.empty()) target = foamDoubleValue(raw, target);
+        if (!raw.empty()) target = valueDoubleValue(raw, target);
     };
     readInt("outerCorrectors", config.coupling.outerCorrectors);
     readInt("pressureCorrectors", config.coupling.pressureCorrectors);
@@ -1211,7 +1208,7 @@ void CaseAdapter::decodeAlgorithmSection() {
     readDouble("absoluteTolerance", config.absoluteTolerance);
     readDouble("phaseSourceCFL", config.phaseTransport.sourceCfl);
     const std::string phaseConvection = FDM::normalizeToken(
-        foamUnquote(jsonValueAfterKey(controls, "phaseConvection")));
+        valueUnquote(jsonValueAfterKey(controls, "phaseConvection")));
     if (!phaseConvection.empty() && phaseConvection != "upwind") {
         fatalCaseConfig(
             context + " phaseConvection currently supports only upwind.");
@@ -1228,13 +1225,13 @@ void CaseAdapter::decodeAlgorithmSection() {
                 + name + "'.");
         }
         std::string raw = jsonValueAfterKey(block, "backend");
-        if (FDM::normalizeToken(foamUnquote(raw)) != "hypre") {
+        if (FDM::normalizeToken(valueUnquote(raw)) != "hypre") {
             fatalCaseConfig(
                 std::string("linear solver '") + name
                 + "' requires backend hypre.");
         }
         raw = jsonValueAfterKey(block, "solver");
-        const std::string method = FDM::normalizeToken(foamUnquote(raw));
+        const std::string method = FDM::normalizeToken(valueUnquote(raw));
         if (method == "flexgmres" || method == "fgmres") {
             target.method = FDM::KrylovMethod::FlexGMRES;
         } else if (method == "pcg" || method == "cg") {
@@ -1246,7 +1243,7 @@ void CaseAdapter::decodeAlgorithmSection() {
         }
         raw = jsonValueAfterKey(block, "preconditioner");
         const std::string preconditioner =
-            FDM::normalizeToken(foamUnquote(raw));
+            FDM::normalizeToken(valueUnquote(raw));
         if (preconditioner == "boomeramg") {
             target.preconditioner=FDM::LinearPreconditioner::BoomerAMG;
         } else if (preconditioner == "ilu") {
@@ -1260,7 +1257,7 @@ void CaseAdapter::decodeAlgorithmSection() {
         }
         raw = jsonValueAfterKey(block, "equilibration");
         const std::string equilibration =
-            FDM::normalizeToken(foamUnquote(raw));
+            FDM::normalizeToken(valueUnquote(raw));
         if (equilibration.empty() || equilibration == "none") {
             target.equilibration = FDM::LinearEquilibration::None;
         } else if (equilibration == "rowmax") {
@@ -1272,11 +1269,11 @@ void CaseAdapter::decodeAlgorithmSection() {
         }
         auto blockInt = [&](const char* key, int& destination) {
             const std::string item = jsonValueAfterKey(block, key);
-            if (!item.empty()) destination = foamIntValue(item, destination);
+            if (!item.empty()) destination = valueIntValue(item, destination);
         };
         auto blockDouble = [&](const char* key, double& destination) {
             const std::string item = jsonValueAfterKey(block, key);
-            if (!item.empty()) destination = foamDoubleValue(item, destination);
+            if (!item.empty()) destination = valueDoubleValue(item, destination);
         };
         blockInt("maxIterations", target.maxIterations);
         blockInt("krylovDimension", target.krylovDimension);
@@ -1291,8 +1288,8 @@ void CaseAdapter::decodeAlgorithmSection() {
             if(type.empty()||fill.empty())fatalCaseConfig(
                 std::string("linear solver '")+name
                 +"' with ILU requires explicit iluType and iluLevelOfFill.");
-            target.iluType=foamIntValue(type,target.iluType);
-            target.iluLevelOfFill=foamIntValue(fill,target.iluLevelOfFill);
+            target.iluType=valueIntValue(type,target.iluType);
+            target.iluLevelOfFill=valueIntValue(fill,target.iluLevelOfFill);
         }
         blockDouble("relativeTolerance", target.relativeTolerance);
         blockDouble("absoluteTolerance", target.absoluteTolerance);
@@ -1369,6 +1366,12 @@ void CaseAdapter::decodeFields() {
     }
     if (const Model::FieldDescriptor* field = sections_.field("phi")) {
         decodePhiField(*field);
+    }
+    if (multiPhaseLoaded_ && Physics::Multiphase::isThermalType(multiPhaseConfig_.type)
+        && multiPhaseConfig_.temperature.fieldName!="T") {
+        if (const auto* field=sections_.field(multiPhaseConfig_.temperature.fieldName))
+            decodeScalarField(*field,multiPhaseConfig_.temperature.initialConditions,
+                multiPhaseConfig_.temperature.boundaryConditions,&multiPhaseConfig_.temperature.defaultValue);
     }
     bool parsedAlpha = false;
     if (const Model::FieldDescriptor* field = sections_.field("alpha")) {
@@ -1476,7 +1479,7 @@ void CaseAdapter::decodeVectorField(
 
     Vector3 value;
     std::string raw = token(field.initial);
-    if (!raw.empty() && foamVectorValue(raw, &value)) {
+    if (!raw.empty() && valueVectorValue(raw, &value)) {
         if (uniformValue != nullptr) *uniformValue = value;
         ic.push_back({"all", FIXED_VALUE, value});
     }
@@ -1485,8 +1488,8 @@ void CaseAdapter::decodeVectorField(
     for (const auto& [name, block] : jsonChildBlocks(sets)) {
         raw = jsonValueAfterKey(block, "value");
         Vector3 setValue;
-        if (!foamVectorValue(raw, &setValue)) setValue = Vector3(0, 0, 0);
-        BCType type = foamBCTypeValue(jsonValueAfterKey(block, "type"),
+        if (!valueVectorValue(raw, &setValue)) setValue = Vector3(0, 0, 0);
+        BCType type = valueBCTypeValue(jsonValueAfterKey(block, "type"),
                                       FIXED_VALUE);
         ic.push_back({name, type, setValue});
     }
@@ -1495,16 +1498,16 @@ void CaseAdapter::decodeVectorField(
     for (const auto& [name, block] : jsonChildBlocks(patches)) {
         raw = jsonValueAfterKey(block, "value");
         Vector3 patchValue;
-        if (!foamVectorValue(raw, &patchValue)) patchValue = Vector3(0, 0, 0);
-        const std::string wallType = foamLower(foamUnquote(jsonValueAfterKey(block,"type")));
+        if (!valueVectorValue(raw, &patchValue)) patchValue = Vector3(0, 0, 0);
+        const std::string wallType = valueLower(valueUnquote(jsonValueAfterKey(block,"type")));
         if (wallType == "noslip" || wallType == "slip") {
-            if (!raw.empty() && (!foamVectorValue(raw,&patchValue)
+            if (!raw.empty() && (!valueVectorValue(raw,&patchValue)
                 || patchValue.x!=0. || patchValue.y!=0. || patchValue.z!=0.))
                 throw std::runtime_error(field.name+": boundary '"+name+"' uses stationary "+wallType
                     +" and cannot prescribe a nonzero or malformed wall velocity.");
             patchValue = {};
         }
-        BCType type = foamBCTypeValue(jsonValueAfterKey(block, "type"),
+        BCType type = valueBCTypeValue(jsonValueAfterKey(block, "type"),
                                       ZERO_GRADIENT,true);
         bc.push_back({name, type, patchValue});
     }
@@ -1523,7 +1526,7 @@ void CaseAdapter::decodeScalarField(
 
     double value = 0.0;
     std::string raw = token(field.initial);
-    if (!raw.empty() && foamScalarValue(raw, &value)) {
+    if (!raw.empty() && valueScalarValue(raw, &value)) {
         if (uniformValue != nullptr) *uniformValue = value;
         ic.push_back({"all", FIXED_VALUE, value});
     }
@@ -1532,8 +1535,8 @@ void CaseAdapter::decodeScalarField(
     for (const auto& [name, block] : jsonChildBlocks(sets)) {
         raw = jsonValueAfterKey(block, "value");
         double setValue = 0.0;
-        foamScalarValue(raw, &setValue);
-        BCType type = foamBCTypeValue(jsonValueAfterKey(block, "type"),
+        valueScalarValue(raw, &setValue);
+        BCType type = valueBCTypeValue(jsonValueAfterKey(block, "type"),
                                       FIXED_VALUE);
         ic.push_back({name, type, setValue});
     }
@@ -1542,8 +1545,8 @@ void CaseAdapter::decodeScalarField(
     for (const auto& [name, block] : jsonChildBlocks(patches)) {
         raw = jsonValueAfterKey(block, "value");
         double patchValue = 0.0;
-        foamScalarValue(raw, &patchValue);
-        BCType type = foamBCTypeValue(jsonValueAfterKey(block, "type"),
+        valueScalarValue(raw, &patchValue);
+        BCType type = valueBCTypeValue(jsonValueAfterKey(block, "type"),
                                       ZERO_GRADIENT);
         bc.push_back({name, type, patchValue});
     }
@@ -1559,7 +1562,7 @@ void CaseAdapter::decodeTemperatureField(const Model::FieldDescriptor& field) {
 
     double value = 0.0;
     std::string raw = token(field.initial);
-    if (!raw.empty() && foamScalarValue(raw, &value)) {
+    if (!raw.empty() && valueScalarValue(raw, &value)) {
         ic.push_back({"all", FIXED_VALUE, value});
         if (multiPhaseLoaded_) {
             multiPhaseConfig_.temperature.defaultValue = value;
@@ -1570,17 +1573,17 @@ void CaseAdapter::decodeTemperatureField(const Model::FieldDescriptor& field) {
     for (const auto& [name, block] : jsonChildBlocks(sets)) {
         raw = jsonValueAfterKey(block, "value");
         double setValue = 0.0;
-        foamScalarValue(raw, &setValue);
+        valueScalarValue(raw, &setValue);
         ic.push_back({name, FIXED_VALUE, setValue});
     }
 
     const P* patches = &field.boundaries;
     for (const auto& [name, block] : jsonChildBlocks(patches)) {
         const std::string typeText = jsonValueAfterKey(block, "type");
-        if (foamWallHeatSourceType(typeText)) {
+        if (valueWallHeatSourceType(typeText)) {
             WallHeatSetting setting;
             setting.patch = name;
-            setting.mode = foamUnquote(typeText);
+            setting.mode = valueUnquote(typeText);
             raw = jsonValueAfterKey(block, "q");
             if (raw.empty()) raw = jsonValueAfterKey(block, "wallHeatFlux");
             if (raw.empty()) raw = jsonValueAfterKey(block, "heatFlux");
@@ -1589,10 +1592,10 @@ void CaseAdapter::decodeTemperatureField(const Model::FieldDescriptor& field) {
                 fatalCaseConfig(field.name + ": patch '" + name
                                 + "' uses wallHeatFlux but does not provide q.");
             }
-            setting.heatFlux = foamDoubleValue(raw, setting.heatFlux);
+            setting.heatFlux = valueDoubleValue(raw, setting.heatFlux);
             raw = jsonValueAfterKey(block, "coupleEnergy");
             if (raw.empty()) raw = jsonValueAfterKey(block, "energyCoupling");
-            if (!raw.empty()) setting.coupleEnergy = foamBoolValue(raw, true);
+            if (!raw.empty()) setting.coupleEnergy = valueBoolValue(raw, true);
             wallHeatBoundarySettings_.push_back(setting);
             // wallHeatFlux 是外部能量输入。RPI 只用它划分蒸发质量通量，
             // 不得因为相变模型消费了 q 就从总能量方程删除该边界功率。
@@ -1601,7 +1604,7 @@ void CaseAdapter::decodeTemperatureField(const Model::FieldDescriptor& field) {
             continue;
         }
 
-        const ThermalBCType type = foamThermalBCTypeValue(
+        const ThermalBCType type = valueThermalBCTypeValue(
             typeText,
             ThermalBCType::ZeroGradient);
         double patchValue = 0.0;
@@ -1612,7 +1615,7 @@ void CaseAdapter::decodeTemperatureField(const Model::FieldDescriptor& field) {
         } else {
             raw = jsonValueAfterKey(block, "value");
         }
-        foamScalarValue(raw, &patchValue);
+        valueScalarValue(raw, &patchValue);
         bc.push_back({name, type, patchValue});
     }
 
@@ -1636,7 +1639,8 @@ void CaseAdapter::decodeTemperatureField(const Model::FieldDescriptor& field) {
         }
     }
     temperatureOutputBC_ = scalarBC;
-    if (multiPhaseLoaded_) {
+    if (multiPhaseLoaded_ && (!Physics::Multiphase::isThermalType(multiPhaseConfig_.type)
+        || multiPhaseConfig_.temperature.fieldName=="T")) {
         multiPhaseConfig_.temperature.initialConditions = ic;
         multiPhaseConfig_.temperature.boundaryConditions = scalarBC;
         return;
@@ -1655,7 +1659,7 @@ void CaseAdapter::decodeTurbulenceSection() {
 
     std::string value = jsonValueAfterKey(text, "enabled");
     if (value.empty()) value = jsonValueAfterKey(text, "enable");
-    turbulence.enabled = !value.empty() && foamBoolValue(value, false);
+    turbulence.enabled = !value.empty() && valueBoolValue(value, false);
     if (!turbulence.enabled) {
         turbulence.family = FDM::TurbulenceFamily::DNS;
         turbulence.model = FDM::TurbulenceModelKind::DNS;
@@ -1672,7 +1676,7 @@ void CaseAdapter::decodeTurbulenceSection() {
     std::string family;
     std::string familyText;
     if (!value.empty()) {
-        familyText = foamUnquote(value);
+        familyText = valueUnquote(value);
         family = upperToken(familyText);
         if (family == "LAMINAR") {
             fatalCaseConfig(
@@ -1708,11 +1712,11 @@ void CaseAdapter::decodeTurbulenceSection() {
                 "model/type.");
         }
         turbulence.model =
-            FDM::parseTurbulenceModelKind(foamUnquote(value));
+            FDM::parseTurbulenceModelKind(valueUnquote(value));
 
         auto setCoeff = [&](const char* key, double& target) {
             std::string coeff = jsonValueAfterKey(modelBlock, key);
-            if (!coeff.empty()) target = foamDoubleValue(coeff, target);
+            if (!coeff.empty()) target = valueDoubleValue(coeff, target);
         };
         FDM::TurbulenceCoefficients& coefficients = turbulence.coefficients;
         setCoeff("Cmu", coefficients.cMu);
@@ -1735,23 +1739,29 @@ void CaseAdapter::decodeTurbulenceSection() {
         setCoeff("omegaFloor", coefficients.omegaFloor);
     }
     turbulence.phaseNames =
-        foamWordList(jsonValueAfterKey(text, "phases"));
+        valueWordList(jsonValueAfterKey(text, "phases"));
     turbulence.wallPatches =
-        foamWordList(jsonValueAfterKey(text, "walls"));
+        valueWordList(jsonValueAfterKey(text, "walls"));
+    value=jsonValueAfterKey(text,"transportMethod");
+    if(!value.empty()) {
+        const auto method=valueUnquote(value);
+        if(method!="stageConservative" && method!="legacyOnceStep")throw std::runtime_error("Unknown turbulence transportMethod: "+method);
+        turbulence.stageConservativeTransport=method=="stageConservative";
+    }
     value = jsonValueAfterKey(text, "turbulentPrandtl");
     if (!value.empty()) {
         turbulence.turbulentPrandtl =
-            foamDoubleValue(value, turbulence.turbulentPrandtl);
+            valueDoubleValue(value, turbulence.turbulentPrandtl);
     }
     value = jsonValueAfterKey(text, "coupleMomentum");
     if (!value.empty()) {
         turbulence.coupleMomentum =
-            foamBoolValue(value, turbulence.coupleMomentum);
+            valueBoolValue(value, turbulence.coupleMomentum);
     }
     value = jsonValueAfterKey(text, "coupleEnergy");
     if (!value.empty()) {
         turbulence.coupleEnergy =
-            foamBoolValue(value, turbulence.coupleEnergy);
+            valueBoolValue(value, turbulence.coupleEnergy);
     }
 }
 
@@ -1777,19 +1787,19 @@ void CaseAdapter::decodeThermoDynamicsSection() {
     if (value.empty()) value = jsonValueAfterKey(block, "solveEnergy");
     const bool explicitEnabled = !value.empty();
     if (explicitEnabled) {
-        temperature.enabled = foamBoolValue(value, temperature.enabled);
+        temperature.enabled = valueBoolValue(value, temperature.enabled);
     }
 
     value = jsonValueAfterKey(block, "fieldName");
     if (value.empty()) value = jsonValueAfterKey(block, "name");
-    if (!value.empty()) temperature.fieldName = foamUnquote(value);
+    if (!value.empty()) temperature.fieldName = valueUnquote(value);
 
     value = jsonValueAfterKey(block, "defaultValue");
     if (value.empty()) value = jsonValueAfterKey(block, "defaultTemperature");
     if (value.empty()) value = jsonValueAfterKey(block, "T0");
     if (!value.empty()) {
         temperature.defaultValue =
-            foamDoubleValue(value, temperature.defaultValue);
+            valueDoubleValue(value, temperature.defaultValue);
     }
 
     value = jsonValueAfterKey(block, "transport");
@@ -1798,7 +1808,7 @@ void CaseAdapter::decodeThermoDynamicsSection() {
     if (value.empty()) value = jsonValueAfterKey(block, "convectionEnabled");
     if (!value.empty()) {
         temperature.transportEnabled =
-            foamBoolValue(value, temperature.transportEnabled);
+            valueBoolValue(value, temperature.transportEnabled);
     }
 
     value = jsonValueAfterKey(block, "diffusion");
@@ -1807,7 +1817,7 @@ void CaseAdapter::decodeThermoDynamicsSection() {
     if (value.empty()) value = jsonValueAfterKey(block, "heatConduction");
     if (!value.empty()) {
         temperature.diffusionEnabled =
-            foamBoolValue(value, temperature.diffusionEnabled);
+            valueBoolValue(value, temperature.diffusionEnabled);
     }
 
     value = jsonValueAfterKey(block, "diffusivity");
@@ -1817,32 +1827,32 @@ void CaseAdapter::decodeThermoDynamicsSection() {
     if (value.empty()) value = jsonValueAfterKey(block, "D");
     if (!value.empty()) {
         temperature.diffusivity =
-            foamDoubleValue(value, temperature.diffusivity);
+            valueDoubleValue(value, temperature.diffusivity);
         temperature.diffusionEnabled = temperature.diffusivity > 0.0;
     }
 
     value = jsonValueAfterKey(block, "bounded");
     if (!value.empty()) {
         temperature.bounded =
-            foamBoolValue(value, temperature.bounded);
+            valueBoolValue(value, temperature.bounded);
     }
     value = jsonValueAfterKey(block, "boundMode");
     if (value.empty()) value = jsonValueAfterKey(block, "boundsMode");
-    if (!value.empty()) temperature.boundMode = foamUnquote(value);
+    if (!value.empty()) temperature.boundMode = valueUnquote(value);
     value = jsonValueAfterKey(block, "lowerBound");
     if (value.empty()) value = jsonValueAfterKey(block, "min");
     if (!value.empty()) {
         temperature.lowerBound =
-            foamDoubleValue(value, temperature.lowerBound);
+            valueDoubleValue(value, temperature.lowerBound);
     }
     value = jsonValueAfterKey(block, "upperBound");
     if (value.empty()) value = jsonValueAfterKey(block, "max");
     if (!value.empty()) {
         temperature.upperBound =
-            foamDoubleValue(value, temperature.upperBound);
+            valueDoubleValue(value, temperature.upperBound);
     }
     value = jsonValueAfterKey(block, "bounds");
-    const std::vector<double> bounds = foamNumbers(value);
+    const std::vector<double> bounds = valueNumbers(value);
     if (bounds.size() >= 2) {
         temperature.lowerBound = bounds[0];
         temperature.upperBound = bounds[1];
@@ -1885,7 +1895,7 @@ void CaseAdapter::decodeILWSection() {
         std::string value = jsonValueAfterKey(ilw, "enabled");
         if (value.empty()) value = jsonValueAfterKey(ilw, "enable");
         boundaries.ilwEnabled = !value.empty()
-            && foamBoolValue(value, false);
+            && valueBoolValue(value, false);
         if (!boundaries.ilwEnabled) {
             ilwOrder = 0;
             boundaries.ilwOrder = 0;
@@ -1901,7 +1911,7 @@ void CaseAdapter::decodeILWSection() {
                 "models/ILW.yaml has enabled=true but no value/order.");
         }
         if (!value.empty()) {
-            ilwOrder = foamIntValue(value, ilwOrder);
+            ilwOrder = valueIntValue(value, ilwOrder);
             if (!FDM::isSupportedILWOrder(ilwOrder)) {
                 fatalILWConfig("ILW value supports only 0, 3, 5, 7, or 9; got "
                                + std::to_string(ilwOrder) + ".");
@@ -1918,7 +1928,7 @@ void CaseAdapter::decodeILWSection() {
             if (angleValue.empty()) angleValue = jsonValueAfterKey(block, "normalAngleDegrees");
             if (angleValue.empty()) return;
             const double angle =
-                foamDoubleValue(angleValue, ibm.normalAngleDegrees);
+                valueDoubleValue(angleValue, ibm.normalAngleDegrees);
             if (!std::isfinite(angle) || angle < 0.0 || angle > 90.0) {
                 fatalILWConfig(sectionName
                                + ".angle must be in [0, 90] degrees; got "
@@ -1932,22 +1942,22 @@ void CaseAdapter::decodeILWSection() {
         value = jsonValueAfterKey(normalSearch, "minLayers");
         if (!value.empty()) {
             ibm.normalSearchMinLayers =
-                foamIntValue(value, ibm.normalSearchMinLayers);
+                valueIntValue(value, ibm.normalSearchMinLayers);
         }
         value = jsonValueAfterKey(normalSearch, "maxLayers");
         if (!value.empty()) {
             ibm.normalSearchMaxLayers =
-                foamIntValue(value, ibm.normalSearchMaxLayers);
+                valueIntValue(value, ibm.normalSearchMaxLayers);
         }
         value = jsonValueAfterKey(normalSearch, "targetCandidates");
         if (!value.empty()) {
             ibm.normalSearchTargetCandidates =
-                foamIntValue(value, ibm.normalSearchTargetCandidates);
+                valueIntValue(value, ibm.normalSearchTargetCandidates);
         }
         value = jsonValueAfterKey(normalSearch, "keepSamples");
         if (!value.empty()) {
             ibm.normalSearchKeepSamples =
-                foamIntValue(value, ibm.normalSearchKeepSamples);
+                valueIntValue(value, ibm.normalSearchKeepSamples);
         }
 
         if (ibm.normalSearchMinLayers < 1) {
@@ -2041,7 +2051,7 @@ void CaseAdapter::decodeGravitySection() {
         std::string value = jsonValueAfterKey(block, "value");
         if (value.empty()) value = jsonValueAfterKey(block, "g");
         Vector3 g;
-        if (foamVectorValue(value, &g)) {
+        if (valueVectorValue(value, &g)) {
             ZoneVectorSetting setting;
             setting.zone = "all";
             setting.value = g;
@@ -2050,7 +2060,7 @@ void CaseAdapter::decodeGravitySection() {
         for (const auto& [zone, zoneBlock] : jsonChildBlocks(block)) {
             value = jsonValueAfterKey(zoneBlock, "value");
             if (value.empty()) value = jsonValueAfterKey(zoneBlock, "g");
-            if (!foamVectorValue(value, &g)) continue;
+            if (!valueVectorValue(value, &g)) continue;
             ZoneVectorSetting setting;
             setting.zone = zone;
             setting.value = g;
@@ -2073,17 +2083,17 @@ void CaseAdapter::decodeMRFSection() {
             rotate.zone = fallbackZone.empty() ? "all" : fallbackZone;
             std::string value = jsonValueAfterKey(block, "zone");
             if (value.empty()) value = jsonValueAfterKey(block, "set");
-            if (!value.empty()) rotate.zone = foamUnquote(value);
+            if (!value.empty()) rotate.zone = valueUnquote(value);
             Vector3 vec;
             value = jsonValueAfterKey(block, "center");
-            if (foamVectorValue(value, &vec)) rotate.center = vec;
+            if (valueVectorValue(value, &vec)) rotate.center = vec;
             value = jsonValueAfterKey(block, "axis");
-            if (foamVectorValue(value, &vec)) rotate.axis = normalize(vec);
+            if (valueVectorValue(value, &vec)) rotate.axis = normalize(vec);
             value = jsonValueAfterKey(block, "omega");
             if (value.empty()) value = jsonValueAfterKey(block, "speed");
-            if (!value.empty()) rotate.omega = foamDoubleValue(value, rotate.omega);
+            if (!value.empty()) rotate.omega = valueDoubleValue(value, rotate.omega);
             value = jsonValueAfterKey(block, "velocity");
-            if (foamVectorValue(value, &vec)) {
+            if (valueVectorValue(value, &vec)) {
                 rotate.velocity = vec;
                 rotate.hasVelocity = true;
             }
@@ -2112,7 +2122,7 @@ void CaseAdapter::decodeWallHeatSection() {
 
     std::string value = jsonValueAfterKey(block, "enabled");
     if (value.empty()) value = jsonValueAfterKey(block, "enable");
-    const bool enabled = foamBoolValue(value, true);
+    const bool enabled = valueBoolValue(value, true);
     if (!enabled) return;
 
     std::vector<WallHeatSetting>& wallHeatSettings =
@@ -2122,7 +2132,7 @@ void CaseAdapter::decodeWallHeatSection() {
     auto patchNames = [](const std::string& text,
                          const std::string& fallback) {
         std::vector<std::string> patches;
-        if (!text.empty()) patches = foamWordList(text);
+        if (!text.empty()) patches = valueWordList(text);
         if (patches.empty() && !fallback.empty()) patches.push_back(fallback);
         return patches;
     };
@@ -2134,16 +2144,16 @@ void CaseAdapter::decodeWallHeatSection() {
         std::string local = jsonValueAfterKey(heatBlock, "enabled");
         if (local.empty()) local = jsonValueAfterKey(heatBlock, "enable");
         if (local.empty()) local = jsonValueAfterKey(heatBlock, "active");
-        if (!foamBoolValue(local, true)) return;
+        if (!valueBoolValue(local, true)) return;
 
         WallHeatSetting base;
         local = jsonValueAfterKey(heatBlock, "type");
         if (local.empty()) local = jsonValueAfterKey(heatBlock, "mode");
-        if (!local.empty()) base.mode = foamUnquote(local);
+        if (!local.empty()) base.mode = valueUnquote(local);
 
         local = jsonValueAfterKey(heatBlock, "coupleEnergy");
         if (local.empty()) local = jsonValueAfterKey(heatBlock, "energyCoupling");
-        if (!local.empty()) base.coupleEnergy = foamBoolValue(local, true);
+        if (!local.empty()) base.coupleEnergy = valueBoolValue(local, true);
 
         std::string heatFlux = jsonValueAfterKey(heatBlock, "q");
         if (heatFlux.empty()) heatFlux = jsonValueAfterKey(heatBlock, "heatFlux");
@@ -2152,7 +2162,7 @@ void CaseAdapter::decodeWallHeatSection() {
             fatalCaseConfig("WallHeat block for patch '" + fallbackPatch
                             + "' must provide q or heatFlux.");
         }
-        base.heatFlux = foamDoubleValue(heatFlux, base.heatFlux);
+        base.heatFlux = valueDoubleValue(heatFlux, base.heatFlux);
 
         std::string patchText = jsonValueAfterKey(heatBlock, "patch");
         if (patchText.empty()) patchText = jsonValueAfterKey(heatBlock, "patches");
@@ -2218,7 +2228,7 @@ BCType explicitPhiType(const std::string& rawType,
                        const std::string& fileName,
                        const std::string& context) {
 
-    const std::string key = foamLower(foamUnquote(rawType));
+    const std::string key = valueLower(valueUnquote(rawType));
     if (key == "fixedvalue" || key == "fixed_value") return FIXED_VALUE;
     if (key == "zerogradient" || key == "zero_gradient") return ZERO_GRADIENT;
     if (key == "empty") return EMPTY;
@@ -2241,7 +2251,7 @@ void CaseAdapter::decodePhiField(const Model::FieldDescriptor& field) {
 
     double value = std::numeric_limits<double>::quiet_NaN();
     std::string raw = token(field.initial);
-    if (raw.empty() || !foamScalarValue(raw, &value)) {
+    if (raw.empty() || !valueScalarValue(raw, &value)) {
         fatalCaseConfig(
             field.name + ": internalField must explicitly provide a scalar phi value.");
     }
@@ -2255,13 +2265,13 @@ void CaseAdapter::decodePhiField(const Model::FieldDescriptor& field) {
     const P* sets = &field.sets;
     for (const auto& [name, block] : jsonChildBlocks(sets)) {
         const std::string type =
-            foamLower(foamUnquote(jsonValueAfterKey(block, "type")));
+            valueLower(valueUnquote(jsonValueAfterKey(block, "type")));
         if (type == "signeddistanceplane" || type == "signed_distance_plane"
             || type == "planedistance" || type == "plane_distance") {
             MP::LevelSetPlaneInitializer plane;
             plane.setName = name;
-            if (!foamVectorValue(jsonValueAfterKey(block, "point"), &plane.point)
-                || !foamVectorValue(jsonValueAfterKey(block, "normal"),
+            if (!valueVectorValue(jsonValueAfterKey(block, "point"), &plane.point)
+                || !valueVectorValue(jsonValueAfterKey(block, "normal"),
                                     &plane.normal)) {
                 fatalCaseConfig(
                     field.name + ": signed-distance plane '" + name
@@ -2273,7 +2283,7 @@ void CaseAdapter::decodePhiField(const Model::FieldDescriptor& field) {
                     field.name + ": signed-distance plane '" + name
                     + "' requires an explicit positive scale.");
             }
-            plane.scale = foamDoubleValue(raw, plane.scale);
+            plane.scale = valueDoubleValue(raw, plane.scale);
             multiPhaseConfig_.phiPlaneInitializers.push_back(plane);
             continue;
         }
@@ -2281,7 +2291,7 @@ void CaseAdapter::decodePhiField(const Model::FieldDescriptor& field) {
             || type == "spheredistance" || type == "sphere_distance") {
             MP::LevelSetSphereInitializer sphere;
             sphere.setName = name;
-            if (!foamVectorValue(jsonValueAfterKey(block, "center"),
+            if (!valueVectorValue(jsonValueAfterKey(block, "center"),
                                  &sphere.center)) {
                 fatalCaseConfig(
                     field.name + ": signed-distance sphere '" + name
@@ -2293,16 +2303,16 @@ void CaseAdapter::decodePhiField(const Model::FieldDescriptor& field) {
                     field.name + ": signed-distance sphere '" + name
                     + "' requires an explicit positive radius.");
             }
-            sphere.radius = foamDoubleValue(raw, sphere.radius);
+            sphere.radius = valueDoubleValue(raw, sphere.radius);
             raw = jsonValueAfterKey(block, "scale");
             if (raw.empty()) {
                 fatalCaseConfig(
                     field.name + ": signed-distance sphere '" + name
                     + "' requires an explicit positive scale.");
             }
-            sphere.scale = foamDoubleValue(raw, sphere.scale);
+            sphere.scale = valueDoubleValue(raw, sphere.scale);
             sphere.insidePhase =
-                foamUnquote(jsonValueAfterKey(block, "insidePhase"));
+                valueUnquote(jsonValueAfterKey(block, "insidePhase"));
             if (sphere.insidePhase.empty()) {
                 fatalCaseConfig(
                     field.name + ": signed-distance sphere '" + name
@@ -2313,7 +2323,7 @@ void CaseAdapter::decodePhiField(const Model::FieldDescriptor& field) {
         }
 
         raw = jsonValueAfterKey(block, "value");
-        if (!foamScalarValue(raw, &value)) {
+        if (!valueScalarValue(raw, &value)) {
             fatalCaseConfig(
                 field.name + ": internalSets entry '" + name
                 + "' requires an explicit scalar value.");
@@ -2338,7 +2348,7 @@ void CaseAdapter::decodePhiField(const Model::FieldDescriptor& field) {
         condition.typeDeclared = true;
         if (condition.type == FIXED_VALUE) {
             raw = jsonValueAfterKey(block, "value");
-            if (!foamScalarValue(raw, &value)) {
+            if (!valueScalarValue(raw, &value)) {
                 fatalCaseConfig(
                     field.name + ": fixedValue boundary '" + name
                     + "' requires an explicit scalar value.");
@@ -2428,7 +2438,7 @@ void CaseAdapter::decodeIBMSection() {
     std::string value = jsonValueAfterKey(block, "enabled");
     if (value.empty()) value = jsonValueAfterKey(block, "enable");
     caseConfig_.solver.ibm.enabled = !value.empty()
-        && foamBoolValue(value, false);
+        && valueBoolValue(value, false);
     if (!caseConfig_.solver.ibm.enabled) {
         ibmGeometryFiles_.clear();
         return;
@@ -2438,11 +2448,11 @@ void CaseAdapter::decodeIBMSection() {
     try {
         ibmMethod_ = value.empty()
             ? FDM::IBMMethod::Ghost
-            : FDM::parseIBMMethod(foamUnquote(value));
+            : FDM::parseIBMMethod(valueUnquote(value));
     } catch (const std::exception& error) {
         fatalIBMConfig(error.what());
     }
-    const auto wall=foamUnquote(jsonValueAfterKey(block,"wallClosure"));
+    const auto wall=valueUnquote(jsonValueAfterKey(block,"wallClosure"));
     if (wall.empty() || wall=="eulerSlip")
         caseConfig_.solver.ibm.wallClosure=FDM::ImmersedWallClosure::EulerSlip;
     else if (wall=="stationaryNoSlipAdiabatic")
@@ -2620,11 +2630,11 @@ void CaseAdapter::decodeIBMSection() {
         } catch (const std::exception& error) {
             fatalIBMConfig(error.what());
         }
-        if (!foamVectorValue(required("centerOfMass"),
+        if (!valueVectorValue(required("centerOfMass"),
                              &ibmForcingConfig_.centerOfMass)
-            || !foamVectorValue(required("linearVelocity"),
+            || !valueVectorValue(required("linearVelocity"),
                                 &ibmForcingConfig_.linearVelocity)
-            || !foamVectorValue(required("angularVelocity"),
+            || !valueVectorValue(required("angularVelocity"),
                                 &ibmForcingConfig_.angularVelocity)) {
             fatalIBMConfig(
                 "forcing centerOfMass/linearVelocity/angularVelocity must "
@@ -2643,7 +2653,7 @@ void CaseAdapter::decodeIBMSection() {
             const std::string port = stripTokenQuotes(rawPort);
             if (!port.empty()) ibmForcingConfig_.fluidPorts.push_back(port);
         }
-        ibmForcingConfig_.constraintTolerance = foamDoubleValue(
+        ibmForcingConfig_.constraintTolerance = valueDoubleValue(
             required("constraintTolerance"),
             ibmForcingConfig_.constraintTolerance);
         if (!std::isfinite(ibmForcingConfig_.constraintTolerance)
@@ -2659,7 +2669,7 @@ void CaseAdapter::decodeIBMSection() {
                     "velocityForcingFTS requires explicit "
                     "forcing.constraintSolver controls.");
             }
-            const std::string type = foamUnquote(
+            const std::string type = valueUnquote(
                 jsonValueAfterKey(solver,"type"));
             const std::string maxIterations =
                 jsonValueAfterKey(solver,"maxIterations");
@@ -2672,9 +2682,9 @@ void CaseAdapter::decodeIBMSection() {
                     "maxIterations and relativeTolerance.");
             }
             ibmForcingConfig_.constraintSolverMaxIterations =
-                foamIntValue(maxIterations,0);
+                valueIntValue(maxIterations,0);
             ibmForcingConfig_.constraintSolverRelativeTolerance =
-                foamDoubleValue(relativeTolerance,
+                valueDoubleValue(relativeTolerance,
                     ibmForcingConfig_.constraintSolverRelativeTolerance);
         }
         if (ibmForcingConfig_.constraintSupport
@@ -2692,7 +2702,7 @@ void CaseAdapter::decodeIBMSection() {
                     fatalIBMConfig(
                         "surfaceOperator requires explicit " + key + ".");
                 }
-                return foamUnquote(raw);
+                return valueUnquote(raw);
             };
             ibmForcingConfig_.surfaceKernel =
                 surfaceRequired("kernel");
@@ -2706,7 +2716,7 @@ void CaseAdapter::decodeIBMSection() {
             else fatalIBMConfig("surfaceOperator normalization must be partitionOfUnity or linearReproducing.");
             ibmForcingConfig_.surfaceSpreading =
                 surfaceRequired("spreading");
-            ibmForcingConfig_.surfaceSupportRadius = foamDoubleValue(
+            ibmForcingConfig_.surfaceSupportRadius = valueDoubleValue(
                 surfaceRequired("supportRadius"),
                 ibmForcingConfig_.surfaceSupportRadius);
             if (FDM::normalizeToken(ibmForcingConfig_.surfaceKernel)
@@ -2733,7 +2743,7 @@ void CaseAdapter::decodeIBMSection() {
                     "brinkmanPenalty requires explicit "
                     "forcing.penaltyCoefficient.");
             }
-            ibmForcingConfig_.penaltyCoefficient = foamDoubleValue(
+            ibmForcingConfig_.penaltyCoefficient = valueDoubleValue(
                 penalty, ibmForcingConfig_.penaltyCoefficient);
         }
         const std::string augmentation =
@@ -2745,7 +2755,7 @@ void CaseAdapter::decodeIBMSection() {
                     "dfmAugmentedLagrangian requires explicit "
                     "forcing.augmentationCoefficient.");
             }
-            ibmForcingConfig_.augmentationCoefficient=foamDoubleValue(
+            ibmForcingConfig_.augmentationCoefficient=valueDoubleValue(
                 augmentation,
                 ibmForcingConfig_.augmentationCoefficient);
         }
@@ -2763,13 +2773,13 @@ void CaseAdapter::decodeIBMSection() {
                 }
                 return raw;
             };
-            ibmForcingConfig_.rigidMass = foamDoubleValue(
+            ibmForcingConfig_.rigidMass = valueDoubleValue(
                 rigidRequired("mass"), ibmForcingConfig_.rigidMass);
-            if (!foamVectorValue(rigidRequired("momentOfInertia"),
+            if (!valueVectorValue(rigidRequired("momentOfInertia"),
                                  &ibmForcingConfig_.principalInertia)
-                || !foamVectorValue(rigidRequired("externalForce"),
+                || !valueVectorValue(rigidRequired("externalForce"),
                                     &ibmForcingConfig_.externalForce)
-                || !foamVectorValue(rigidRequired("externalTorque"),
+                || !valueVectorValue(rigidRequired("externalTorque"),
                                     &ibmForcingConfig_.externalTorque)
                 || !std::isfinite(ibmForcingConfig_.rigidMass)
                 || ibmForcingConfig_.rigidMass <= 0.0
@@ -2834,15 +2844,16 @@ void CaseAdapter::decodePhaseChangeSection() {
 
     const P* block = jsonBlockAfterKey(text, "phaseChange");
     if (!block) block = text;
+    config.enabled = true;
 
     auto boolValue = [](const std::string& raw, bool fallback) {
-        const std::string value = foamLower(foamUnquote(raw));
+        const std::string value = valueLower(valueUnquote(raw));
         if (value == "ture") return true;
-        return foamBoolValue(raw, fallback);
+        return valueBoolValue(raw, fallback);
     };
 
-    std::string v = jsonValueAfterKey(block, "phaseChange");
-    if (v.empty()) v = jsonValueAfterKey(block, "enabled");
+    std::string v = jsonValueAfterKey(block, "enabled");
+    if (v.empty()) v = jsonValueAfterKey(block, "phaseChange");
     if (v.empty()) v = jsonValueAfterKey(block, "enable");
     if (!v.empty()) config.enabled = boolValue(v, config.enabled);
 
@@ -2853,13 +2864,10 @@ void CaseAdapter::decodePhaseChangeSection() {
     if (v.empty()) v = jsonValueAfterKey(block, "model");
     if (v.empty()) v = jsonValueAfterKey(block, "type");
     if (!v.empty()) {
-        config.model = foamUnquote(v);
-        const std::string normalized =
-            Physics::PhaseChange::normalizeModel(config.model);
-        if (normalized != "none") config.enabled = true;
+        config.model = valueUnquote(v);
     }
     v = jsonValueAfterKey(block, "phases");
-    if (!v.empty()) config.phaseNames = foamWordList(v);
+    if (!v.empty()) config.phaseNames = valueWordList(v);
 
     auto modelSubBlock = [&]() -> const P* {
         const std::string normalized =
@@ -2884,7 +2892,7 @@ void CaseAdapter::decodePhaseChangeSection() {
                           const std::string& coefficientName = "") {
         std::string value = jsonValueAfterKey(block, key);
         if (value.empty()) return;
-        target = foamDoubleValue(value, target);
+        target = valueDoubleValue(value, target);
         if (!coefficientName.empty()) {
             config.coefficients[coefficientName] = target;
         }
@@ -2895,7 +2903,7 @@ void CaseAdapter::decodePhaseChangeSection() {
                                     double& target) {
         std::string value = jsonValueAfterKey(saturation, key);
         if (value.empty()) value = jsonValueAfterKey(block, key);
-        if (!value.empty()) target = foamDoubleValue(value, target);
+        if (!value.empty()) target = valueDoubleValue(value, target);
     };
     readSaturationScalar(
         "saturationTemperature", config.saturationTemperature);
@@ -2976,7 +2984,7 @@ void CaseAdapter::decodePhaseChangeSection() {
             std::string value = jsonValueAfterKey(sourceBlock, key);
             if (!value.empty()) {
                 config.coefficients[sourceTokenKey(key)] =
-                    foamDoubleValue(value, 0.0);
+                    valueDoubleValue(value, 0.0);
             }
         }
     };
@@ -3008,7 +3016,7 @@ void CaseAdapter::decodePhaseChangeSection() {
         for (const std::string& key : selectionKeys) {
             std::string value = jsonValueAfterKey(sourceBlock, key);
             if (!value.empty()) {
-                config.selections[sourceTokenKey(key)] = foamUnquote(value);
+                config.selections[sourceTokenKey(key)] = valueUnquote(value);
             }
         }
     };
@@ -3030,15 +3038,15 @@ void CaseAdapter::decodePhaseChangeSection() {
         if (heatFlux.empty()) heatFlux = jsonValueAfterKey(heatBlock, "wallHeatFlux");
         if (heatFlux.empty()) heatFlux = jsonValueAfterKey(heatBlock, "value");
         if (!heatFlux.empty()) {
-            base.heatFlux = foamDoubleValue(heatFlux, 0.0);
+            base.heatFlux = valueDoubleValue(heatFlux, 0.0);
         } else {
             base.heatFlux = std::numeric_limits<double>::quiet_NaN();
         }
         std::string coordinate =
-            foamLower(foamUnquote(
+            valueLower(valueUnquote(
                 jsonValueAfterKey(heatBlock, "rangeCoordinate")));
         if (coordinate.empty()) {
-            coordinate = foamLower(foamUnquote(
+            coordinate = valueLower(valueUnquote(
                 jsonValueAfterKey(heatBlock, "coordinate")));
         }
         if (!coordinate.empty()) {
@@ -3052,7 +3060,7 @@ void CaseAdapter::decodePhaseChangeSection() {
             if (range.empty()) {
                 range = jsonValueAfterKey(heatBlock, "bounds");
             }
-            const auto values = foamNumbers(range);
+            const auto values = valueNumbers(range);
             if (values.size() != 2 || values[1] <= values[0]) {
                 fatalCaseConfig(
                     "phaseChange wallBoiling range requires (min max).");
@@ -3067,14 +3075,14 @@ void CaseAdapter::decodePhaseChangeSection() {
         }
         if (!wallTemperature.empty()) {
             base.wallTemperature =
-                foamDoubleValue(wallTemperature, base.wallTemperature);
+                valueDoubleValue(wallTemperature, base.wallTemperature);
         }
 
         std::string patchText = jsonValueAfterKey(heatBlock, "patch");
         if (patchText.empty()) patchText = jsonValueAfterKey(heatBlock, "patches");
         if (patchText.empty()) patchText = jsonValueAfterKey(heatBlock, "set");
         if (patchText.empty()) patchText = jsonValueAfterKey(heatBlock, "zone");
-        std::vector<std::string> patches = foamWordList(patchText);
+        std::vector<std::string> patches = valueWordList(patchText);
         if (patches.empty() && !fallbackPatch.empty()) {
             patches.push_back(fallbackPatch);
         }
@@ -3253,7 +3261,7 @@ void CaseAdapter::decodePhaseSystemSection() {
     config.enabled = true;
     std::string value = jsonValueAfterKey(text, "multiPhases");
     if (value.empty()) value = jsonValueAfterKey(text, "multiphase");
-    if (!value.empty()) config.enabled = foamBoolValue(value, config.enabled);
+    if (!value.empty()) config.enabled = valueBoolValue(value, config.enabled);
 
     const P* multiPhase = jsonBlockAfterKey(text, "multiPhase");
     if (!multiPhase) multiPhase = text;
@@ -3261,29 +3269,23 @@ void CaseAdapter::decodePhaseSystemSection() {
     value = jsonValueAfterKey(multiPhase, "phaseSystem");
     if (value.empty()) value = jsonValueAfterKey(multiPhase, "type");
     if (value.empty()) value = jsonValueAfterKey(multiPhase, "model");
-    if (!value.empty()) config.type = foamUnquote(value);
+    if (!value.empty()) config.type = valueUnquote(value);
 
-    value = jsonValueAfterKey(multiPhase, "solver");
-    if (value.empty()) value = jsonValueAfterKey(multiPhase, "solverType");
-    if (!value.empty()) {
-        try {
-            config.solver = MP::parseMultiPhaseSolverKind(foamUnquote(value));
-        } catch (const std::exception& e) {
-            fatalCaseConfig(e.what());
-        }
-    }
+    if (!jsonValueAfterKey(multiPhase,"solver").empty()
+        || !jsonValueAfterKey(multiPhase,"solverType").empty())
+        throw std::runtime_error("Removed multiPhase solver-family selection: declare variables in STATE, equations in WHAT, execution in HOW and providers in WHICH.");
 
     value = jsonValueAfterKey(multiPhase, "defaultPhase");
-    if (!value.empty()) config.defaultPhase = foamUnquote(value);
+    if (!value.empty()) config.defaultPhase = valueUnquote(value);
     value = jsonValueAfterKey(multiPhase, "defaultSignedDistance");
     if (value.empty()) value = jsonValueAfterKey(multiPhase, "signedDistance");
     if (!value.empty()) {
         config.defaultSignedDistance =
-            foamDoubleValue(value, config.defaultSignedDistance);
+            valueDoubleValue(value, config.defaultSignedDistance);
     }
     value = jsonValueAfterKey(multiPhase, "initialPressure");
     if (value.empty()) value = jsonValueAfterKey(multiPhase, "p0");
-    if (!value.empty()) config.initialPressure = foamDoubleValue(value, config.initialPressure);
+    if (!value.empty()) config.initialPressure = valueDoubleValue(value, config.initialPressure);
 
     PhasePropertiesReader::parseFieldModels(
         text, multiPhase, config);
@@ -3292,12 +3294,6 @@ void CaseAdapter::decodePhaseSystemSection() {
     PhasePropertiesReader::parseEulerianProperties(
         text, multiPhase, config);
     PhasePropertiesReader::parseSetAssignments(text, config);
-    if (MP::isMixtureType(config.type)
-        && MP::resolvedMultiPhaseSolverKind(config)
-            == MP::MultiPhaseSolverKind::DensityBased) {
-        config.conservativeLayout.variables =
-            MP::densityBasedConservedVariables(config);
-    }
 
     try {
         MP::validateMultiPhaseConfig(config, context);
@@ -3322,7 +3318,7 @@ std::optional<CaseConfig> CaseAdapter::decodeNativeCase() {
 
     if (caseConfig_.createMesh) {
         // mesh generator 是 mesh.yaml 声明的格式适配器，不是 case 目录约定。
-        if (meshGenerator_.empty()) {
+        if (!meshParameters_) {
             broadcast("Error: ",
                       "Missing mesh generator in mesh/mesh.yaml");
             return std::nullopt;

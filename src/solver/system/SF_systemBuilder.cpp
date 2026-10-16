@@ -13,6 +13,7 @@
 #include "SF_pressureCoupling.h"
 #include "SF_builtinState.h"
 #include "SF_executionComposition.h"
+#include "SF_scalarMethod.h"
 #include "SF_immersedMethods.h"
 #include "SF_eulerianRelations.h"
 #include "SF_providerResolver.h"
@@ -206,7 +207,8 @@ ResolvedSimulationSystem build(
 
     const auto& selection=request.composition;
     result.rawSystem.state.setSelectionOrigin(selection.stateSelectionOrigin);
-    if (selection.declared && request.templateOrigin!=PhysicsTemplateKind::SingleFluid)
+    if (selection.declared && request.templateOrigin!=PhysicsTemplateKind::SingleFluid
+        && request.templateOrigin!=PhysicsTemplateKind::OneFluidInterface)
         throw std::runtime_error("Native single-fluid equation/STATE composition has no current multiphase provider contract.");
     if (request.includeDefaultFluidPreset && !request.homogeneousThermodynamics && request.templateOrigin!=PhysicsTemplateKind::EulerianEulerian) {
         if (!selection.stateDeclared || selection.solutionVariables.empty())
@@ -481,7 +483,7 @@ ResolvedSimulationSystem build(
     }
     deriveExecutionComposition(result,request);
     if (std::any_of(result.solvePlan.compiledProgram.steps.begin(),result.solvePlan.compiledProgram.steps.end(),
-        [](const auto& call) {return call.backendProvider=="equation.scalar-central2" || call.backendProvider=="equation.scalar-transport";})) {
+        [](const auto& call) {return call.backendProvider=="equation.thermal" || call.backendProvider==ScalarOps::Provider || call.backendProvider==ScalarOps::TransportProvider || call.backendProvider==ScalarOps::SharedFluxProvider || call.backendProvider==ScalarOps::StageTransportProvider;})) {
         if (request.parallel) throw std::runtime_error("Unsupported: scalar provider is serial single patch; MPI execution unavailable.");
         if (!std::isfinite(config.numerics.maxDeltaT) || config.numerics.maxDeltaT<=0)
             throw std::runtime_error("Scalar explicit fixed dt must be finite and positive.");

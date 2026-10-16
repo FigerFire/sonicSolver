@@ -2,9 +2,14 @@ add_subdirectory(time)
 
 add_library(SF_solverAlgorithm STATIC
     time/SF_stageGroup.cpp
+    scalar/SF_thermalOperations.cpp
     scalar/SF_scalarBinding.cpp
     immersed/SF_immersedBinding.cpp
     interface/SF_levelSetBinding.cpp
+    interface/SF_levelSetOperations.cpp
+    interface/SF_advection.cpp
+    interface/SF_reinitialization.cpp
+    transport/SF_onceStep.cpp
     transport/SF_transportBinding.cpp
     SF_flowOperations.cpp
     SF_singleFluidBinding.cpp

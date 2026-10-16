@@ -1,3 +1,5 @@
+#include "infrastructure/io/mesh/SF_meshParameters.h"
+#include "infrastructure/mesh/createMesh/SF_meshGen.h"
 /// @file SF_widget.cpp
 /// @brief GUI 内嵌 VTK 结果视图实现。
 
@@ -50,7 +52,7 @@
 #include <vtkIntArray.h>
 #include <vtkLookupTable.h>
 #include <vtkMath.h>
-#include <vtkOpenFOAMReader.h>
+
 #include <vtkNew.h>
 #include <vtkPlane.h>
 #include <vtkPointData.h>
@@ -526,8 +528,8 @@ QString chooseScalar(const QStringList& names, const QString& preferred)
         if (name.compare(preferred, Qt::CaseInsensitive) == 0) return name;
     }
     for (const QString& name : names) {
-        if (name.compare(QStringLiteral("Pressure"),
-                         Qt::CaseInsensitive) == 0) {
+        if (name.compare(QStringLiteral("Pressure"),Qt::CaseInsensitive)==0
+            || name.compare(QStringLiteral("p"),Qt::CaseInsensitive)==0) {
             return name;
         }
     }
@@ -823,50 +825,12 @@ bool VTKView::eventFilter(QObject* watched, QEvent* event)
     return QWidget::eventFilter(watched, event);
 }
 
-bool VTKView::loadBlockMeshGeometry(const QString& path, QString* error)
+bool VTKView::loadNativeGeometry(const QString& path, QString* error)
 {
 #ifdef SONIC_GUI_WITH_VTK
-    QFile file(path);
-    if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
-        if (error) *error = file.errorString();
-        return false;
-    }
-    QString text = QString::fromUtf8(file.readAll());
-    text.remove(QRegularExpression(QStringLiteral(R"(/\*[\s\S]*?\*/)")));
-    text.remove(QRegularExpression(QStringLiteral(R"(//[^\n]*)")));
-
-    auto listBody = [&text](const QString& key) {
-        const QRegularExpression keyPattern(
-            QStringLiteral(R"(\b%1\b\s*\()").arg(QRegularExpression::escape(key)));
-        const QRegularExpressionMatch match = keyPattern.match(text);
-        if (!match.hasMatch()) return QString();
-        const int open = match.capturedEnd() - 1;
-        int depth = 0;
-        for (int i = open; i < text.size(); ++i) {
-            if (text.at(i) == QLatin1Char('(')) ++depth;
-            else if (text.at(i) == QLatin1Char(')') && --depth == 0)
-                return text.mid(open + 1, i - open - 1);
-        }
-        return QString();
-    };
-    const QString number = QStringLiteral(
-        R"([-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?)");
-    const QString verticesBody = listBody(QStringLiteral("vertices"));
-    const QRegularExpression vertex(QStringLiteral(
-        R"(\(\s*(%1)\s+(%1)\s+(%1)\s*\))").arg(number));
-    QVector<QVector3D> vertices;
-    for (auto it = vertex.globalMatch(verticesBody); it.hasNext();) {
-        const QRegularExpressionMatch match = it.next();
-        vertices.push_back(QVector3D(match.captured(1).toFloat(),
-                                     match.captured(2).toFloat(),
-                                     match.captured(3).toFloat()));
-    }
-    if (vertices.isEmpty()) {
-        if (error) *error = QStringLiteral("blockMeshDict 未包含有效 vertices");
-        return false;
-    }
-
-    auto polyData = vtkSmartPointer<vtkPolyData>::New();
+    MeshParameters parameters;
+    try {MeshIO::readParameters(path.toStdString(),parameters);}catch(const std::exception& e){if(error)*error=QString::fromUtf8(e.what());return false;}
+    QVector<QVector3D> vertices;for(const auto& v:parameters.vertices)vertices.push_back(QVector3D(v.x,v.y,v.z));
     auto points = vtkSmartPointer<vtkPoints>::New();
     for (const QVector3D& vertexPoint : vertices) {
         points->InsertNextPoint(vertexPoint.x(), vertexPoint.y(), vertexPoint.z());
@@ -885,13 +849,6 @@ bool VTKView::loadBlockMeshGeometry(const QString& path, QString* error)
         const unsigned char color[3] = {r, g, b};
         cellColors->InsertNextTypedTuple(color);
     };
-    const auto indices = [](const QString& value) {
-        QVector<int> result;
-        const QRegularExpression integer(QStringLiteral(R"([-+]?\d+)"));
-        for (auto it = integer.globalMatch(value); it.hasNext();)
-            result.push_back(it.next().captured().toInt());
-        return result;
-    };
     const auto valid = [&vertices](int index) {
         return index >= 0 && index < vertices.size();
     };
@@ -906,10 +863,6 @@ bool VTKView::loadBlockMeshGeometry(const QString& path, QString* error)
     QHash<QString, QVector<int>> externalBlockFaces;
     QSet<QString> assignedPatchFaces;
 
-    const QString blocksBody = listBody(QStringLiteral("blocks"));
-    const QRegularExpression block(QStringLiteral(
-        R"(\b(?:hex|wedge|prism)\s*\(([^)]*)\))"),
-        QRegularExpression::CaseInsensitiveOption);
     static const int hexEdges[12][2] = {
         {0, 1}, {1, 2}, {2, 3}, {3, 0}, {4, 5}, {5, 6},
         {6, 7}, {7, 4}, {0, 4}, {1, 5}, {2, 6}, {3, 7}};
@@ -921,9 +874,8 @@ bool VTKView::loadBlockMeshGeometry(const QString& path, QString* error)
     auto blockFaceIdArray = vtkSmartPointer<vtkIntArray>::New();
     blockFaceIdArray->SetName("blockID");
     int blockIdx = 0;
-    for (auto it = block.globalMatch(blocksBody); it.hasNext(); ++blockIdx) {
-        const QVector<int> blockVertices = indices(it.next().captured(1));
-        if (blockVertices.size() != 8) continue;
+    for (const auto& block:parameters.blocks) {
+        const QVector<int> blockVertices{block.verts[0],block.verts[1],block.verts[2],block.verts[3],block.verts[4],block.verts[5],block.verts[6],block.verts[7]};
         for (const auto& edge : hexEdges) {
             if (valid(blockVertices[edge[0]]) && valid(blockVertices[edge[1]])) {
                 addLine(blockVertices[edge[0]], blockVertices[edge[1]], 180, 180, 180);
@@ -944,19 +896,12 @@ bool VTKView::loadBlockMeshGeometry(const QString& path, QString* error)
             blockFaces->InsertNextCell(4, ids);
             blockFaceIdArray->InsertNextValue(blockIdx);
         }
+        ++blockIdx;
     }
 
-    const QString edgesBody = listBody(QStringLiteral("edges"));
-    const QRegularExpression arc(QStringLiteral(
-        R"(\barc\s+(\d+)\s+(\d+)\s*\(\s*(%1)\s+(%1)\s+(%1)\s*\))")
-            .arg(number), QRegularExpression::CaseInsensitiveOption);
-    for (auto it = arc.globalMatch(edgesBody); it.hasNext();) {
-        const QRegularExpressionMatch match = it.next();
-        const int first = match.captured(1).toInt();
-        const int last = match.captured(2).toInt();
-        if (!valid(first) || !valid(last)) continue;
-        const QVector3D middle(match.captured(3).toFloat(), match.captured(4).toFloat(),
-                               match.captured(5).toFloat());
+    for(const auto& edge:parameters.edges) {
+        const int first=edge.v0,last=edge.v1;
+        const QVector3D middle(edge.arcP.x,edge.arcP.y,edge.arcP.z);
         const QVector3D control = 2.0F * middle - 0.5F * (vertices[first] + vertices[last]);
         vtkIdType previous = first;
         for (int sample = 1; sample <= 32; ++sample) {
@@ -975,63 +920,18 @@ bool VTKView::loadBlockMeshGeometry(const QString& path, QString* error)
     patchIdArray->SetName("patchID");
     auto faceIdArray = vtkSmartPointer<vtkIntArray>::New();
     faceIdArray->SetName("faceID");
-    const QString boundaryBody = listBody(QStringLiteral("boundary"));
-    const QRegularExpression patchStart(
-        QStringLiteral(R"(\b[A-Za-z_][A-Za-z0-9_.-]*\s*\{)"));
-    int patchIdx = 0;
-    int from = 0;
-    while (true) {
-        const QRegularExpressionMatch patch = patchStart.match(boundaryBody, from);
-        if (!patch.hasMatch()) break;
-        const int open = patch.capturedEnd() - 1;
-        int depth = 0;
-        int close = -1;
-        for (int i = open; i < boundaryBody.size(); ++i) {
-            if (boundaryBody.at(i) == QLatin1Char('{')) ++depth;
-            else if (boundaryBody.at(i) == QLatin1Char('}') && --depth == 0) {
-                close = i;
-                break;
-            }
-        }
-        if (close < 0) break;
-        const QString patchText = boundaryBody.mid(open + 1, close - open - 1);
-        int faceIdx = 0;
-        const QRegularExpression facesKey(QStringLiteral(R"(\bfaces\b\s*\()"));
-        const QRegularExpressionMatch facesMatch = facesKey.match(patchText);
-        if (facesMatch.hasMatch()) {
-            const int facesOpen = facesMatch.capturedEnd() - 1;
-            int facesDepth = 0;
-            int facesClose = -1;
-            for (int i = facesOpen; i < patchText.size(); ++i) {
-                if (patchText.at(i) == QLatin1Char('(')) ++facesDepth;
-                else if (patchText.at(i) == QLatin1Char(')') && --facesDepth == 0) {
-                    facesClose = i;
-                    break;
-                }
-            }
-            if (facesClose >= 0) {
-                const QString faceText = patchText.mid(facesOpen + 1,
-                                                       facesClose - facesOpen - 1);
-                const QRegularExpression face(QStringLiteral(R"(\(([^()]*)\))"));
-                for (auto fit = face.globalMatch(faceText); fit.hasNext();) {
-                    const QVector<int> faceVertices = indices(fit.next().captured(1));
-                    if (faceVertices.size() < 3
-                        || std::any_of(faceVertices.cbegin(), faceVertices.cend(),
-                                       [&valid](int index) { return !valid(index); })) continue;
-                    QVector<vtkIdType> ids;
-                    ids.reserve(faceVertices.size());
-                    for (int index : faceVertices) ids.push_back(index);
-                    faces->InsertNextCell(ids.size(), ids.data());
-                    patchIdArray->InsertNextValue(patchIdx);
-                    faceIdArray->InsertNextValue(faceIdx++);
-                    assignedPatchFaces.insert(canonicalFaceKey(faceVertices));
-                }
-            }
+    int patchIdx=0;
+    for(const auto& patch:parameters.facePatches) {
+        int faceIdx=0;
+        for(const auto& face:patch.faces) {
+            QVector<int> faceVertices{face[0],face[1],face[2],face[3]};
+            vtkIdType ids[4]={face[0],face[1],face[2],face[3]};faces->InsertNextCell(4,ids);
+            patchIdArray->InsertNextValue(patchIdx);faceIdArray->InsertNextValue(faceIdx++);assignedPatchFaces.insert(canonicalFaceKey(faceVertices));
         }
         ++patchIdx;
-        from = close + 1;
     }
 
+    auto polyData=vtkSmartPointer<vtkPolyData>::New();
     polyData->SetPoints(points);
     polyData->SetLines(lines);
     polyData->GetCellData()->AddArray(blockIdArray);
@@ -1219,13 +1119,6 @@ bool VTKView::loadDataFile(const QString& path,
         reader->Update();
         surfaceData = surfaceFromAlgorithm(reader->GetOutputPort());
         sourceData = surfaceData;
-    } else if (suffix == QStringLiteral("foam")) {
-        vtkNew<vtkOpenFOAMReader> reader;
-        reader->SetFileName(info.absoluteFilePath().toUtf8().constData());
-        reader->SetCreateCellToPoint(true);
-        reader->Update();
-        surfaceData = surfaceFromAlgorithm(reader->GetOutputPort());
-        sourceData = surfaceData;
     } else if (suffix == QStringLiteral("stl")) {
         vtkNew<vtkSTLReader> reader;
         reader->SetFileName(info.absoluteFilePath().toUtf8().constData());
@@ -1235,10 +1128,13 @@ bool VTKView::loadDataFile(const QString& path,
     } else {
         if (error) {
             *error = QStringLiteral(
-                "仅支持 .sfm、.foam、.vts、.vtu、.vtm 和 .stl 文件");
+                "仅支持 .sfm、.vts、.vtu、.vtm 和 .stl 文件");
         }
         return false;
     }
+
+    if(impl_->geometrySceneVisible && (suffix=="vts" || suffix=="vtu" || suffix=="vtm"))
+        selectedScalar_.clear(); // A geometry label is not a result-variable preference.
 
     const bool reuseStaticGeometry =
         fromTimeSeries

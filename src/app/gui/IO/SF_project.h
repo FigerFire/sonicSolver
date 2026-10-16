@@ -40,10 +40,10 @@ struct ProjectModule {
     QString title;
     int documentIndex = -1;
     QVector<ProjectEntryRef> entries;
-    /// @brief 边界条件模块可选择的 polyMesh patch 或 SFM set 名。
+    /// @brief 边界条件模块可选择的 SFM set 名。
     QStringList targetNames;
-    bool densityBased = false;
     bool optional = false;
+    bool enabled = true;
 };
 
 /// @brief 输出任务列表中显示的一条 PVD 任务。
@@ -73,7 +73,7 @@ struct GeometrySketch {
     QVector<GeometryArc> arcs;
 };
 
-/// @brief 同时支持 sonicSolver 与 OpenFOAM 的 case 工作目录。
+/// @brief 使用严格 CaseIO 的原生 case 工作目录。
 class CaseProject {
 public:
     bool open(const QString& directory, QString* error = nullptr);
@@ -81,37 +81,12 @@ public:
                   int entryIndex,
                   const QString& value,
                   QString* error = nullptr);
-    /// @brief 向某个配置文档 section 追加配置行。
-    bool appendAssignments(int documentIndex,
-                           const QString& section,
-                           const QStringList& assignments,
-                           bool newSection,
-                           QString* error = nullptr);
-    bool addBlockMeshPatch(int documentIndex,
-                           const QString& name,
-                           const QString& type,
-                           QString* error = nullptr);
-    bool addBlockMeshPatchFace(int documentIndex,
-                               const QString& patchName,
-                               const QString& face,
-                               QString* error = nullptr);
-    bool renameBlockMeshPatch(int documentIndex,
-                              const QString& oldName,
-                              const QString& newName,
-                              QString* error = nullptr);
-    bool removeBlockMeshPatch(int documentIndex, const QString& name,
-                              QString* error = nullptr);
-    bool removeEntry(int documentIndex, int entryIndex,
-                     QString* error = nullptr);
     bool saveAll(QString* error = nullptr) const;
     bool addOptionalModule(ProjectModuleKind kind,
                            QString* error = nullptr);
-    /// @brief 在 0/ 目录新增一个 OpenFOAM 字段文件。
-    bool addField(ProjectModuleKind kind, const QString& fieldName,
-                  QString* error = nullptr);
-    /// @brief 设置 system/sonicDict 中的 meshFiles 项，通常在 GUI 生成 mesh.sfm 后调用。
+    /// @brief 显式更新 mesh registry，不扫描未注册输入。
     bool setMeshFile(const QString& fileName, QString* error = nullptr);
-    bool importMesh(const QString& sourcePath, QString* error = nullptr);
+    bool importMesh(const QString& sourcePath, QString* error = nullptr, bool replaceGenerated = false);
     bool importStl(const QString& sourcePath, QString* error = nullptr);
     bool writeGeometry(const GeometrySketch& sketch,
                        QString* error = nullptr);
@@ -122,10 +97,6 @@ public:
     const QString& casePath() const { return casePath_; }
     const QVector<ConfigDocument>& documents() const { return documents_; }
     const QVector<ProjectModule>& modules() const { return modules_; }
-    /// @brief 存在 case.yaml 或旧 sonic 字典对时使用 sonicSolver/SFM 工作流。
-    bool isSonicCase() const;
-    bool isDensityBased() const;
-
     /// @brief 返回业务模块对应的配置文件路径。
     /// @param kind 业务模块类型。
     /// @return 配置文件绝对路径；模块不存在时返回空字符串。
@@ -134,34 +105,17 @@ public:
     /// @brief 返回 case 配置的结果输出目录。
     /// @return 结果目录绝对路径。
     QString resultDirectory() const;
-    /// @brief 返回当前任务名，也就是 controlDict/sonicDict 的 jobName。
+    /// @brief 返回当前任务名，也就是 native runtime 的 jobName。
     QString outputTaskName() const;
-    /// @brief 返回 outputDict 中持久化的全部 job 名。
+    /// @brief 返回 native runtime 的当前 job 名（历史结果由结果视图读取）。
     QStringList outputTaskNames() const;
 
 private:
-    bool createDefaultProject(QString* error);
     bool reload(QString* error);
-    bool loadDocument(const QString& path,
-                      ProjectModuleKind kind,
-                      const QString& title,
-                      bool optional,
-                      QString* error);
-    bool updateSolverFlag(const QString& key,
-                          bool enabled,
-                          QString* error);
-    static QString moduleTitle(ProjectModuleKind kind);
-    static QString defaultFileName(ProjectModuleKind kind);
-    static bool writeFile(const QString& path,
-                          const QString& content,
-                          QString* error);
-    QStringList boundaryTargetNames() const;
-    QString directory_;
-    QString casePath_;
+    QString directory_,casePath_;
     QVector<ConfigDocument> documents_;
     QVector<ProjectModule> modules_;
 };
 
 } // namespace SF::GUI
-
 Q_DECLARE_METATYPE(SF::GUI::GeometrySketch)

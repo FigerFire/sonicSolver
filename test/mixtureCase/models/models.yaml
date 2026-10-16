@@ -1,4 +1,4 @@
-# Physics model registry.
+# Explicit document registry.
 SonicFile:
   object: models
   type: registry
@@ -20,3 +20,6 @@ MRF:
 cylinder:
   type: geometry
   file: models/cylinder.yaml
+IBM:
+  type: IBM
+  file: models/IBM.yaml

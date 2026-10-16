@@ -19,8 +19,8 @@ set -euo pipefail
 #   SONIC_INSTALL_COMMAND=0 to disable both installs.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-BUILD_DIR="${SCRIPT_DIR}/build"
-GENERATOR="Unix Makefiles"
+BUILD_DIR="${SONIC_BUILD_DIR:-${SCRIPT_DIR}/build}"
+GENERATOR="${SONIC_CMAKE_GENERATOR:-Unix Makefiles}"
 SONIC_COMMAND_INSTALLED=0
 SONIC_COMPLETION_DIR_INSTALLED=""
 
@@ -29,6 +29,10 @@ usage() {
 }
 
 jobs_count() {
+    if [ -n "${SONIC_JOBS:-}" ]; then
+        echo "$SONIC_JOBS"
+        return
+    fi
     local jobs=""
     if command -v sysctl >/dev/null 2>&1; then
         jobs="$(sysctl -n hw.ncpu 2>/dev/null || true)"

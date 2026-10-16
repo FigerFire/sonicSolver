@@ -1,5 +1,5 @@
 # cylinder model module.
 SonicFile:
   object: models
-  type: geometry
+  type: cylinder
 file: mesh/geometry/cylinder.STL
