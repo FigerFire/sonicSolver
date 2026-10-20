@@ -12,6 +12,8 @@
 namespace SF {
 
 struct MeshRuntimeConfig {
+    /// @brief Compiled flow resource demand; geometry-only clients allocate no Q/EOS.
+    bool initializeConservativeState = true;
     FDM::InitialConditionConfig initialConditions;
     double idealGasGamma = 1.4;
     double idealGasConstant = 287.05;

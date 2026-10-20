@@ -502,3 +502,30 @@ test/rasOnceStepOwnership/*
 
 # Keep AppleDouble metadata excluded after all directory re-inclusion rules.
 **/._*
+
+# Stage coefficient contracts and regression scripts; evidence remains local.
+!test/stageCoefficientOwnership/
+test/stageCoefficientOwnership/*
+!test/stageCoefficientOwnership/test_evidence.cpp
+!test/stageCoefficientOwnership/test_contracts.cpp
+!test/stageCoefficientOwnership/run_cases.py
+!test/stageCoefficientOwnership/run_tests.py
+!test/stageCoefficientOwnership/run_analysis.py
+**/._*
+
+# Native scalar production closure: reusable inputs and tests, never generated evidence.
+!test/nativeEquationClosure/
+test/nativeEquationClosure/*
+!test/nativeEquationClosure/create_cases.py
+!test/nativeEquationClosure/run_suite.py
+!test/nativeEquationClosure/run_short_tests.py
+!test/nativeEquationClosure/run_protection.py
+!test/nativeEquationClosure/collect_evidence.py
+!test/nativeEquationClosure/test_reference.cpp
+!test/nativeEquationClosure/cases/
+!test/nativeEquationClosure/cases/**/
+!test/nativeEquationClosure/cases/**/*.yaml
+!test/nativeEquationClosure/cases/**/*.sfm
+test/nativeEquationClosure/cases/**/result/
+test/nativeEquationClosure/cases/**/reference/
+**/._*

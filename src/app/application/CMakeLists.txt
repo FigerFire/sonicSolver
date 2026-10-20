@@ -14,7 +14,7 @@ target_include_directories(SF_caseAdapter PRIVATE
     ${CMAKE_SOURCE_DIR}/src/infrastructure/mesh
     ${CMAKE_SOURCE_DIR}/src/infrastructure/mesh/createMesh
 )
-target_link_libraries(SF_caseAdapter PUBLIC SF_io SF_physics SF_solverConfig SF_timeDriver SF_resultWriter)
+target_link_libraries(SF_caseAdapter PUBLIC SF_io SF_formula SF_physics SF_solverConfig SF_timeDriver SF_resultWriter)
 set_lib_output(SF_caseAdapter application)
 
 add_library(SF_application STATIC
@@ -29,6 +29,7 @@ add_library(SF_application STATIC
     execution/SF_flowLoop.cpp
     execution/SF_multiPatch.cpp
     execution/SF_singleFluid.cpp
+    adapters/SF_scalarResources.cpp
     model/SF_runtimeConfig.cpp
     output/SF_fields.cpp
     output/SF_report.cpp

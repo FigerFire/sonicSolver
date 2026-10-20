@@ -1,0 +1,11 @@
+{
+  "SonicFile": {
+    "object": "solver",
+    "type": "state"
+  },
+  "use": [
+    "colourant",
+    "dopant",
+    "signal"
+  ]
+}

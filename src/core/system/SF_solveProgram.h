@@ -202,6 +202,15 @@ struct SolvePlanNode {
     bool legacyAdapter = false;
 };
 
+/// @brief Provider 声明允许版本；compiler 冻结唯一 coefficient producer/resource。
+/// STATE 只定义物理符号；此记录是数值读取契约，不拥有数组或调度。
+struct CoefficientUse {
+    std::string symbol;
+    std::vector<StateVersion> acceptedVersions;
+    std::string producer,resource;
+    StateVersion version=StateVersion::Current;
+};
+
 /// @brief Numerical owner participating in a common recipe, independent of fusion.
 struct TemporalParticipant {
     std::string identity, provider;
@@ -212,6 +221,8 @@ struct TemporalParticipant {
     /// @brief 同一 stage RHS 内按 authored HOW 验证的数值资源依赖。
     std::vector<std::string> stageRequires,stageProvides,coefficientProvides,coefficientStates;
     OpId coefficientPrepare,coefficientPublish;
+    StateVersion coefficientVersion=StateVersion::Stage;
+    std::vector<CoefficientUse> coefficientUses;
 };
 inline OpId instanceOperation(std::string_view type,std::string_view occurrence) {
     return std::string(type)+"@"+std::to_string(occurrence.size())+":"+std::string(occurrence);
@@ -242,6 +253,8 @@ struct CompiledEquationCall {
     bool synchronousStages = false;
     std::vector<std::string> stageRequires,stageProvides,coefficientProvides,coefficientStates;
     OpId coefficientPrepare,coefficientPublish;
+    StateVersion coefficientVersion=StateVersion::Stage;
+    std::vector<CoefficientUse> coefficientUses;
     /// Provider-owned step setup; temporal recipes own stage topology/math.
     std::vector<OpId> temporalPreparation;
     OpId temporalStepSize;

@@ -1,0 +1,29 @@
+{
+  "SonicFile": {
+    "object": "fields",
+    "type": "registry"
+  },
+  "colourant": {
+    "new": true,
+    "type": "scalar",
+    "output": true
+  },
+  "dopant": {
+    "new": true,
+    "type": "scalar",
+    "output": true
+  },
+  "signal": {
+    "new": true,
+    "type": "scalar",
+    "output": true
+  },
+  "internalField": {
+    "type": "internalField",
+    "file": "fields/internalField.yaml"
+  },
+  "boundaries": {
+    "type": "boundary",
+    "file": "fields/boundaries.yaml"
+  }
+}

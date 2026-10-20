@@ -126,12 +126,18 @@ void deriveExecutionComposition(
     }
 }
 
-void validateSemanticComposition(const EquationCompositionConfig& composition) {
+void validateSemanticComposition(const EquationCompositionConfig& composition,bool fluidPreset) {
     if (!composition.declared) return;
     if (composition.equations.empty()) {
         throw std::runtime_error(
             "equations.yaml is required when semantic composition is declared.");
     }
+    const auto providers = builtinCompositionProviders();
+    if (!composition.stateDeclared || composition.solutionVariables.empty())
+        throw std::runtime_error("Native composition requires explicit solution STATE (stateRegistry.use).");
+    if (composition.algorithm.empty() || !providers.hasAlgorithm(composition.algorithm))
+        throw std::runtime_error("Native composition requires explicit HOW (algorithmRegistry).");
+    if(!fluidPreset)return;
     const bool continuity = usesEquation(composition,"Continuity");
     const bool momentum = usesEquation(composition,"Momentum");
     const bool energy = usesEquation(composition,"Energy");
@@ -139,7 +145,6 @@ void validateSemanticComposition(const EquationCompositionConfig& composition) {
         throw std::runtime_error(
             "Current single-fluid composition requires Continuity and Momentum.");
     }
-    const auto providers = builtinCompositionProviders();
     if (composition.thermoDynamics.equationOfState.empty()) {
         throw std::runtime_error(
             "Active fluid equations require models/thermoDynamics.yaml with equationOfState.");
@@ -159,10 +164,6 @@ void validateSemanticComposition(const EquationCompositionConfig& composition) {
     if (!composition.thermoDynamics.transport.empty()
         && !providers.hasTransport(composition.thermoDynamics.transport))
         throw std::runtime_error("No registered transport provider for '"+composition.thermoDynamics.transport+"'.");
-    if (!composition.stateDeclared || composition.solutionVariables.empty())
-        throw std::runtime_error("Native composition requires explicit solution STATE (stateRegistry.use).");
-    if (composition.algorithm.empty() || !providers.hasAlgorithm(composition.algorithm))
-        throw std::runtime_error("Native composition requires explicit HOW (algorithmRegistry).");
 
 }
 
@@ -188,7 +189,7 @@ ResolvedSimulationSystem build(
     result.classification.templateOrigin = request.templateOrigin;
     result.classification.defaultFluidPresetIncluded=request.includeDefaultFluidPreset;
     result.timeRecipe = config.numerics.timeRecipe;
-    validateSemanticComposition(request.composition);
+    validateSemanticComposition(request.composition,request.includeDefaultFluidPreset);
     if (request.composition.declared) {
         const auto& algorithm=request.composition.algorithm;
         if ((algorithm=="Explicit" && request.coupling)

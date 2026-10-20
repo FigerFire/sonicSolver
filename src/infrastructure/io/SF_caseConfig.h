@@ -6,6 +6,7 @@
 #include "core/config/SF_config.h"
 #include "core/config/SF_equationComposition.h"
 #include "core/system/SF_solveProgram.h"
+#include "core/system/SF_systemContribution.h"
 #include "core/config/SF_runControl.h"
 #include "SF_multiphase.h"
 #include "SF_resultWriter.h"
@@ -58,6 +59,8 @@ struct CaseConfig {
     EquationCompositionConfig composition;
     std::optional<System::ExecutionProgram> authoredExecution;
     std::vector<System::NumericalBinding> authoredNumerics;
+    /// @brief Native typed WHAT contributions; no runtime arrays or alternate IR.
+    std::vector<System::SystemContribution> userContributions;
     Physics::Multiphase::MultiPhaseConfig multiPhase;
     bool multiPhaseEnabled = false;
 

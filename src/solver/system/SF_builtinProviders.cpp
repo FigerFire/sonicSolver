@@ -195,9 +195,7 @@ public:
         result.oldTimeWorkspace="explicit.q0";
         result.publishesStageToPhysicalTarget=true;
         if (system.state.contains("mu_t")) {
-            const auto& resource=system.state.at("mu_t").stageCoefficientResource;
-            if(resource.empty())result.stateUses.push_back({"turbulence.mu_t.step",StateVersion::Frozen});
-            else {result.stateUses.push_back({"mu_t",StateVersion::Stage});result.stageRequires.push_back(resource);}
+            result.coefficientUses.push_back({"mu_t",{StateVersion::Frozen,StateVersion::Stage}});
         }
         result.spatialTerms=true;
         result.residualWorkspace="residual";
@@ -312,6 +310,8 @@ public:
         result.writes={step.target.symbol,"mu_t"};
         result.reads={"rho","U","k",second,"mu_t"};
         result.stateUses={{"rho"},{"U"},{"k"},{second}};
+        result.coefficientProvides={"turbulence.mu_t.step"};result.coefficientStates={"mu_t"};
+        result.coefficientVersion=StateVersion::Frozen;
         result.stateEffects={{"k",false,true},{second,false,true},{"mu_t",true,true},{"turbulence.mu_t.step",true,false}};
         result.capabilityRequirements={{"velocity.immersed","turbulence.boundary.immersed",
             "requires matching immersed mean-flow wall, wall distance, turbulence boundary and velocity time-level treatment",
@@ -360,6 +360,8 @@ public:
         result.equationMethod=std::string(id());
         result.backendOperation=OpIds::TurbulenceClosureRefresh;
         result.calls={{"mu_t","mu_t"}};result.writes={"mu_t"};result.reads={"rho","U"};
+        result.coefficientProvides={"turbulence.mu_t.step"};result.coefficientStates={"mu_t"};
+        result.coefficientVersion=StateVersion::Frozen;
         result.stateUses={{"rho"},{"U"}};result.stateEffects={{"mu_t",true,true},{"turbulence.mu_t.step",true,false}};
         result.capabilityRequirements={{"velocity.immersed","turbulence.boundary.immersed",
             "immersed strain-rate and wall/boundary closure treatment are unavailable"}};

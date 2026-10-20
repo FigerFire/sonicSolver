@@ -1,0 +1,18 @@
+{
+  "SonicFile": {
+    "object": "fields",
+    "type": "internalField"
+  },
+  "colourant": {
+    "default": 0,
+    "leftHalf": 1
+  },
+  "dopant": {
+    "default": 0.5,
+    "rightHalf": 2
+  },
+  "signal": {
+    "default": 0.75,
+    "leftHalf": 0.2
+  }
+}

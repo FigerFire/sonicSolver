@@ -106,6 +106,12 @@ CaseInspection inspectCase(const CaseConfig& config) {
     // legacy WorkflowPlan.kind 决定。
     FDM::ImmersedAlgorithmDescriptor immersedDescriptor;
     System::BuildRequest systemRequest;
+    systemRequest.userContributions=config.userContributions;
+    if(!config.userContributions.empty()) {
+        systemRequest.includeDefaultFluidPreset=std::any_of(config.composition.equations.begin(),config.composition.equations.end(),[](const auto& name) {
+            return name=="Continuity" || name=="Momentum" || name=="Energy" || name=="PressureConstraint";
+        });
+    }
     systemRequest.templateOrigin = resolvePhysics(config);
     systemRequest.authoredExecution=config.authoredExecution;
     systemRequest.authoredNumerics=config.authoredNumerics;
@@ -227,6 +233,17 @@ CaseInspection inspectCase(const CaseConfig& config) {
     System::validate(result.system);
     result.mesh = Runtime::makeMeshRuntimeConfig(
         config,config.solver,result.system.numericalSystem.requiredHaloWidth);
+    result.mesh.initializeConservativeState=System::requiresProvider(result.system,"flow.conservative")
+        || System::requiresProvider(result.system,"flow.pressure-operators") || System::requiresProvider(result.system,"flow.eulerian-pressure");
+    if(!result.mesh.initializeConservativeState && config.modelDescription)for(const auto& field:config.modelDescription->fields) {
+        if(!result.system.executableSystem.state.contains(field.symbol))continue;
+        // A declared scalar default initializes the entire geometry, unlike a fluid set-only IC.
+        if(field.initial.is_number())result.mesh.configuredSetNames.push_back("all");
+        for(const auto& item:field.sets.items())result.mesh.configuredSetNames.push_back(item.key());
+        for(const auto& item:field.boundaries.items()) {
+            result.mesh.configuredSetNames.push_back(item.key());result.mesh.physicalBoundaryNames.push_back(item.key());
+        }
+    }
     result.ibm = Runtime::makeIBMRuntimeConfig(
         config.solver,result.system.numericalSystem.requiredHaloWidth);
 

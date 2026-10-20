@@ -300,12 +300,11 @@ int checkCase(const std::string& path, bool detailed) {
         return 0;
     }
     printText("Checking sonicSolver configuration...");
-    printText("  Flow:       equations + coupling preset  OK");
+    printText("  Equations:  compiled mathematical system  OK");
     printText("  Coupling:   "
         + std::string(SF::System::toString(inspection.system.coupling.status))
         + " (" + inspection.system.coupling.preset + ")");
-    printText("  State:      " + std::string(
-        SF::System::toString(inspection.system.classification.templateOrigin)) + "  OK");
+    printText("  State:      " + std::to_string(inspection.system.executableSystem.state.solutionVariables().size()) + " selected solution symbols  OK");
     printText("  Plan:       " + inspection.system.solvePlan.root.name + "  OK");
     printText("  IBM:        "
         + std::string(inspection.ibm.enabled ? "enabled" : "disabled") + "  OK");

@@ -122,6 +122,7 @@ Euler 流体作用量、黏性耗散、固体弹性能、界面自由能和相�
 | OldTime/Stage and backend workspace demand | | | | requests | binds |
 | runtime operation provider/backend identity | | | | declares final implementation | freezes |
 | provider capability validation | | | | declares capability | checks |
+| coefficient versions / publisher capabilities | physical dependencies only | physical symbols only | scope / occurrences | declares allowed treatments and provided set | freezes unique producer/resource |
 | pressure arithmetic implementation | | | | numerical provider | lowers |
 
 禁止依赖：HOW transformer 写 NumericalBinding；Equation 保存 target/order；NumericalCompiler 选择 PISO；StateRealization 选择 topology；Builder 按 state flags 选择 solver family；source ExecutionProgram 持有 compiled workspace；WHAT transformer 创建 runtime OpIds。
@@ -132,7 +133,7 @@ WHAT defines mathematical equations. `SF::System::Equation` 保存稳定的 `id`
 
 实际 single-fluid density registry 是 `continuity`、`momentum`、`energy`。常密度 NS registry 是 `momentum`、`continuity`；后者是 `div(U)=0`，由压力一致性方程满足，不额外伪造一次独立 continuity solve。压力耦合注册 `pSimple`、`correctU`、`correctP`、`correctFluxp`；固定时间迭代另有 `relaxIterate`、`restoreFlux`、`checkConvergence` 数学关系。
 
-Builtin 与 C++ user-defined equations 经 `SystemCompositionBuilder::addEquation(Equation)` 进入同一 registry。编译器/provider 根据 AST、target 和已实现的 capability 绑定，不能按 builtin/user 来源切换执行路径。native YAML 的任意数学表达式解析仍未实现，不能把 C++ 注册接口误说成任意 YAML 方程已可执行。
+Builtin、C++ user contribution 与有限 native typed `equationRegistry.add` 经 `SystemCompositionBuilder::addEquation(Equation)` 进入同一 registry。编译器/provider 根据 AST、target 和已实现的 capability 绑定，不能按 builtin/user 来源切换执行路径。native 首版开放具名标量的 ddt/diffusion 和显式算术 AST；结构可解析与 provider 可执行分别校验，未知符号/operator、非法参数、不支持的数学明确拒绝。来源文件、方程与表达式路径进入原 provenance/operator occurrence，不建立第二份数学 IR。任意 PDE、extend/replace/disable、通用符号微分仍未实现。
 
 Formula/Expression AST 是 equation mathematical implementation detail，不是顶层 execution authority。`SF_formula.h/.cpp` 实现 AST、Equation 与 registry；保留此文件名不意味着恢复 Formula solver。FormulaGroup/FormulaGroupRegistry 已移除，守恒向量 fusion 属于 numerical provider 优化。
 
@@ -140,7 +141,7 @@ Formula/Expression AST 是 equation mathematical implementation detail，不是�
 
 ## STATE — Base variables and realized views
 
-`core/system/SF_stateRegistry.h` 的 `StateRegistry` 与 `StateSymbol` 是变量 namespace authority。符号保存 shape/components、location、parallel ownership、primary/derived role、physical storage contract、closure derivation、initialization/BC/restart 属性。没有 equation id、target binding、order、Loop、PISO、RK recipe。
+`core/system/SF_stateRegistry.h` 的 `StateRegistry` 与 `StateSymbol` 是变量 namespace authority。符号保存 shape/components、location、parallel ownership、primary/derived role、physical storage contract、closure derivation、initialization/BC/restart 属性。没有 equation id、target binding、order、Loop、PISO、RK recipe，也不保存 coefficient publication resource 或具体 Stage/Frozen 选择。
 
 原生 case 必须分别选择 WHAT、solution STATE 和 HOW。`EquationCompositionConfig::stateDeclared/solutionVariables` 是输入；冻结后 `StateRegistry::solutionVariables()` 是成员身份 authority。`StateRole` 仍描述数学/存储职责，不决定是否属于 solution；不增加 `Conserved` 互斥角色。物理守恒密度及其 balance 属于 WHAT，一个主未知量可以同时表示守恒密度。
 
@@ -487,6 +488,12 @@ time.commit
 
 scalar physical arrays 由 application/STATE 持有，ScalarOperations 只持有 old/stage/RHS/increments。新非拥有式 scalarInstances 表按 occurrence 绑定 immutable BC/source data，并独立检查 target；weak_ptr 用于检测数据已过期。旧单 scalar raw pointer 仅兼容一个 occurrence，仍要求调用者保证生命周期。binding 表和 reader 不复制别的 provider 的 physical arrays 或 workspace。
 
+普通 native case 现可显式注册 STATE、有限 WHAT、HOW 与 WHICH，运行多个独立常系数扩散标量。`CaseAdapter` 将 typed add lower 到原 SystemContribution/FormulaExpr；fields registry 的声明提供自定义符号的 metadata，已注册 internalField/boundaries 提供初值和边界。每个方程有独立 equation identity、每次调用有独立 occurrence 和 target；compiler 决定 OldTime/Stage/RHS demands，不由用户配置数组。
+
+没有流体 preset 请求时，通用 composition 不要求 Momentum、Continuity 或 EOS；这些检查仍由真正的流体 preset 保留。inspection 从冻结的 flow provider requirements 得到 mesh 是否需要 conservative storage。geometry-only loader 不分配 Q、不执行 fluid initialization；声明的 scalar default 覆盖整个几何，不套用 fluid 的 set-only IC 覆盖推断。`adapters/SF_scalarResources` 只为已编译的 NamedDistributed scalar 需求创建唯一 ScalarField 数组及 immutable boundary ports，再调用已有 `executeEquations`。它不拥有新的时间循环，不依据字段名或数量选择算法。flow/Eulerian 的既有资源装配保留，并未宣称所有 provider binder 已统一。
+
+独立 scalar 的正式输出沿用 registeredStateFields/ResultWriter/fields registry；没有伪 rho/rhoU/rhoE 或 FluidStateModel。当前 native 闭环限制为 serial 单 patch、均匀轴对齐网格、完整面 constant fixedValue/zeroGradient、ScalarDiffusionCentral2、显式 forwardEuler/classicalRK4。native source callback、通用初始化函数、restart 文件持久化、scalar MPI、新模块 stage 组合不因此开放。`check/explain` 校验声明/编译能力，完整 BC 面覆盖和实际 layout 在 runtime binding 校验；尚未加载 mesh 时不宣称已验证全部 runtime geometry。
+
 flow 保留原 `Time::Explicit` workspace、stage 系数、RHS 和 Q publication。`evaluateRHS()` 与 `executeStage()` 拆出可选预装配屏障，但旧 standalone fused-stage 路径仍有效。混合组中 Q 是原实现发布的 time-qualified Stage storage；所有 RHS 完成后才允许 advance。未新增永久 Q，未承诺任意运行异常的全状态事务回滚。scalar 最终 publication 前先校验所有成员，已能确定的 binding/plan/数据生命周期错误不提交半份 scalar 或 clock。
 
 现已实现的 WHICH：
@@ -495,9 +502,9 @@ flow 保留原 `Time::Explicit` workspace、stage 系数、RHS 和 Q publication
 - `ScalarTransportUpwindCentral2`：`ddt(rhoC)+div(rhoU,rhoC/rho)=diffusion(rho*D,rhoC/rho)+source(Sc)`；读取 Stage rho/rhoU/rhoC，真实一阶 upwind convection、面平均 rho*D diffusion。此选择使用中心面 mass flux，未借用高阶 NS canonical mass flux；不能宣称任意可变密度下浓度恒定性与高阶 flow 严格兼容。
 - 显式 `linearScalarForce` / `linearScalarWork` source：compiled Stage source kernel 经稳定 reader 进入原 ConservativeRHS；动量力密度为 kappa*rhoC，能量功使用同一 Stage 速度。不是 application 的 step-end 修正。
 
-共同组当前支持 Euler/classicalRK4、serial single patch、无额外 auxiliary stage treatment 的原 conservative NS。纯 scalar 不安装 NS、Q 或 EOS。MPI/multi-patch、scalar implicit/SSPRK3、任意 nonlinear coupling、一般 AST/YAML、turbulence/IBM/interface 的新共同 stage treatment 均 Unsupported。已有其他模型自身原执行路径不改为此组，也不失去原有能力。新 provider 需提供真实阶段实现及 binder，不以空 callback 宣称支持。
+共同组当前支持 Euler/classicalRK4、serial single patch、无额外 auxiliary stage treatment 的原 conservative NS。纯 scalar 不安装 NS、Q 或 EOS。MPI/multi-patch、scalar implicit/SSPRK3、任意 nonlinear coupling、超出有限 typed native 范围的 AST/YAML、turbulence/IBM/interface 的新共同 stage treatment 均 Unsupported。已有其他模型自身原执行路径不改为此组，也不失去原有能力。新 provider 需提供真实阶段实现及 binder，不以空 callback 宣称支持。
 
-通用 PlanExecutor/Time::Driver 不认识 scalar、feedback 或 flow family；compiler 与 execution 不新增模型专属 runner、第二套 tableau/clock/physical registry。kernel 不调用 MPI，原 canonical COPY、GlobalDof SUM 及 FluxField/Residual solver ownership 不变。支持范围、数值参考、输出与冻结结果见 [本轮唯一迁移报告](../docs/multi-equation-stage-migration-report.md)。
+通用 PlanExecutor/Time::Driver 不认识 scalar、feedback 或 flow family；compiler 与 execution 不新增模型专属 runner、第二套 tableau/clock/physical registry。kernel 不调用 MPI，原 canonical COPY、GlobalDof SUM 及 FluxField/Residual solver ownership 不变。原多实例数学与范围见 [共同 stage 迁移报告](../docs/multi-equation-stage-migration-report.md)；正式 native 入口、独立 C++ 参考、错误配置与生产保护见 [native 方程执行闭环报告](../docs/native-equation-execution-closure.md)。
 
 ## Current implementation and verification status
 
@@ -659,7 +666,20 @@ properties:
 
 模型显式选择 `transportMethod: stageConservative` 时，single-fluid kOmegaSST 贡献 `ddt(rho*k)` / `ddt(rho*omega)`、真实 convection、rho 加权 diffusion、production、sink 和 cross diffusion，WHICH 为 `SSTStageTransport`。primitive physical k/omega/mu_t 继续 alias 原 Manager 数组；solver 标量 participant 持有 rho*k/rho*omega 的 OldTime/Stage/RHS/RK workspace。模型只计算系数，不通过 `correct()` 推进该路径；solver 持有七个 SST 系数 workspace。mu_t 发布到原数组，并被真实 NS 黏性算子读取。不存在第二份 physical k/omega、第二个 clock 或 SST runner。
 
+具体 coefficient 数学符号仍在 STATE/WHAT：mu_t 和 `SST.nu.k/omega`、`SST.production.k/omega`、`SST.sink.k/omega`、`SST.cross`。
+其 physical alias、抽象 TransientWorkspace 属性和闭合依赖不决定更新方式。SSTStageTransport 显式声明完整八成员 Stage 发布集合、prepare/publish 操作及其数值读取需求；once-step RAS/LES 显式声明既有 step-Frozen mu_t 发布。
+ConservativeResidual 声明可消费的已实现版本，compiler 只匹配本次 WHICH 已选择的唯一 publisher，不根据基础 STATE 属性选择 Stage/Frozen。
+
+`CompiledEquationCall::coefficientUses` 保存 provider 接受版本与 compiler 冻结的 version、producer identity 和 resource；同一绑定派生 stateUses 与 temporal participant。
+这些是既有编译 IR 的数值输入/输出契约，不是第二份 STATE 或资源注册表。缺失、冲突、不兼容版本/halo、缺少完整输出集合和错误 participant 镜像明确拒绝。
+StageTransportClosure 在绑定阶段独立核对实际八成员输出，分配原七个 workspace，并将 mu_t Stage view 绑定原物理数组；不按模型名或扫描第一个同名资源重选 publisher。
+
 公共 temporal 编译契约具有 optional coefficient resources：全部 participant boundary/prepare -> Stage ready -> 明确 coefficient publication -> 全部 ordered RHS -> RHS ready -> 全部 advance。RHS 不写其他 participant 的 Stage 状态。NS canonicalMassFlux producer 必须位于 shared scalar consumer 之前，coefficients 必须在 flow/SST RHS 之前；compiler 校验 authored 顺序，不自行重排。全部 physical publish 后刷新最终系数，再执行唯一 `time.commit`。recipe coefficients、stage abscissae、CFL、NS flux、residual 和 MPI 语义不改变。
+
+StageGroup 对冻结绑定和 callbacks 做一致性检查；每 stage 清除 coefficient-ready，RHS 前要求所有已声明发布完成。
+下一 stage / 下一 physical step 不能沿用上一 epoch；全部 physical publication 后的最终 mu_t 刷新位置不变。初始化仍用原物理闭合。
+`explain` 可显示 producer、resource、version、八成员集合与 flow/k/omega consumer；原 HOW occurrence/provider/provenance 保持可追溯。
+契约迁移、同 STATE 的版本能力测试、真实 epoch 负例与 Euler/RK4 精确数值证据见[专项报告](../docs/stage-coefficient-contract-ownership-migration.md)。
 
 stage SST 第一版仅支持 single-fluid kOmegaSST、serial/single patch、forwardEuler/classicalRK4、明确完整面 fixedValue/zeroGradient 边界；继承 mesh halo 标签不等于允许内部/局部点集冒充完整面。新 stage SST＋IBM、pressure、MPI/multipatch、Eulerian、kEpsilon 或未实现的 stage recipe 明确 Unsupported。已有 `legacyOnceStep`（省略选择时保持当前兼容默认）有真实 Ghost/SST、kEpsilon 和旧 single-fluid 消费者；它仍使用前述 once-step 数学，不得称为共享守恒 SST。Eulerian 保留自己的相质量加权矩阵内核。两种 SST 数学不会静默互换。
 

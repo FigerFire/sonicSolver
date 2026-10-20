@@ -135,7 +135,142 @@ std::string missingCapability(const CompiledExecutionProgram& program,
     }
     return {};
 }
+namespace {
+std::string coefficientOwner(const CompiledEquationCall& call) {
+    return call.temporalOwner.empty()?call.source.occurrence:call.temporalOwner;
+}
+std::vector<const CompiledEquationCall*> coefficientPublishers(
+        const StateRegistry* state,const CompiledExecutionProgram& program) {
+    std::vector<const CompiledEquationCall*> publishers;
+    for(const auto& call:program.steps) {
+        if(call.coefficientProvides.empty()) {
+            if(!call.coefficientStates.empty() || !call.coefficientPrepare.empty() || !call.coefficientPublish.empty())
+                throw std::runtime_error("Coefficient publication lacks resource: "+call.source.occurrence);
+            continue;
+        }
+        if(call.coefficientProvides.size()!=1 || call.coefficientStates.empty())
+            throw std::runtime_error("Coefficient provider requires one explicit resource and its complete state set: "+call.source.occurrence);
+        std::set<std::string> symbols;
+        for(const auto& symbol:call.coefficientStates) {
+            if(state)state->at(symbol);
+            if(!symbols.insert(symbol).second)throw std::runtime_error("Duplicate coefficient state: "+symbol);
+        }
+        if(call.coefficientVersion==StateVersion::Stage) {
+            if(!call.temporalResidual || call.coefficientPrepare.empty() || call.coefficientPublish.empty())
+                throw std::runtime_error("Stage coefficient provider lacks preparation/publication treatment: "+call.source.occurrence);
+        } else if(call.coefficientVersion==StateVersion::Frozen) {
+            if(!call.coefficientPrepare.empty() || !call.coefficientPublish.empty()
+                || std::none_of(call.stateEffects.begin(),call.stateEffects.end(),[&](const auto& e){return e.symbol==call.coefficientProvides.front() && e.publish;}))
+                throw std::runtime_error("Frozen coefficient provider lacks physical-step publication: "+call.source.occurrence);
+            for(const auto& symbol:call.coefficientStates)
+                if(std::none_of(call.stateEffects.begin(),call.stateEffects.end(),[&](const auto& e){return e.symbol==symbol && e.publish;}))
+                    throw std::runtime_error("Frozen coefficient state is not published: "+symbol);
+        } else throw std::runtime_error("Unsupported coefficient provider treatment: "+std::string(toString(call.coefficientVersion)));
+        const auto previous=std::find_if(publishers.begin(),publishers.end(),[&](const auto* p) {
+            return coefficientOwner(*p)==coefficientOwner(call) || p->coefficientProvides==call.coefficientProvides
+                || std::any_of(call.coefficientStates.begin(),call.coefficientStates.end(),[&](const auto& id) {
+                    return std::find(p->coefficientStates.begin(),p->coefficientStates.end(),id)!=p->coefficientStates.end();
+                });
+        });
+        if(previous!=publishers.end()) {
+            const auto& p=**previous;
+            if(!call.fusionKey.empty() && call.fusionKey==p.fusionKey
+                && call.backendProvider==p.backendProvider && call.backendOperation==p.backendOperation
+                && call.coefficientProvides==p.coefficientProvides && call.coefficientStates==p.coefficientStates
+                && call.coefficientVersion==p.coefficientVersion)continue;
+            throw std::runtime_error("Conflicting coefficient publishers: "+p.source.occurrence+" and "+call.source.occurrence);
+        }
+        publishers.push_back(&call);
+    }
+    return publishers;
+}
+}
+void bindCoefficientContracts(const StateRegistry& state,CompiledExecutionProgram& program) {
+    const auto publishers=coefficientPublishers(&state,program);
+    for(auto& call:program.steps) {
+        std::set<std::string> symbols;
+        for(auto& use:call.coefficientUses) {
+            state.at(use.symbol);
+            if(!symbols.insert(use.symbol).second || use.acceptedVersions.empty()
+                || !use.producer.empty() || !use.resource.empty())
+                throw std::runtime_error("Invalid/unresolved coefficient request: "+call.source.occurrence+" / "+use.symbol);
+            const CompiledEquationCall* selected=nullptr;
+            for(const auto* p:publishers) {
+                if(std::find(p->coefficientStates.begin(),p->coefficientStates.end(),use.symbol)==p->coefficientStates.end())continue;
+                if(std::find(use.acceptedVersions.begin(),use.acceptedVersions.end(),p->coefficientVersion)==use.acceptedVersions.end())
+                    throw std::runtime_error("Incompatible coefficient treatment: consumer "+call.source.occurrence+" / "+use.symbol+" cannot read "+toString(p->coefficientVersion));
+                if(selected)throw std::runtime_error("Ambiguous coefficient publisher: "+use.symbol);
+                selected=p;
+            }
+            if(!selected)throw std::runtime_error("Missing coefficient publisher: consumer "+call.source.occurrence+" / "+use.symbol);
+            use.producer=coefficientOwner(*selected);use.resource=selected->coefficientProvides.front();use.version=selected->coefficientVersion;
+            const auto read=std::find_if(call.stateUses.begin(),call.stateUses.end(),[&](const auto& r){return r.symbol==use.symbol;});
+            if(read==call.stateUses.end())call.stateUses.push_back({use.symbol,use.version,false,use.version==StateVersion::Frozen?use.resource:""});
+            else if(read->version!=use.version || read->halo)
+                throw std::runtime_error("Coefficient read/version/halo incompatible with publisher: "+use.symbol);
+            if(use.version==StateVersion::Stage && std::find(call.stageRequires.begin(),call.stageRequires.end(),use.resource)==call.stageRequires.end())
+                call.stageRequires.push_back(use.resource);
+        }
+    }
+    validateCoefficientContracts(state,program);
+}
+void validateCoefficientContracts(const StateRegistry& state,const CompiledExecutionProgram& program) {
+    coefficientPublishers(&state,program);
+    validateCoefficientContracts(program);
+}
+void validateCoefficientContracts(const CompiledExecutionProgram& program) {
+    const auto publishers=coefficientPublishers(nullptr,program);
+    for(const auto& call:program.steps) {
+        for(const auto& read:call.stateUses) {
+            const bool coefficient=std::any_of(publishers.begin(),publishers.end(),[&](const auto* p){return std::find(p->coefficientStates.begin(),p->coefficientStates.end(),read.symbol)!=p->coefficientStates.end();});
+            if(coefficient && std::none_of(call.coefficientUses.begin(),call.coefficientUses.end(),[&](const auto& use){return use.symbol==read.symbol;}))
+                throw std::runtime_error("Coefficient read lacks frozen producer binding: "+call.source.occurrence+" / "+read.symbol);
+        }
+        std::set<std::string> symbols;
+        for(const auto& use:call.coefficientUses) {
+            if(!symbols.insert(use.symbol).second)throw std::runtime_error("Duplicate coefficient consumer binding: "+use.symbol);
+            const auto p=std::find_if(publishers.begin(),publishers.end(),[&](const auto* item) {
+                return coefficientOwner(*item)==use.producer && item->coefficientProvides.front()==use.resource;
+            });
+            if(p==publishers.end() || (*p)->coefficientVersion!=use.version
+                || std::find((*p)->coefficientStates.begin(),(*p)->coefficientStates.end(),use.symbol)==(*p)->coefficientStates.end()
+                || std::find(use.acceptedVersions.begin(),use.acceptedVersions.end(),use.version)==use.acceptedVersions.end())
+                throw std::runtime_error("Missing/incompatible frozen coefficient binding: "+call.source.occurrence+" / "+use.symbol);
+            const auto count=std::count_if(call.stateUses.begin(),call.stateUses.end(),[&](const auto& read) {
+                return read.symbol==use.symbol && read.version==use.version && !read.halo
+                    && read.snapshot==(use.version==StateVersion::Frozen?use.resource:"");
+            });
+            if(count!=1)throw std::runtime_error("Coefficient stateUses/version/halo does not match publication: "+use.symbol);
+        }
+    }
+    if(!program.temporalParticipants.empty())for(const auto* publisher:publishers)if(publisher->coefficientVersion==StateVersion::Stage
+        && std::count_if(program.temporalParticipants.begin(),program.temporalParticipants.end(),[&](const auto& p){return p.identity==coefficientOwner(*publisher);})!=1)
+        throw std::runtime_error("Stage coefficient publisher lacks a unique temporal owner: "+coefficientOwner(*publisher));
+    for(const auto& participant:program.temporalParticipants) {
+        std::vector<CoefficientUse> expected;
+        for(const auto& call:program.steps)if(call.temporalResidual && coefficientOwner(call)==participant.identity)
+            for(const auto& use:call.coefficientUses)if(std::none_of(expected.begin(),expected.end(),[&](const auto& x){return x.symbol==use.symbol;}))expected.push_back(use);
+        if(expected.size()!=participant.coefficientUses.size())throw std::runtime_error("Temporal coefficient consumer set differs from compiled calls: "+participant.identity);
+        for(std::size_t i=0;i<expected.size();++i) {
+            const auto& a=expected[i];const auto& b=participant.coefficientUses[i];
+            if(a.symbol!=b.symbol || a.resource!=b.resource || a.producer!=b.producer || a.version!=b.version || a.acceptedVersions!=b.acceptedVersions)
+                throw std::runtime_error("Temporal coefficient consumer binding differs from compiled call: "+participant.identity);
+        }
+        const auto p=std::find_if(publishers.begin(),publishers.end(),[&](const auto* item){return coefficientOwner(*item)==participant.identity;});
+        if(p==publishers.end()) {
+            if(!participant.coefficientProvides.empty() || !participant.coefficientStates.empty()
+                || !participant.coefficientPrepare.empty() || !participant.coefficientPublish.empty())
+                throw std::runtime_error("Temporal coefficient publisher has no compiled owner: "+participant.identity);
+            continue;
+        }
+        if(p==publishers.end() || participant.coefficientVersion!=StateVersion::Stage
+            || participant.coefficientStates!=(*p)->coefficientStates || participant.coefficientProvides!=(*p)->coefficientProvides
+            || participant.coefficientPrepare!=(*p)->coefficientPrepare || participant.coefficientPublish!=(*p)->coefficientPublish)
+            throw std::runtime_error("Temporal coefficient publication differs from compiled provider: "+participant.identity);
+    }
+}
 void validateDataFlow(const StateRegistry& state,const CompiledExecutionProgram& program) {
+    validateCoefficientContracts(state,program);
     // Validate dependency graphs only for derived views, not coupled equation unknowns.
     std::map<std::string,int> color;std::vector<std::string> stack;
     const auto visit=[&](const auto& self,const std::string& id)->void {
@@ -203,10 +338,12 @@ void validateDataFlow(const StateRegistry& state,const CompiledExecutionProgram&
             if (!at->fusionKey.empty() && at!=program.steps.begin() && (at-1)->fusionKey==at->fusionKey) return;
             std::vector<StateUse> uses;
             std::vector<StateEffect> effects;
+            std::vector<CoefficientUse> coefficientUses;
             const auto members=at->fusionKey.empty()?1:at->fusionMembers.size();
             for (std::size_t i=0;i<members;++i) {
                 const auto& member=*(at+i);
                 uses.insert(uses.end(),member.stateUses.begin(),member.stateUses.end());
+                coefficientUses.insert(coefficientUses.end(),member.coefficientUses.begin(),member.coefficientUses.end());
                 for (const auto& effect:member.stateEffects) {
                     const auto previous=std::find_if(effects.begin(),effects.end(),[&](const auto& item){return item.symbol==effect.symbol;});
                     if (previous==effects.end()) effects.push_back(effect);
@@ -236,10 +373,11 @@ void validateDataFlow(const StateRegistry& state,const CompiledExecutionProgram&
                     // Common RHS calls read one prepared epoch. A coefficient
                     // is explicitly published before all RHS leaves, not between
                     // source HOW members whose writes commit after the barrier.
-                    if(use.version==StateVersion::Stage && commonStage && !state.at(use.symbol).stageCoefficientResource.empty()) {
-                        const auto& resource=state.at(use.symbol).stageCoefficientResource;
+                    const auto coefficient=std::find_if(coefficientUses.begin(),coefficientUses.end(),[&](const auto& item){return item.symbol==use.symbol && item.version==StateVersion::Stage;});
+                    if(use.version==StateVersion::Stage && commonStage && coefficient!=coefficientUses.end()) {
                         if(use.halo || std::none_of(program.temporalParticipants.begin(),program.temporalParticipants.end(),[&](const auto& p){
-                            return !p.coefficientPrepare.empty() && std::find(p.coefficientProvides.begin(),p.coefficientProvides.end(),resource)!=p.coefficientProvides.end()
+                            return p.identity==coefficient->producer && !p.coefficientPrepare.empty()
+                                && std::find(p.coefficientProvides.begin(),p.coefficientProvides.end(),coefficient->resource)!=p.coefficientProvides.end()
                                 && std::find(p.coefficientStates.begin(),p.coefficientStates.end(),use.symbol)!=p.coefficientStates.end();
                         }))throw std::runtime_error("Missing bound stage coefficient publication: "+use.symbol);
                     } else check(check,use.symbol,node.step.occurrence,use.halo);

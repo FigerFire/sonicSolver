@@ -12,6 +12,39 @@ namespace SF {
 namespace {
 using P=Model::Parameters;
 
+System::FormulaExpr nativeFormula(const P& node,const std::string& source,int depth=0) {
+    using E=System::FormulaExpr;
+    if(depth>64)throw std::runtime_error(source+": formula nesting exceeds 64.");
+    if(!node.is_object())throw std::runtime_error(source+": typed formula node must be a mapping.");
+    if(node.contains("symbol")) {
+        Model::Schema{{{"symbol","string",true}},false}.validate(node,source);
+        const auto name=node.at("symbol").get<std::string>();
+        if(name.empty())throw std::runtime_error(source+": empty formula symbol.");
+        auto result=E::symbol(name);result.occurrence=source;return result;
+    }
+    if(node.contains("constant")) {
+        Model::Schema{{{"constant","number",true}},false}.validate(node,source);
+        const auto value=node.at("constant").get<double>();
+        if(!std::isfinite(value))throw std::runtime_error(source+": formula constant must be finite.");
+        auto result=E::constantValue(value);result.occurrence=source;return result;
+    }
+    Model::Schema{{{"op","string",true},{"args","array",true}},false}.validate(node,source);
+    const auto name=node.at("op").get<std::string>();
+    const std::map<std::string,int> arity{{"ddt",1},{"diffusion",2},{"add",2},{"subtract",2},{"multiply",2},{"divide",2},{"negate",1}};
+    const auto found=arity.find(name);
+    if(found==arity.end())throw std::runtime_error(source+": unsupported native formula operator '"+name+"'.");
+    if(node.at("args").size()!=static_cast<std::size_t>(found->second))throw std::runtime_error(source+": wrong argument count for '"+name+"'.");
+    std::vector<E> args;for(std::size_t i=0;i<node.at("args").size();++i)args.push_back(nativeFormula(node.at("args")[i],source+"/args/"+std::to_string(i),depth+1));
+    E result;
+    if(name=="add")result=E::add(std::move(args[0]),std::move(args[1]));
+    else if(name=="subtract")result=E::subtract(std::move(args[0]),std::move(args[1]));
+    else if(name=="multiply")result=E::multiply(std::move(args[0]),std::move(args[1]));
+    else if(name=="divide")result=E::divide(std::move(args[0]),std::move(args[1]));
+    else if(name=="negate")result=E::negate(std::move(args[0]));
+    else result=E::op(name,std::move(args));
+    result.occurrence=source;return result;
+}
+
 P expandBoundaryDefault(P value,const std::string& caseDir,const std::vector<std::string>& meshFiles) {
     if(!value.is_object()||!value.contains("default"))return value;
     const auto fallback=value.at("default");value.erase("default");
@@ -88,6 +121,7 @@ CaseConfig CaseAdapter::build(const Model::Description& m) {
     std::optional<System::ExecutionProgram> authoredExecution;
     std::vector<System::NumericalBinding> authoredNumerics;
     bool numericalBindingsDeclared=false;
+    System::SystemContribution nativeContribution;
     // 语义角色 → parameters。同一个角色只能被一个对象占用。
     std::map<std::string,P> roles;
     auto assignRole=[&](const std::string& role,const P& parameters) {
@@ -151,21 +185,28 @@ CaseConfig CaseAdapter::build(const Model::Description& m) {
             if (!composition.equations.empty()) throw std::runtime_error("Multiple WHAT equation selections.");
             composition.equations = object.parameters.at("use")
                 .get<std::vector<std::string>>();
+            std::set<std::string> selected;
             for (const auto& equation : composition.equations) {
+                if(equation.empty() || !selected.insert(equation).second)throw std::runtime_error(object.source+": duplicate/empty WHAT equation: "+equation);
                 if (equation == "Momentum" || equation == "Continuity"
                     || equation == "Energy" || equation=="PressureConstraint") continue;
-                if (equation.find('/') != std::string::npos) {
-                    throw std::runtime_error(
-                        "Custom equation '"+equation
-                        +"' is registered but its Equation compiler is not implemented.");
-                }
-                throw std::runtime_error("Unknown built-in equation '"+equation+"'.");
+                if(!object.parameters.contains("add") || !object.parameters.at("add").contains(equation))
+                    throw std::runtime_error(object.source+": unknown WHAT equation '"+equation+"'; provide its typed add declaration.");
             }
-            if (object.parameters.contains("add") || object.parameters.contains("extend")
+            if (object.parameters.contains("extend")
                 || object.parameters.contains("replace") || object.parameters.contains("disable")) {
                 throw std::runtime_error(
                     "Equation modifications are declared by the input contract, "
                     "but lowering custom modifications is not implemented.");
+            }
+            if(object.parameters.contains("add"))for(const auto& item:object.parameters.at("add").items()) {
+                const std::string source=object.source+"/add/"+item.key();
+                if(!selected.count(item.key()))throw std::runtime_error(source+": add equation must be explicitly selected in use.");
+                if(item.key()=="Momentum" || item.key()=="Continuity" || item.key()=="Energy" || item.key()=="PressureConstraint")
+                    throw std::runtime_error(source+": add cannot redefine a built-in equation; replace remains Unsupported.");
+                Model::Schema{{{"lhs","object",true},{"rhs","object",true}},false}.validate(item.value(),source);
+                System::Equation equation{item.key(),nativeFormula(item.value().at("lhs"),source+"/lhs"),nativeFormula(item.value().at("rhs"),source+"/rhs"),{System::OriginKind::User,source}};
+                nativeContribution.addEquation(std::move(equation));
             }
         });
     factories.add("executionProgram",{{{"root","object",true}},false},
@@ -295,7 +336,6 @@ CaseConfig CaseAdapter::build(const Model::Description& m) {
         }
         emit("PhaseSystem",parameters);
     });
-    // Equation expressions are deserialized generically. This solver only executes its registered presets.
     factories.add("BuiltinEquationSystem",{{{"preset","string",true}},false},[](const Model::ObjectDescriptor& o,Context&) {
         const auto preset=o.parameters.at("preset").get<std::string>();
         if(preset!="compressible"&&preset!="eulerianEulerian")throw std::runtime_error("Unknown equation preset: "+preset);
@@ -435,6 +475,29 @@ CaseConfig CaseAdapter::build(const Model::Description& m) {
     result->composition=std::move(composition);
     result->authoredExecution=std::move(authoredExecution);
     result->authoredNumerics=std::move(authoredNumerics);
+    if(!nativeContribution.registeredEquations.empty()) {
+        if(!result->authoredExecution)throw std::runtime_error("Native added equations require explicit HOW executionProgram and WHICH bindings.");
+        if(!result->solver.numerics.timeRecipeDeclared)throw std::runtime_error("Native added equations require an explicit time recipe in registered numerics.");
+        for(const auto& id:result->composition.solutionVariables) {
+            const auto field=std::find_if(m.fields.begin(),m.fields.end(),[&](const auto& f){return f.symbol==id;});
+            if(field==m.fields.end())throw std::runtime_error("Native solution STATE lacks registered field metadata: "+id);
+            if(field->initial.is_null())throw std::runtime_error("Native STATE missing initialization backing in registered internalField: "+id);
+            if(field->type!=Model::ValueType::Scalar || field->location!="point" || field->storage!="primary")
+                throw std::runtime_error("Unsupported native STATE layout for '"+id+"': scalar primary point storage required.");
+            if(field->restart)throw std::runtime_error("Native scalar restart persistence is Unsupported: "+id);
+            System::StateSymbol symbol;symbol.id=symbol.name=id;symbol.storageKey=id;
+            symbol.storageBinding=System::StorageBinding::NamedDistributed;symbol.restartEligible=false;symbol.outputEligible=field->output;
+            symbol.origin={System::OriginKind::User,"fields registry/"+field->name};
+            nativeContribution.addState(std::move(symbol));
+        }
+        const auto references=[&](const auto& self,const System::FormulaExpr& expression)->void {
+            if(expression.kind==System::FormulaExpr::Kind::Symbol && std::none_of(nativeContribution.states.begin(),nativeContribution.states.end(),[&](const auto& s){return s.id==expression.name;}))
+                throw std::runtime_error(expression.occurrence+": unknown declared STATE symbol '"+expression.name+"'.");
+            for(const auto& child:expression.arguments)self(self,child);
+        };
+        for(const auto& equation:nativeContribution.registeredEquations){references(references,equation.lhs);references(references,equation.rhs);}
+        result->userContributions.push_back(std::move(nativeContribution));
+    }
     return *result;
 }
 }

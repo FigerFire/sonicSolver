@@ -125,6 +125,11 @@ def main() -> int:
     if unused_allowed:
         authority_errors.append("stale dependency allowlist entries: "+repr(sorted(unused_allowed)))
 
+    for file in ("src/core/system/SF_stateRegistry.h", "src/models/turbulence/SF_turbulenceSystemContribution.cpp",
+                 "src/solver/system/SF_builtinProviders.cpp", "src/solver/system/SF_scalarMethod.cpp", "src/solver/system/SF_executionContract.cpp"):
+        if "stageCoefficientResource" in (root/file).read_text():
+            authority_errors.append("Base STATE regained numerical coefficient publication authority: "+file)
+
     # Single-fluid once-step RAS exposes physics, never a second dt/sweep entry.
     transport_port=(root/"src/core/interfaces/SF_transportModel.h").read_text()
     if re.search(r'\bcorrect\s*\(',transport_port):

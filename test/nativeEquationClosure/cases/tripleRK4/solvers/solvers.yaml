@@ -1,0 +1,34 @@
+{
+  "SonicFile": {
+    "object": "solver",
+    "type": "registry"
+  },
+  "runtime": {
+    "type": "runtime",
+    "file": "solvers/runtime.yaml"
+  },
+  "numerics": {
+    "type": "numerics",
+    "file": "solvers/numerics.yaml"
+  },
+  "state": {
+    "type": "stateRegistry",
+    "file": "solvers/state.yaml"
+  },
+  "equationRegistry": {
+    "type": "equationRegistry",
+    "file": "solvers/equationRegistry.yaml"
+  },
+  "execution": {
+    "type": "algorithmRegistry",
+    "file": "solvers/execution.yaml"
+  },
+  "how": {
+    "type": "executionProgram",
+    "file": "solvers/how.yaml"
+  },
+  "which": {
+    "type": "providerBindings",
+    "file": "solvers/which.yaml"
+  }
+}

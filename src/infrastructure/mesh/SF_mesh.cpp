@@ -183,7 +183,8 @@ namespace   SF{
             return false;
         }
 
-        field.setup(nx, ny, nz, ng);
+        if(config.initializeConservativeState)field.setup(nx, ny, nz, ng);
+        else field.setupGeometry(nx,ny,nz,ng);
         field.setBoundarySets(toFieldIndexSets(field, sets));
 
         int count = 0;
@@ -202,11 +203,10 @@ namespace   SF{
         }
 
         (void)label;
-        Init::setupAll(field, config.initialConditions,
-                       config.idealGasGamma,
-                       config.idealGasConstant);
+        if(config.initializeConservativeState)Init::setupAll(field, config.initialConditions,
+                       config.idealGasGamma,config.idealGasConstant);
         generateGhostCells(field);
-        initializeGhostStateFromInterior(field);
+        if(config.initializeConservativeState)initializeGhostStateFromInterior(field);
         computeMetrics(field);
         return true;
     }

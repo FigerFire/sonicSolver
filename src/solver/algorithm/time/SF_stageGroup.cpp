@@ -1,5 +1,6 @@
 #include "SF_stageGroup.h"
 #include "solver/system/SF_methodObjects.h"
+#include "solver/system/SF_executionContract.h"
 #include <algorithm>
 #include <cmath>
 #include <memory>
@@ -29,13 +30,16 @@ struct Epoch {
 void bindStageGroup(Run::OpRegistry& ops,const System::CompiledSolvePlan& plan,
         const System::CompiledNumericalSystem& numerical,State::StateBundle& state,
         System::StateRealization& views,const double& limit,std::vector<TemporalCallbacks> callbacks) {
+    System::validateCoefficientContracts(plan.compiledProgram);
     const auto reason=System::validateTemporalPlan(plan,numerical.time.recipe.stageCount());
     if(!reason.empty())throw std::runtime_error(reason);
     const auto& participants=plan.compiledProgram.temporalParticipants;
     if (callbacks.size()!=participants.size() || callbacks.empty())
         throw std::runtime_error("Temporal participant callbacks incomplete.");
     for (std::size_t i=0;i<callbacks.size();++i)
-        if (callbacks[i].identity!=participants[i].identity || !callbacks[i].snapshot
+        if (bool(callbacks[i].coefficients)!=!participants[i].coefficientPrepare.empty()
+            || bool(callbacks[i].publishCoefficients)!=!participants[i].coefficientPublish.empty()
+            || callbacks[i].identity!=participants[i].identity || !callbacks[i].snapshot
             || !callbacks[i].prepare || !callbacks[i].rhs || !callbacks[i].advance
             || !callbacks[i].stepSize || !callbacks[i].validatePublish || !callbacks[i].publish)
             throw std::runtime_error("Missing/mismatched temporal participant binding.");
@@ -77,7 +81,7 @@ void bindStageGroup(Run::OpRegistry& ops,const System::CompiledSolvePlan& plan,
         }
         ops.bind(p.rhs,p.provider,[epoch,i](const Run::ExecutionContext& c) {
             epoch->context(c);epoch->views.requireStageRead(c.stageIndex,epoch->time());
-            if(!std::all_of(epoch->coefficientsReady.begin(),epoch->coefficientsReady.end(),[](bool ready){return ready;}))throw std::runtime_error("RHS before required stage coefficient publication.");
+            if(!std::all_of(epoch->coefficientsReady.begin(),epoch->coefficientsReady.end(),[](bool ready){return ready;}))throw std::runtime_error("RHS before required stage coefficient publication: consumer="+epoch->callbacks[i].identity+" step="+std::to_string(epoch->state.step)+" stage="+std::to_string(c.stageIndex));
             if (epoch->status[i]!=1) throw std::runtime_error("Duplicate/missing participant RHS.");
             epoch->callbacks[i].rhs(c);epoch->status[i]=2;
         });

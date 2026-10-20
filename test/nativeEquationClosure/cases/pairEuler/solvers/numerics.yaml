@@ -1,0 +1,9 @@
+{
+  "SonicFile": {
+    "object": "solver",
+    "type": "numerics"
+  },
+  "time": {
+    "default": "forwardEuler"
+  }
+}

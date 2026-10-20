@@ -11,6 +11,7 @@
 #include "app/application/execution/SF_execution.h"
 #include "app/application/SF_application.h"
 #include "SF_environment.h"
+#include "solver/system/SF_scalarMethod.h"
 
 #include <stdexcept>
 
@@ -37,8 +38,10 @@ int executeSingle(
             caseConfig,
             ibmEnabled, initialOutputOnly, localBlockId);
     }
+    if(System::requiresProvider(system,System::ScalarOps::Provider))
+        return Detail::executeScalarEquations(field,writer,solverConfig,system,caseConfig,initialOutputOnly);
     throw std::runtime_error(
-        "Compiled system has no registered flow execution provider requirement.");
+        "Compiled system has no implemented physical-resource assembly for its frozen provider requirements.");
 }
 
 int execute(const System::ResolvedSimulationSystem& system,

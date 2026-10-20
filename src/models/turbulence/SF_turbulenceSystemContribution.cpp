@@ -110,7 +110,6 @@ void contribute(
             symbol.nameSpace="turbulence";
             if (id=="mu_t") {
                 symbol.evaluation=System::StateEvaluation::Materialized;
-                if(spec.stageConservativeTransport)symbol.stageCoefficientResource="transportStageCoefficients";
                 symbol.dependencies={"k",second,"rho","U"};
             }
             symbol.origin={System::OriginKind::Model,spec.model};
@@ -121,7 +120,6 @@ void contribute(
         if(spec.stageConservativeTransport)for(const auto& id:{"SST.nu.k","SST.nu.omega","SST.production.k","SST.production.omega","SST.sink.k","SST.sink.omega","SST.cross"}) {
             System::StateSymbol coefficient;coefficient.id=coefficient.name=coefficient.storageKey=id;
             coefficient.role=System::StateRole::Derived;coefficient.outputEligible=false;coefficient.storageBinding=System::StorageBinding::TransientWorkspace;coefficient.runtimeStorageRequired=false;
-            coefficient.stageCoefficientResource="transportStageCoefficients";
             coefficient.initializationRequired=coefficient.boundaryRequired=coefficient.restartEligible=false;system.addState(std::move(coefficient));
         }
         for (const auto& id:std::vector<std::string>{"k",second}) {

@@ -147,7 +147,8 @@ public:
                 result.coefficientPrepare=instanceOperation("scalar.stage.coefficients",call.occurrence);
                 result.coefficientPublish=instanceOperation("scalar.coefficients.publish",call.occurrence);
                 result.coefficientProvides={"transportStageCoefficients"};
-                for(const auto& symbol:system.state.symbols())if(symbol.stageCoefficientResource=="transportStageCoefficients")result.coefficientStates.push_back(symbol.id);
+                result.coefficientStates={"mu_t","SST.nu.k","SST.nu.omega","SST.production.k","SST.production.omega","SST.sink.k","SST.sink.omega","SST.cross"};
+                for(const auto& name:result.coefficientStates)system.state.at(name);
             }
         }
         const auto stageReads=contract.stageReads;
@@ -170,6 +171,8 @@ public:
         result.calls={{call.equation,call.target.symbol}};
         result.reads=stageReads;result.writes={call.target.symbol};
         for (const auto& name:stageReads) result.stateUses.push_back({name,StateVersion::Stage});
+        if(model_)for(const auto& name:stageReads)if(name.rfind("SST.",0)==0)
+            result.coefficientUses.push_back({name,{StateVersion::Stage}});
         result.stateEffects={{result.residualWorkspace,true,false,false}};
         result.requirements={"serial single patch orthogonal grid","common group dt","scalar fixedValue/zeroGradient boundary","stage-time known source"};
         if(model_)result.requirements.push_back("primitive physical alias; conservative stage workspace; explicit model coefficient publication; no correct() advance");

@@ -36,7 +36,7 @@ void SystemCompositionBuilder::addState(StateSymbol unknown) {
     if (hasUnknown(system_,unknown.id)) {
         throw std::runtime_error("Duplicate unknown contribution '"+unknown.id+"'.");
     }
-    unknown.origin = origin_;
+    if(unknown.origin.source.empty())unknown.origin = origin_;
     system_.state.add(std::move(unknown));
 }
 
@@ -71,7 +71,7 @@ void SystemCompositionBuilder::addEquation(
 }
 
 void SystemCompositionBuilder::addEquation(Equation equation) {
-    equation.origin=origin_;
+    if(equation.origin.source.empty())equation.origin=origin_;
     equation.authored=true;
     system_.registry.add(std::move(equation));
 }

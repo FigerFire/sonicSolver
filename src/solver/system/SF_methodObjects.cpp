@@ -116,7 +116,7 @@ CompiledExecutionProgram compileExecutionProgram(
         CompiledEquationCall compiled;
         try {compiled=selectedProvider.compile(system,*step,*found);}
         catch(const std::exception& error) {
-            throw std::runtime_error("occurrence="+step->occurrence+" equation="+step->equation+" target="+step->target.symbol+" provider="+found->method+": "+error.what());
+            throw std::runtime_error(system.registry.at(step->equation).origin.source+": occurrence="+step->occurrence+" equation="+step->equation+" target="+step->target.symbol+" provider="+found->method+": "+error.what());
         }
         compiled.backendProvider=selectedProvider.runtimeProvider();
         const auto ownFragment=[&](const auto& self,SolvePlanNode& node)->void {
@@ -211,6 +211,7 @@ CompiledExecutionProgram compileExecutionProgram(
                 throw std::runtime_error("Provider fusion requires adjacent HOW siblings.");
         i+=n-1;
     }
+    bindCoefficientContracts(state,result);
     result.loweredRoot=compileMethodProgram(result,&registry);
     std::vector<CompiledEquationCall*> transient;
     for (auto& call:result.steps) if (call.temporalResidual) transient.push_back(&call);
@@ -280,11 +281,13 @@ CompiledExecutionProgram compileExecutionProgram(
                     p.snapshot=call->temporalSnapshot;p.prepareStage=call->temporalStagePrepare;
                     p.coefficientPrepare=call->coefficientPrepare;p.coefficientPublish=call->coefficientPublish;
                     p.coefficientProvides=call->coefficientProvides;p.coefficientStates=call->coefficientStates;
+                    p.coefficientVersion=call->coefficientVersion;
                     p.rhs=call->temporalRhs;p.advance=call->temporalAdvance;p.publish=call->temporalPublish;
                     fused.temporalParticipants.push_back(std::move(p));found=fused.temporalParticipants.end()-1;
                 } else if (found->provider!=call->backendProvider || found->prepareStage!=call->temporalStagePrepare
                     || found->rhs!=call->temporalRhs || found->advance!=call->temporalAdvance || found->publish!=call->temporalPublish)
                     throw std::runtime_error("Conflicting temporal numerical owner: "+identity);
+                for(const auto& use:call->coefficientUses)if(std::none_of(found->coefficientUses.begin(),found->coefficientUses.end(),[&](const auto& item){return item.symbol==use.symbol;}))found->coefficientUses.push_back(use);
                 found->calls.insert(found->calls.end(),call->calls.begin(),call->calls.end());
                 found->targets.push_back(call->target.symbol);
                 found->stageRequires.insert(found->stageRequires.end(),call->stageRequires.begin(),call->stageRequires.end());

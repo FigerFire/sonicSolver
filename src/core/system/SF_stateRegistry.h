@@ -67,8 +67,6 @@ struct StateSymbol {
     Provenance origin;
     StateVersion availableVersion=StateVersion::Current;
     StateEvaluation evaluation=StateEvaluation::Direct;
-    /// Explicit numerical resource required to materialize this stage coefficient.
-    std::string stageCoefficientResource;
     std::vector<std::string> dependencies;
 };
 

@@ -536,7 +536,7 @@ std::string describe(const ResolvedSimulationSystem& system) {
     }
     output << "\nWHAT / EQUATIONS\n";
     for (const Equation& formula:system.executableSystem.registry.entries()) {
-        output << "  " << formula.id << ": " << formulaText(formula) << "\n";
+        output << "  " << formula.id << ": " << formulaText(formula) << " [" << formula.origin.source << "]\n";
     }
     output << "\nBOUNDARY / STENCIL CONTRACTS\n";
     for (const auto& boundary:system.executableSystem.boundaryClosures) {
@@ -665,6 +665,11 @@ std::string describe(const ResolvedSimulationSystem& system) {
             for(const auto& r:p.stageRequires)output<<"\n    same-stage requires: "<<r;
             for(const auto& r:p.stageProvides)output<<"\n    RHS provides: "<<r;
             if(!p.coefficientPrepare.empty())output<<"\n    coefficients: "<<p.coefficientPrepare<<" / "<<p.coefficientPublish;
+            if(!p.coefficientProvides.empty()) {
+                output<<"\n    coefficient publisher: "<<toString(p.coefficientVersion)<<" resource="<<p.coefficientProvides.front()<<" states:";
+                for(const auto& symbol:p.coefficientStates)output<<" "<<symbol;
+            }
+            for(const auto& use:p.coefficientUses)output<<"\n    coefficient read: "<<use.symbol<<" version="<<toString(use.version)<<" producer="<<use.producer<<" resource="<<use.resource;
             output<<"\n    phases: "<<p.snapshot<<" / "<<p.prepareStage<<" / "<<p.rhs<<" / "<<p.advance<<" / "<<p.publish<<"\n";
         }
     }
@@ -674,6 +679,7 @@ std::string describe(const ResolvedSimulationSystem& system) {
                << targetText(step.source.target) << "\n"
                << "    equation method: " << step.equationMethod << "\n"
                << "    selected runtime provider: " << step.backendProvider << "\n";
+        for(const auto& use:step.coefficientUses)output<<"    coefficient binding: "<<use.symbol<<" version="<<toString(use.version)<<" producer="<<use.producer<<" resource="<<use.resource<<"\n";
         if (const auto* contract=eulerianAssemblyContract(step)) {
             output << "    compiled assembly contract: " << toString(contract->relation);
             if (contract->phaseSlot) output << " phaseSlot=" << *contract->phaseSlot << " phase=" << contract->phaseName;
@@ -909,8 +915,7 @@ std::string describe(const ResolvedSimulationSystem& system) {
     };
     printCallBindings(printCallBindings,system.solvePlan.root);
     if (hasFormulaCalls) {
-        output << "  lowering: operation-bound production numerical provider; "
-                  "generic FormulaCompiler is not yet this path\n";
+        output << "  lowering: frozen operation bindings; AST compilation belongs to the selected numerical provider\n";
     } else {
         output << "  (none)\n";
     }

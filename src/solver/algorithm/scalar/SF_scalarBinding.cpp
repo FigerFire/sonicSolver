@@ -1,4 +1,5 @@
 #include "SF_scalarBinding.h"
+#include "solver/system/SF_executionContract.h"
 #include "solver/system/SF_scalarMethod.h"
 #include "core/system/SF_operationIds.h"
 #include "core/mesh/SF_dimension.h"
@@ -8,6 +9,10 @@
 #include <cmath>
 #include <memory>
 #include <stdexcept>
+#include <cstdlib>
+#include <iostream>
+#include <iomanip>
+#include <sstream>
 namespace SF::SolverAlgorithm {
 namespace {
 /// Owns only numerical workspace. Physical writes use the realized STATE view.
@@ -154,6 +159,10 @@ public:
                 throw std::runtime_error("Missing scalar known-source binding: "+name);
         const auto total=geometry_.TotalSize();old_.resize(total);stage_.resize(total);rhs_.resize(total);
         for (int i=0;i<recipe_.stageCount();++i) increments_[i].resize(total);
+        if(std::getenv("SF_SCALAR_TRACE")) {
+            std::ostringstream trace;trace<<"[SF SCALAR storage] target="<<contract_.target<<" old="<<static_cast<const void*>(old_.data())<<" stage="<<static_cast<const void*>(stage_.data())<<" rhs="<<static_cast<const void*>(rhs_.data());
+            std::cout<<trace.str()<<'\n';
+        }
         oldView_=State::workspaceView(call.oldTimeWorkspace,0,geometry_,old_,1);
         stageView_=State::workspaceView(call.stageWorkspace,0,geometry_,stage_,1);
         rhsView_=State::workspaceView(call.residualWorkspace,0,geometry_,rhs_,1);
@@ -210,6 +219,10 @@ public:
         const int n=context.stageIndex;
         if (n!=nextStage_ || n<0 || n>=recipe_.stageCount()) throw std::runtime_error("Scalar stage order does not match frozen recipe.");
         stageTime_=state_.time+recipe_.stage(n).abscissa*state_.dt;
+        if(std::getenv("SF_SCALAR_TRACE")) {
+            std::ostringstream trace;trace<<std::setprecision(17)<<"[SF SCALAR stage] target="<<contract_.target<<" step="<<state_.step<<" stage="<<n<<" time="<<stageTime_<<" dt="<<state_.dt;
+            std::cout<<trace.str()<<'\n';
+        }
         boundary(stageTime_);
     }
     void evaluateRHS(const Run::ExecutionContext& context) {
@@ -293,14 +306,18 @@ class StageTransportClosure {
     std::array<std::function<double(int,int)>,2> reads_;
 public:
     StageTransportClosure(State::StateBundle& state,Field& field,FDM::ITransportModel& model,System::StateRealization& realized,int stages,
-            std::vector<std::string> targets):state_(state),field_(field),model_(model),realized_(realized),stages_(stages),targets_(std::move(targets)) {
+            std::vector<std::string> targets,const System::CompiledEquationCall& publisher):state_(state),field_(field),model_(model),realized_(realized),stages_(stages),targets_(std::move(targets)) {
         if(model_.stageScalarTargets()!=targets_)throw std::runtime_error("Stage scalar closure port target/model mismatch.");
         const std::array<std::string,7> names={"SST.nu.k","SST.nu.omega","SST.production.k","SST.production.omega","SST.sink.k","SST.sink.omega","SST.cross"};
+        std::vector<std::string> provided{"mu_t"};provided.insert(provided.end(),names.begin(),names.end());
+        if(publisher.coefficientVersion!=System::StateVersion::Stage || publisher.coefficientStates.size()!=provided.size()
+            || std::any_of(provided.begin(),provided.end(),[&](const auto& name){return std::count(publisher.coefficientStates.begin(),publisher.coefficientStates.end(),name)!=1;}))
+            throw std::runtime_error("Stage coefficient publication set does not match the implemented SST workspace layout: "+publisher.source.occurrence);
         viscosity_.resize(field.TotalSize());
-        for(int stage=0;stage<stages_;++stage)if(realized_.requestsView("mu_t",System::StateViewKind::Stage,stage))realized_.bindView("mu_t",System::StateViewKind::Stage,*realized_.at("mu_t").fields.at(0),stage);
+        for(int stage=0;stage<stages_;++stage)realized_.bindView("mu_t",System::StateViewKind::Stage,*realized_.at("mu_t").fields.at(0),stage);
         for(int slot=0;slot<7;++slot) {
             values_[slot].resize(field.TotalSize());views_[slot]=State::workspaceView(names[slot],0,field,values_[slot],1);
-            for(int stage=0;stage<stages_;++stage)if(realized_.requestsView(names[slot],System::StateViewKind::Stage,stage))realized_.bindView(names[slot],System::StateViewKind::Stage,views_[slot],stage);
+            for(int stage=0;stage<stages_;++stage)realized_.bindView(names[slot],System::StateViewKind::Stage,views_[slot],stage);
         }
     }
     void bindInputs() {for(int s=0;s<2;++s)reads_[s]=realized_.stageReader(targets_[s],stages_);}
@@ -339,6 +356,7 @@ std::vector<Time::TemporalCallbacks> scalarParticipants(const System::CompiledNu
         std::function<StageMassFluxView(StageFluxIdentity)> massFlux) {
     if (state.patches.size()!=1 || (services.executionRuntime && services.executionRuntime->distributed()))
         throw std::runtime_error("Unsupported scalar execution: serial single patch required.");
+    System::validateCoefficientContracts(plan.compiledProgram);
     std::vector<const System::CompiledEquationCall*> calls;
     for (const auto& call:plan.compiledProgram.steps) if (call.backendProvider==System::ScalarOps::Provider || call.backendProvider==System::ScalarOps::TransportProvider || call.backendProvider==System::ScalarOps::SharedFluxProvider || call.backendProvider==System::ScalarOps::StageTransportProvider) calls.push_back(&call);
     if (services.scalarEquation && (!services.scalarInstances.empty() || calls.size()!=1))
@@ -354,8 +372,12 @@ std::vector<Time::TemporalCallbacks> scalarParticipants(const System::CompiledNu
     const auto native=std::count_if(calls.begin(),calls.end(),[](const auto* call){return call->backendProvider==System::ScalarOps::StageTransportProvider;});
     if(native) {
         if(native!=2 || !services.transportModel || services.immersed.boundary || services.immersed.constraint || services.immersed.system)throw std::runtime_error("Native stage turbulence requires complete pair, stage coefficient port, and no immersed stage treatment.");
-        auto contract=std::any_cast<System::CompiledScalarEquation>((*std::find_if(calls.begin(),calls.end(),[](const auto* c){return c->backendProvider==System::ScalarOps::StageTransportProvider;}))->providerContract);
-        closure=std::make_shared<StageTransportClosure>(state,state.singlePatch(),*services.transportModel,realized,numerical.time.recipe.stageCount(),contract.modelTargets);
+        std::vector<const System::CompiledEquationCall*> publishers;
+        for(const auto* call:calls)if(!call->coefficientPrepare.empty())publishers.push_back(call);
+        if(publishers.size()!=1)throw std::runtime_error("Stage scalar port requires exactly one frozen coefficient publisher.");
+        const auto& publisher=*publishers.front();
+        const auto& contract=std::any_cast<const System::CompiledScalarEquation&>(publisher.providerContract);
+        closure=std::make_shared<StageTransportClosure>(state,state.singlePatch(),*services.transportModel,realized,numerical.time.recipe.stageCount(),contract.modelTargets,publisher);
     }
     std::vector<Time::TemporalCallbacks> callbacks;
     std::vector<std::shared_ptr<ScalarOperations>> owners;
