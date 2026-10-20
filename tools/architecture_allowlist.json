@@ -1,0 +1,62 @@
+{
+  "dependency_allowlist": [
+    {
+      "source": "src/methods/numerics/scalar/SF_scalarTransport.h",
+      "target": "src/solver/boundary/SF_boundaryGeometry.h",
+      "rule": "methods -> solver",
+      "reason": "Phase 1A baseline: scalar CFD path owns boundary dependency."
+    },
+    {
+      "source": "src/methods/numerics/scalar/SF_scalarTransport.h",
+      "target": "src/solver/boundary/reconstruction/ILW/SF_boundaryClosure.h",
+      "rule": "methods -> solver",
+      "reason": "Phase 1A baseline: scalar ILW closure dependency."
+    }
+  ],
+  "duplicate_baseline": {
+    "SF_executionRuntime.h": [
+      "src/core/interfaces/SF_executionRuntime.h",
+      "src/infrastructure/execution/SF_executionRuntime.h"
+    ],
+    "SF_IO.h": [
+      "src/app/gui/IO/SF_IO.h",
+      "src/infrastructure/io/SF_IO.h"
+    ],
+    "SF_field.h": [
+      "src/core/field/SF_field.h",
+      "src/infrastructure/io/field/SF_field.h"
+    ],
+    "SF_state.h": [
+      "src/core/state/SF_state.h",
+      "src/models/physics/interfaceModel/levelSet/SF_state.h"
+    ],
+    "SF_structured.h": [
+      "src/methods/numerics/structured/SF_structured.h",
+      "src/solver/discretization/structured/SF_structured.h"
+    ],
+    "SF_empty.h": [
+      "src/solver/boundary/reconstruction/ILW/SF_empty.h",
+      "src/solver/boundary/reconstruction/linear/SF_empty.h"
+    ],
+    "SF_fixedValue.h": [
+      "src/solver/boundary/reconstruction/ILW/SF_fixedValue.h",
+      "src/solver/boundary/reconstruction/linear/SF_fixedValue.h"
+    ],
+    "SF_symmetry.h": [
+      "src/solver/boundary/reconstruction/ILW/SF_symmetry.h",
+      "src/solver/boundary/reconstruction/linear/SF_symmetry.h"
+    ],
+    "SF_zeroGradient.h": [
+      "src/solver/boundary/reconstruction/ILW/SF_zeroGradient.h",
+      "src/solver/boundary/reconstruction/linear/SF_zeroGradient.h"
+    ],
+    "SF_model.h": [
+      "src/app/application/model/SF_model.h",
+      "src/core/model/SF_model.h"
+    ],
+    "SF_application.h": [
+      "src/app/application/SF_application.h",
+      "src/app/gui/Application/SF_application.h"
+    ]
+  }
+}

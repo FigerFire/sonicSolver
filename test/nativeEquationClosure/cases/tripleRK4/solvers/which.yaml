@@ -1,0 +1,20 @@
+{
+  "SonicFile": {
+    "object": "solver",
+    "type": "which"
+  },
+  "bindings": [
+    {
+      "equation": "diffuseColour",
+      "method": "ScalarDiffusionCentral2"
+    },
+    {
+      "equation": "diffuseDopant",
+      "method": "ScalarDiffusionCentral2"
+    },
+    {
+      "equation": "diffuseSignal",
+      "method": "ScalarDiffusionCentral2"
+    }
+  ]
+}

@@ -1,0 +1,28 @@
+# Initial field values.
+SonicFile:
+  object: fields
+  type: internalField
+T:
+  uniform: 300.0
+T.air:
+  uniform: 300.0
+T.water:
+  uniform: 300.0
+U:
+  uniform: [0, 0, 0]
+U.air:
+  uniform: [0, 0, 0]
+U.water:
+  uniform: [0, 0, 0]
+alpha.air:
+  uniform: 0.1
+alpha.water:
+  uniform: 0.9
+p:
+  uniform: 101325.0
+rho:
+  uniform: 998.2
+rho.air:
+  uniform: 1.1766
+rho.water:
+  uniform: 998.2

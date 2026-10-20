@@ -1,0 +1,54 @@
+{
+  "SonicFile": {
+    "object": "solver",
+    "type": "equationRegistry"
+  },
+  "use": [
+    "spreadDye",
+    "spreadSalt"
+  ],
+  "add": {
+    "spreadDye": {
+      "lhs": {
+        "op": "ddt",
+        "args": [
+          {
+            "symbol": "dye"
+          }
+        ]
+      },
+      "rhs": {
+        "op": "diffusion",
+        "args": [
+          {
+            "constant": 0.03
+          },
+          {
+            "symbol": "dye"
+          }
+        ]
+      }
+    },
+    "spreadSalt": {
+      "lhs": {
+        "op": "ddt",
+        "args": [
+          {
+            "symbol": "salt"
+          }
+        ]
+      },
+      "rhs": {
+        "op": "diffusion",
+        "args": [
+          {
+            "constant": 0.08
+          },
+          {
+            "symbol": "salt"
+          }
+        ]
+      }
+    }
+  }
+}

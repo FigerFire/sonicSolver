@@ -1,0 +1,48 @@
+# phaseChange model module.
+SonicFile:
+  object: models
+  type: phaseChange
+phaseChange: true
+phases: [liquid, vapor]
+phaseChangeModel: RPI
+energyCoupling: true
+evaporationCoefficient: 0.1
+condensationCoefficient: 0.1
+saturation:
+  Tsat: 331.2491346726
+  pSat: 1460000.0
+  latentHeat: 116075.16936674
+RPI:
+  departureDiameterModel: Unal
+  unalA: 0.0023
+  nearWallLiquidVelocity: 1.631094448038
+  unalReferenceVelocity: 0.61
+  departureFrequencyModel: Cole
+  gravityMagnitude: 9.81
+  nucleationSiteDensityModel: HibikiIshii
+  averageCavityDensity: 474000.0
+  contactAngle: 0.722
+  contactAngleScale: 0.722
+  cavityLengthScale: 2.5e-06
+  hibikiDensityFunction: 1.0
+  criticalCavityRadius: 2.5e-06
+  convectiveHeatFluxModel: paperTable1
+  liquidFrictionVelocity: 0.0507138
+  liquidTemperatureWallFunction: 22.3953
+  quenchingHeatFluxModel: paperTable1
+  quenchingHeatTransferCoefficient: 1300.0
+  quenchingTemperatureProfile: 1.0
+  cellTemperatureProfile: 1.0
+  heatFluxBudgetCheck: true
+  heatFluxBalanceTolerance: 0.0001
+  maximumWallVaporFraction: 0.3
+  criticalCavityRadiusModel: explicit
+  liquidFrictionVelocityModel: explicit
+  wallTemperatureModel: heatFluxBalance
+wallBoiling:
+  heatedSection:
+    patch: heatedWall
+    coordinate: y
+    range: [1.0, 4.5]
+    heatFlux: 76260.0
+    wallTemperature: 334.25

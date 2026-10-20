@@ -3,9 +3,9 @@
 /// @file SF_compressible.h
 /// @brief 可压缩守恒方程定义及其离散绑定入口。
 
-#include "solver/equation/SF_expression.h"
+#include "core/interfaces/SF_termKernel.h"
+#include "SF_configTypes.h"
 
-#include <memory>
 
 namespace SF {
 class Field;
@@ -15,25 +15,28 @@ namespace FDM {
 struct SolverConfig;
 class ITransportModel;
 }
-namespace Physics::EquationSet { class Model; }
+namespace Physics::FluidStateModel { class Model; }
 namespace Equation::Compressible {
 
 /// @brief 一次空间项装配所需的非拥有上下文。
 struct AssemblyContext {
-    const FDM::SolverConfig& config;
+    const FDM::TermRecipe* convection = nullptr;
+    const FDM::TermRecipe* diffusion = nullptr;
+    const std::vector<SF::System::ConservativeSourceKernel>* sources = nullptr;
     double timeStep = 0.0;
+    FDM::IBMBoundaryScheme ibmBoundary = FDM::IBMBoundaryScheme::LowOrder;
+    int ilwOrder = 0;
+    double dynamicViscosity = 0.0;
+    double prandtl = 0.72;
+    double idealGasGamma = 1.4;
+    double idealGasConstant = 287.05;
     const FDM::ITransportModel* transport = nullptr;
-    const Physics::EquationSet::Model* thermodynamics = nullptr;
+    const Physics::FluidStateModel::Model* thermodynamics = nullptr;
 };
 
 /// @brief 可压缩质量、动量和能量方程组。
 class System {
 public:
-    System();
-
-    /// @brief 返回不含格式名称的方程声明。
-    const Equation::System& definition() const { return definition_; }
-
     /// @brief 清空旧残差，开始当前 stage 的方程装配。
     void begin(FluxField& fluxField, Residual& residual) const;
     /// @brief 离散所有对流通量项。
@@ -46,9 +49,7 @@ public:
     void assemble(Field& field, FluxField& fluxField, Residual& residual,
                   const AssemblyContext& context) const;
 
-private:
-    Equation::System definition_;
 };
 
-} // namespace Equation::Compressible
+} // namespace SF::Equation::Compressible
 } // namespace SF

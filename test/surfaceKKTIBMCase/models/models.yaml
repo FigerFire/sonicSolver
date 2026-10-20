@@ -1,0 +1,13 @@
+# Explicit document registry.
+SonicFile:
+  object: models
+  type: registry
+turbulence:
+  type: turbulence
+  file: models/turbulence.yaml
+cube:
+  type: geometry
+  file: models/cube.yaml
+IBM:
+  type: IBM
+  file: models/IBM.yaml

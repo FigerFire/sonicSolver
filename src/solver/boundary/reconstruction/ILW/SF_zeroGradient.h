@@ -25,11 +25,11 @@ namespace ZeroGradient {
 
 /// @brief 应用ILW标量零梯度边界。
 void applyScalar(Field& field, int i, int j, int k, int vIdx,
-                 int accuracyOrder);
+                 int accuracyOrder, int axis);
 
 /// @brief 应用ILW Vector3零梯度边界。
 void applyVector3(Field& field, int i, int j, int k, int vIdx,
-                  int accuracyOrder);
+                  int accuracyOrder, int axis);
 
 } // namespace ZeroGradient
 } // namespace ILW

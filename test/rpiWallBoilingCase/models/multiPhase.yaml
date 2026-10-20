@@ -1,0 +1,108 @@
+# multiPhase model module.
+SonicFile:
+  object: models
+  type: multiPhase
+multiPhases: true
+phaseSystem: eulerianEulerian
+geometryModel: cartesian
+initialPressure: 1460000.0
+phases: [liquid, vapor]
+referencePhase: liquid
+liquid:
+  model: perfectLiquid
+  role: liquid
+  rho: 1240.88461120999
+  alpha: 0.999
+  U: [0, 1.631094448038, 0]
+  T: 317.36
+  mu: 0.000158569174520181
+  Cp: 1042.05131687505
+  Cv: 1042.05131687505
+  k: 0.0608968855309314
+  residualAlpha: 1e-06
+  thermophysicalProperties:
+    density:
+      type: polynomialTemperature
+      referenceTemperature: 317.36
+      validTemperature: [300, 340]
+      coefficients: [1240.88461120999, -4.23233233005241, -0.0222104739468971, -0.000326924636388701]
+    dynamicViscosity:
+      type: polynomialTemperature
+      referenceTemperature: 317.36
+      validTemperature: [300, 340]
+      coefficients: [0.000158569174520181, -1.78331987335631e-06, 4.51177857146459e-09, -8.26484234566116e-11]
+    specificHeat:
+      type: polynomialTemperature
+      referenceTemperature: 317.36
+      validTemperature: [300, 340]
+      coefficients: [1042.05131687505, 3.85051029821333, 0.0636967977270431, 0.00160759680717598]
+    thermalConductivity:
+      type: polynomialTemperature
+      referenceTemperature: 317.36
+      validTemperature: [300, 340]
+      coefficients: [0.0608968855309314, -0.000359637153666576, -5.31273913423604e-07, -1.3602003086443e-08]
+vapor:
+  model: perfectGas
+  role: gas
+  rho: 84.9728080234411
+  alpha: 0.001
+  U: [0, 1.631094448038, 0]
+  T: 331.25
+  mu: 1.32215119197012e-05
+  Cp: 862.171246284897
+  Cv: 793.411246284897
+  gasConstant: 68.76
+  k: 0.0129323986514269
+  residualAlpha: 1e-06
+  diameterModel: constant
+  constantCoeffs:
+    d: 0.0005
+  thermophysicalProperties:
+    density:
+      type: polynomialTemperature
+      referenceTemperature: 331.25
+      validTemperature: [315, 400]
+      coefficients: [84.9728080234411, -0.661763163922016, 0.00999651242262094, -0.000238150692617124, 7.43939493137442e-06, -2.03278127759481e-07, 3.56670717300125e-09, -3.37573567401103e-11, 1.30353288773239e-13]
+    dynamicViscosity:
+      type: polynomialTemperature
+      referenceTemperature: 331.25
+      validTemperature: [315, 400]
+      coefficients: [1.32215119197012e-05, 4.30796044766812e-08, 4.64027512605865e-11, -1.64136744070206e-12, 6.18924147370307e-14, -1.95971322550491e-15, 3.54399785813279e-17, -3.3220533120709e-19, 1.26157474305632e-21]
+    specificHeat:
+      type: polynomialTemperature
+      referenceTemperature: 331.25
+      validTemperature: [315, 400]
+      coefficients: [862.171246284897, -7.15018530941341, 0.271105245944806, -0.0110530955452859, 0.000497941045325727, -1.62404178199573e-05, 3.08684804120429e-07, -3.04249704044444e-09, 1.20263862705928e-11]
+    thermalConductivity:
+      type: polynomialTemperature
+      referenceTemperature: 331.25
+      validTemperature: [315, 400]
+      coefficients: [0.0129323986514269, 1.41466725273124e-05, 1.06305069381363e-06, -3.78140968877558e-08, 1.5655854857022e-09, -4.91249912548372e-11, 9.16744813144419e-13, -8.94660515180436e-15, 3.51526568265078e-17]
+interphaseModels:
+  phasePairs:
+    liquid_vapor:
+      continuousPhase: liquid
+      dispersedPhase: vapor
+      drag:
+        type: SchillerNaumann
+      lift:
+        model: constantCoefficient
+        coefficient: 0.1
+      virtualMass:
+        model: constantCoefficient
+        coefficient: 0.5
+      wallLubrication:
+        model: Antal
+        wallPatch: heatedWall
+        C1: -0.01
+        C2: 0.05
+      turbulentDispersion:
+        model: GDB
+        C0: 0.5
+        nuT: 1e-05
+        sigmaAlpha: 0.9
+      heatTransfer:
+        type: RanzMarshall
+      surfaceTension:
+        type: constant
+        sigma: 0.00466827041732234

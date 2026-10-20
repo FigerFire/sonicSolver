@@ -1,0 +1,15 @@
+# Runtime configuration.
+SonicFile:
+  object: solver
+  type: runtime
+startTime: 0
+endTime: 0.0002
+CFL: 0.5
+maxDeltaT: 1e-05
+writeInitial: true
+writeControl: runTime
+writeInterval: 5e-05
+output:
+  outputDir: result
+  jobName: RPIWallBoiling_Rectangular
+parallel: {}

@@ -1,0 +1,54 @@
+{
+  "SonicFile": {
+    "object": "solver",
+    "type": "equationRegistry"
+  },
+  "use": [
+    "diffuseColour",
+    "diffuseDopant"
+  ],
+  "add": {
+    "diffuseColour": {
+      "lhs": {
+        "op": "ddt",
+        "args": [
+          {
+            "symbol": "colourant"
+          }
+        ]
+      },
+      "rhs": {
+        "op": "diffusion",
+        "args": [
+          {
+            "constant": 0.03
+          },
+          {
+            "symbol": "colourant"
+          }
+        ]
+      }
+    },
+    "diffuseDopant": {
+      "lhs": {
+        "op": "ddt",
+        "args": [
+          {
+            "symbol": "dopant"
+          }
+        ]
+      },
+      "rhs": {
+        "op": "diffusion",
+        "args": [
+          {
+            "constant": 0.08
+          },
+          {
+            "symbol": "dopant"
+          }
+        ]
+      }
+    }
+  }
+}

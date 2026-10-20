@@ -1,0 +1,34 @@
+{
+  "SonicFile": {
+    "object": "solver",
+    "type": "how"
+  },
+  "root": {
+    "kind": "Sequence",
+    "id": "native.diffusion",
+    "children": [
+      {
+        "kind": "EquationCall",
+        "equation": "diffuseColour",
+        "target": "colourant",
+        "occurrence": "advance.colourant"
+      },
+      {
+        "kind": "EquationCall",
+        "equation": "diffuseDopant",
+        "target": "dopant",
+        "occurrence": "advance.dopant"
+      },
+      {
+        "kind": "EquationCall",
+        "equation": "diffuseSignal",
+        "target": "signal",
+        "occurrence": "advance.signal"
+      },
+      {
+        "kind": "Commit",
+        "id": "physical.commit"
+      }
+    ]
+  }
+}

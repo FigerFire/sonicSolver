@@ -1,0 +1,17 @@
+# Runtime configuration.
+SonicFile:
+  object: solver
+  type: runtime
+startTime: 0
+endTime: 0.02
+CFL: 0.5
+writeControl: runTime
+writeInterval: 0.01
+output:
+  jobName: ThermalConduction
+  outputDir: result
+parallel:
+  enabled: false
+  nProcs: 5
+  split: auto
+  haloTolerance: 1e-05

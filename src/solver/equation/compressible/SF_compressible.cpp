@@ -7,35 +7,9 @@
 #include "solver/discretization/SF_discretization.h"
 #include "SF_field.h"
 
+#include <algorithm>
+
 namespace SF::Equation::Compressible {
-
-System::System() {
-    const Symbol rho{"rho"};
-    const Symbol rhoU{"rhoU"};
-    const Symbol rhoE{"rhoE"};
-    const Symbol massFlux{"massFlux"};
-    const Symbol momentumFlux{"momentumFlux"};
-    const Symbol energyFlux{"energyFlux"};
-    const Symbol mu{"mu"};
-    const Symbol conductivity{"conductivity"};
-    const Symbol velocity{"U"};
-    const Symbol temperature{"T"};
-    const Symbol zero{"zero"};
-    const Symbol bodyForces{"bodyForces"};
-    const Symbol energySources{"energySources"};
-
-    definition_.add(named(
-        "mass", ddt(rho) + div(massFlux) == zero));
-    definition_.add(named(
-        "momentum",
-        ddt(rhoU) + div(momentumFlux) + diffusion(mu, velocity)
-            == bodyForces));
-    definition_.add(named(
-        "energy",
-        ddt(rhoE) + div(energyFlux)
-            + diffusion(conductivity, temperature)
-            == energySources));
-}
 
 void System::begin(FluxField& fluxField, Residual& residual) const {
     fluxField.clear();
@@ -45,44 +19,52 @@ void System::begin(FluxField& fluxField, Residual& residual) const {
 void System::convection(
         Field& field, FluxField& fluxField, Residual& residual,
         const AssemblyContext& context) const {
-    if (!definition_.contains(TermKind::Divergence)) return;
+    if (!context.convection) return;
+    if (!context.convection
+        || context.convection->role() != FDM::TermRole::Convection) {
+        throw std::runtime_error(
+            "Compressible convection has no compiled convection TermRecipe.");
+    }
     if (!context.thermodynamics) {
         throw std::runtime_error(
-            "Reconstructed convection requires an authoritative EquationSet binding.");
+            "Reconstructed convection requires an authoritative FluidStateModel binding.");
     }
     const auto equationGamma = context.thermodynamics->perfectGasGamma();
     if (!equationGamma) {
         throw std::runtime_error(
-            "Configured reconstructed convection requires a PerfectGas EquationSet; "
-            "generic EquationSet thermodynamics are not supported by the "
+            "Configured reconstructed convection requires a PerfectGas FluidStateModel; "
+            "generic FluidStateModel thermodynamics are not supported by the "
             "current characteristic reconstruction implementation.");
     }
     divDispatch(field, fluxField, residual,
-                context.config.numerics.convection,
-                context.config.numerics.flux,
+                context.convection->convection(),
+                context.convection->flux(),
                 context.timeStep,
-                context.config.numerics.ibmBoundary,
-                context.config.numerics.ilwOrder,
+                context.ibmBoundary,
+                context.ilwOrder,
                 *equationGamma,
                 *context.thermodynamics);
 }
 
 void System::diffusionAndSources(
         Field& field, Residual& residual, const AssemblyContext& context) const {
-    if (definition_.contains(TermKind::Diffusion)) {
+    if (context.diffusion) {
+        if (!context.diffusion
+            || context.diffusion->role() != FDM::TermRole::Diffusion) {
+            throw std::runtime_error(
+                "Compressible diffusion has no compiled diffusion TermRecipe.");
+        }
         laplacianDispatch(
             field, residual,
-            context.config.numerics.viscous,
-            context.config.numerics.viscousEnabled || context.transport != nullptr,
-            context.config.numerics.dynamicViscosity,
-            context.config.numerics.prandtl,
-            context.config.numerics.idealGasGamma,
-            context.config.numerics.idealGasConstant,
+            context.diffusion->diffusion(),
+            context.dynamicViscosity,
+            context.prandtl,
+            context.idealGasGamma,
+            context.idealGasConstant,
             context.transport);
     }
-    if (definition_.contains(TermKind::ExplicitSource)
-        || definition_.contains(TermKind::ImplicitSource)) {
-        SourceTerm::Sp(field, residual, context.config.sources);
+    if (context.sources && !context.sources->empty()) {
+        SourceTerm::Sp(field,residual,*context.sources);
     }
 }
 

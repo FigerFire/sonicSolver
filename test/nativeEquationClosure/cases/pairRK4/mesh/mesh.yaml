@@ -1,0 +1,9 @@
+{
+  "SonicFile": {
+    "object": "mesh",
+    "type": "registry"
+  },
+  "files": [
+    "mesh/mesh.sfm"
+  ]
+}

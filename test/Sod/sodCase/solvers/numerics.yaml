@@ -1,0 +1,12 @@
+# Numerical methods.
+SonicFile:
+  object: solver
+  type: numerics
+time:
+  default: SSPRK3
+convection:
+  default: TENO5
+  formulation: conservativeFluxDifference
+  reconstruction: characteristic
+  flux: StegerWarming
+  interfaceFlux: shared

@@ -1,0 +1,68 @@
+{
+  "SonicFile": {
+    "object": "fields",
+    "type": "boundaries"
+  },
+  "colourant": {
+    "Left": {
+      "type": "fixedValue",
+      "value": 1
+    },
+    "Right": {
+      "type": "fixedValue",
+      "value": 0
+    },
+    "Bottom": {
+      "type": "zeroGradient"
+    },
+    "Top": {
+      "type": "zeroGradient"
+    },
+    "Front": {
+      "type": "zeroGradient"
+    },
+    "Back": {
+      "type": "zeroGradient"
+    }
+  },
+  "dopant": {
+    "Left": {
+      "type": "zeroGradient"
+    },
+    "Right": {
+      "type": "zeroGradient"
+    },
+    "Bottom": {
+      "type": "zeroGradient"
+    },
+    "Top": {
+      "type": "zeroGradient"
+    },
+    "Front": {
+      "type": "zeroGradient"
+    },
+    "Back": {
+      "type": "zeroGradient"
+    }
+  },
+  "signal": {
+    "Left": {
+      "type": "zeroGradient"
+    },
+    "Right": {
+      "type": "zeroGradient"
+    },
+    "Bottom": {
+      "type": "zeroGradient"
+    },
+    "Top": {
+      "type": "zeroGradient"
+    },
+    "Front": {
+      "type": "zeroGradient"
+    },
+    "Back": {
+      "type": "zeroGradient"
+    }
+  }
+}

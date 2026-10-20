@@ -1,0 +1,14 @@
+# Numerical methods.
+SonicFile:
+  object: solver
+  type: numerics
+time:
+  default: classicalRK4
+terms:
+  convection: weno7Rusanov
+  diffusion: central2Explicit
+transport:
+  type: CENTRAL2
+  enable: true
+  mu: 0.00001
+  Pr: 0.72

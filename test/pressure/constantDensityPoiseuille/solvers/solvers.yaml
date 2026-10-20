@@ -1,0 +1,22 @@
+# Explicit document registry.
+SonicFile:
+  object: solver
+  type: registry
+runtime:
+  type: runtime
+  file: solvers/runtime.yaml
+numerics:
+  type: numerics
+  file: solvers/numerics.yaml
+algorithm:
+  type: algorithm
+  file: solvers/algorithm.yaml
+state:
+  type: stateRegistry
+  file: solvers/state.yaml
+equationRegistry:
+  type: equationRegistry
+  file: solvers/equationRegistry.yaml
+execution:
+  type: algorithmRegistry
+  file: solvers/execution.yaml

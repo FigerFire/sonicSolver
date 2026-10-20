@@ -1,0 +1,16 @@
+# Initial field values.
+SonicFile:
+  object: fields
+  type: internalField
+T:
+  uniform: 374.0
+U:
+  uniform: [0, 0, 0]
+epsilon:
+  uniform: 0.04
+k:
+  uniform: 0.02
+p:
+  uniform: 100000.0
+rho:
+  uniform: 1000.0

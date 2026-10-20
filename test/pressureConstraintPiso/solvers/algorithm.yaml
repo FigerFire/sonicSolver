@@ -1,0 +1,41 @@
+SonicFile:
+  object: solver
+  type: algorithm
+type: pressureBase
+algorithm: PISO
+PISO:
+  outerCorrectors: 1
+  pressureCorrectors: 1
+  nonOrthogonalCorrectors: 0
+  momentumRelaxation: 1.0
+  pressureRelaxation: 1.0
+  referenceCell: 0
+  referencePressure: 101325.0
+linearSolvers:
+  pressure:
+    backend: hypre
+    solver: flexGMRES
+    preconditioner: boomerAMG
+    maxIterations: 1000
+    krylovDimension: 50
+    relativeTolerance: 1e-10
+    absoluteTolerance: 1e-12
+    structureRebuildInterval: 0
+  momentum:
+    backend: hypre
+    solver: flexGMRES
+    preconditioner: boomerAMG
+    maxIterations: 1000
+    krylovDimension: 50
+    relativeTolerance: 1e-10
+    absoluteTolerance: 1e-12
+    structureRebuildInterval: 0
+  energy:
+    backend: hypre
+    solver: flexGMRES
+    preconditioner: boomerAMG
+    maxIterations: 1000
+    krylovDimension: 50
+    relativeTolerance: 1e-10
+    absoluteTolerance: 1e-12
+    structureRebuildInterval: 0

@@ -1,0 +1,5 @@
+# gravity model module.
+SonicFile:
+  object: models
+  type: gravity
+value: [0, 0, 0]

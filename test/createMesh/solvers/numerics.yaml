@@ -1,0 +1,19 @@
+# Numerical methods.
+SonicFile:
+  object: solver
+  type: numerics
+time:
+  default: forwardEuler
+convection:
+  default: WENO5
+  formulation: conservativeFluxDifference
+  reconstruction: characteristic
+  flux: LaxFriedrichs
+  interfaceFlux: shared
+diffusion:
+  default: CENTRAL2
+transport:
+  type: CENTRAL2
+  enable: false
+  mu: 0.0
+  Pr: 0.72

@@ -1,0 +1,14 @@
+{
+  "SonicFile": {
+    "object": "fields",
+    "type": "internalField"
+  },
+  "dye": {
+    "default": 0,
+    "leftHalf": 1
+  },
+  "salt": {
+    "default": 0.5,
+    "rightHalf": 2
+  }
+}

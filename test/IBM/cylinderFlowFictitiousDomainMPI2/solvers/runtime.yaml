@@ -1,0 +1,19 @@
+# Runtime configuration.
+SonicFile:
+  object: solver
+  type: runtime
+startTime: 0
+endTime: 5.0
+CFL: 0.3
+maxDeltaT: 0.01
+writeControl: runTime
+writeInterval: 0.1
+writeInitial: true
+output:
+  jobName: CylinderFlowFictitiousDomainMPI2
+  outputDir: result
+parallel:
+  enabled: true
+  nProcs: 2
+  split: [2, 1, 1]
+  haloTolerance: 1e-05

@@ -39,21 +39,24 @@ void applyScalar(Field& field, int i, int j, int k,
     }
     const bool ilw = selection.kind == Kind::ILW;
     switch (law) {
+        case Law::Kind::NoSlip:
+        case Law::Kind::Slip:
+            throw std::runtime_error("slip/noSlip are velocity boundary laws; configure scalar/thermal boundaries independently.");
         case Law::Kind::FixedValue:
             if (ilw) ILW::setFixedValueScalar(
-                field,i,j,k,prescribedValue,variable,selection.order);
+                field,i,j,k,prescribedValue,variable,selection.order,axis);
             else Algebraic::setFixedValueScalar(
                 field,i,j,k,axis,prescribedValue,variable);
             return;
         case Law::Kind::ZeroGradient:
             if (ilw) ILW::setZeroGradientScalar(
-                field,i,j,k,variable,selection.order);
+                field,i,j,k,variable,selection.order,axis);
             else Algebraic::setZeroGradientScalar(
                 field,i,j,k,axis,variable);
             return;
         case Law::Kind::Symmetry:
             if (ilw) ILW::setSymmetryScalar(
-                field,i,j,k,variable,selection.order);
+                field,i,j,k,variable,selection.order,axis);
             else Algebraic::setSymmetryScalar(
                 field,i,j,k,axis,variable);
             return;
@@ -71,23 +74,34 @@ void applyVector(Field& field, int i, int j, int k,
     if (selection.kind == Kind::Polynomial || selection.kind == Kind::MLS) {
         unsupported(selection.kind);
     }
+    // Wall laws lower to the existing reconstruction-independent constraints.
+    // They never select a time method, EOS, pressure law or thermal law.
+    if (law == Law::Kind::NoSlip || law == Law::Kind::Slip) {
+        const int momentum = field.hasStateModel()
+            ? field.stateModel()->momentumIndex(0) : RU;
+        if (variable != momentum)
+            throw std::runtime_error("slip/noSlip require the velocity/momentum binding.");
+        if (prescribedValue.x != 0. || prescribedValue.y != 0. || prescribedValue.z != 0.)
+            throw std::runtime_error("slip/noSlip are stationary walls; use an explicit supported moving-wall law for nonzero velocity.");
+        law = law == Law::Kind::NoSlip ? Law::Kind::FixedValue : Law::Kind::Symmetry;
+    }
     const bool ilw = selection.kind == Kind::ILW;
     switch (law) {
         case Law::Kind::FixedValue:
             if (ilw) ILW::setFixedValueVector3(
-                field,i,j,k,prescribedValue,variable,selection.order);
+                field,i,j,k,prescribedValue,variable,selection.order,axis);
             else Algebraic::setFixedValueVector3(
                 field,i,j,k,axis,prescribedValue,variable);
             return;
         case Law::Kind::ZeroGradient:
             if (ilw) ILW::setZeroGradientVector3(
-                field,i,j,k,variable,selection.order);
+                field,i,j,k,variable,selection.order,axis);
             else Algebraic::setZeroGradientVector3(
                 field,i,j,k,axis,variable);
             return;
         case Law::Kind::Symmetry:
             if (ilw) ILW::setSymmetryVector3(
-                field,i,j,k,variable,selection.order);
+                field,i,j,k,variable,selection.order,axis);
             else Algebraic::setSymmetryVector3(
                 field,i,j,k,axis,variable);
             return;
@@ -95,6 +109,9 @@ void applyVector(Field& field, int i, int j, int k,
             if (ilw) ILW::setEmptyVector3(field,i,j,k,variable,axis);
             else Algebraic::setEmptyVector3(field,i,j,k,variable,axis);
             return;
+        case Law::Kind::NoSlip:
+        case Law::Kind::Slip:
+            break; // Resolved above; no independent numerical implementation.
     }
     throw std::runtime_error("Unknown vector boundary law.");
 }

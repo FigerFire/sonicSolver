@@ -1,0 +1,8 @@
+add_subdirectory(model)
+add_subdirectory(system)
+add_subdirectory(residual)
+add_subdirectory(flux)
+add_subdirectory(field)
+add_subdirectory(state)
+add_subdirectory(config)
+add_subdirectory(interfaces)

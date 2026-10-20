@@ -17,36 +17,36 @@ namespace Boundary {
 namespace ILW {
 
 void setFixedValueScalar(Field& field, int i, int j, int k,
-                         double bcValue, int vIdx, int accuracyOrder) {
+                         double bcValue, int vIdx, int accuracyOrder, int axis) {
     FixedValue::applyScalar(
-        field, i, j, k, bcValue, vIdx, accuracyOrder);
+        field, i, j, k, bcValue, vIdx, accuracyOrder, axis);
 }
 
 void setFixedValueVector3(Field& field, int i, int j, int k,
                           const SF::Vector3& bcValue, int vIdx,
-                          int accuracyOrder) {
+                          int accuracyOrder, int axis) {
     FixedValue::applyVector3(
-        field, i, j, k, bcValue, vIdx, accuracyOrder);
+        field, i, j, k, bcValue, vIdx, accuracyOrder, axis);
 }
 
 void setZeroGradientScalar(Field& field, int i, int j, int k, int vIdx,
-                           int accuracyOrder) {
-    ZeroGradient::applyScalar(field, i, j, k, vIdx, accuracyOrder);
+                           int accuracyOrder, int axis) {
+    ZeroGradient::applyScalar(field, i, j, k, vIdx, accuracyOrder, axis);
 }
 
 void setZeroGradientVector3(Field& field, int i, int j, int k, int vIdx,
-                            int accuracyOrder) {
-    ZeroGradient::applyVector3(field, i, j, k, vIdx, accuracyOrder);
+                            int accuracyOrder, int axis) {
+    ZeroGradient::applyVector3(field, i, j, k, vIdx, accuracyOrder, axis);
 }
 
 void setSymmetryScalar(Field& field, int i, int j, int k, int vIdx,
-                       int accuracyOrder) {
-    Symmetry::applyScalar(field, i, j, k, vIdx, accuracyOrder);
+                       int accuracyOrder, int axis) {
+    Symmetry::applyScalar(field, i, j, k, vIdx, accuracyOrder, axis);
 }
 
 void setSymmetryVector3(Field& field, int i, int j, int k, int vIdx,
-                        int accuracyOrder) {
-    Symmetry::applyVector3(field, i, j, k, vIdx, accuracyOrder);
+                        int accuracyOrder, int axis) {
+    Symmetry::applyVector3(field, i, j, k, vIdx, accuracyOrder, axis);
 }
 
 void setEmptyScalar(Field& field, int i, int j, int k, int vIdx, int axis) {

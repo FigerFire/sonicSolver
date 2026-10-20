@@ -70,7 +70,7 @@ void forBoundaryGhostsAlongAxis(Field& field,
 double requireDensity(const Field& field,
                       int i, int j, int k,
                       const char* context) {
-    const double rho = field.hasEquationSet()
+    const double rho = field.hasStateModel()
         ? field.thermodynamicState(i, j, k).density
         : field(i, j, k, RHO);
     if (!std::isfinite(rho) || rho <= 0.0) {
@@ -86,8 +86,8 @@ SF::Vector3 primitiveVelocity(const Field& field,
                               int i, int j, int k,
                               const char* context) {
     const double rho = requireDensity(field, i, j, k, context);
-    const int momentum = field.hasEquationSet()
-        ? field.equationSet()->momentumIndex(0) : RU;
+    const int momentum = field.hasStateModel()
+        ? field.stateModel()->momentumIndex(0) : RU;
     return SF::Vector3(field(i, j, k, momentum) / rho,
                        field(i, j, k, momentum+1) / rho,
                        field(i, j, k, momentum+2) / rho);
@@ -98,8 +98,8 @@ void setMomentumFromVelocity(Field& field,
     const SF::Vector3& velocity,
                              const char* context) {
     const double rho = requireDensity(field, i, j, k, context);
-    const int momentum = field.hasEquationSet()
-        ? field.equationSet()->momentumIndex(0) : RU;
+    const int momentum = field.hasStateModel()
+        ? field.stateModel()->momentumIndex(0) : RU;
     field(i, j, k, momentum) = rho * velocity.x;
     field(i, j, k, momentum+1) = rho * velocity.y;
     field(i, j, k, momentum+2) = rho * velocity.z;
@@ -128,8 +128,8 @@ void applyScalar(Field& field, int i, int j, int k, int axis,
 
 void applyVector3(Field& field, int i, int j, int k, int axis,
                   const SF::Vector3& bcValue, int vIdx) {
-    const int momentum = field.hasEquationSet()
-        ? field.equationSet()->momentumIndex(0) : RU;
+    const int momentum = field.hasStateModel()
+        ? field.stateModel()->momentumIndex(0) : RU;
     if (vIdx != momentum) {
         throw std::runtime_error(
             "fixedValue Vector3 boundary is only implemented for velocity/RU.");

@@ -1,0 +1,34 @@
+# Initial field values.
+SonicFile:
+  object: fields
+  type: internalField
+T:
+  uniform: 317.36
+T.liquid:
+  uniform: 317.36
+T.vapor:
+  uniform: 331.25
+U:
+  uniform: [0, 1.631094448038, 0]
+U.liquid:
+  uniform: [0, 1.631094448038, 0]
+U.vapor:
+  uniform: [0, 1.631094448038, 0]
+alpha.liquid:
+  uniform: 0.999
+alpha.vapor:
+  uniform: 0.001
+epsilon:
+  uniform: 0.0017
+k:
+  uniform: 0.005
+omega:
+  uniform: 3.77777777778
+p:
+  uniform: 1460000.0
+rho:
+  uniform: 1240.88461120999
+rho.liquid:
+  uniform: 1240.88461120999
+rho.vapor:
+  uniform: 84.9728080234411

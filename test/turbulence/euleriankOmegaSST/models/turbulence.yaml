@@ -1,0 +1,9 @@
+SonicFile:
+  object: models
+  type: turbulence
+enabled: true
+simulationType: RAS
+phases: [water, air]
+walls: [bottom, top]
+RAS:
+  model: kOmegaSST

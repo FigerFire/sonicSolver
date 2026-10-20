@@ -1,0 +1,19 @@
+# Explicit document registry.
+SonicFile:
+  object: models
+  type: registry
+turbulence:
+  type: turbulence
+  file: models/turbulence.yaml
+gravity:
+  type: gravity
+  file: models/gravity.yaml
+MRF:
+  type: MRF
+  file: models/MRF.yaml
+thermoDynamics:
+  type: thermoDynamics
+  file: models/thermoDynamics.yaml
+IBM:
+  type: IBM
+  file: models/IBM.yaml

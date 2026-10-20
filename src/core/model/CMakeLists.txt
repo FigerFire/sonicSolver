@@ -1,0 +1,5 @@
+find_package(nlohmann_json 3.9 REQUIRED)
+add_library(SF_model STATIC SF_model.cpp)
+target_include_directories(SF_model PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(SF_model PUBLIC SF_headers nlohmann_json::nlohmann_json)
+set_lib_output(SF_model model)

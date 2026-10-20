@@ -2,6 +2,7 @@ add_library(SF_boundary STATIC
     SF_applicator.h
     SF_pipeline.cpp
     SF_pipeline.h
+    SF_scalarBoundary.cpp
     SF_boundary.cpp
     SF_thermodynamicClosure.cpp
     reconstruction/SF_reconstruction.cpp

@@ -1,0 +1,18 @@
+# Runtime configuration.
+SonicFile:
+  object: solver
+  type: runtime
+createMesh: true
+startTime: 0
+endTime: 0.001
+CFL: 0.1
+writeControl: runTime
+writeInterval: 0.001
+output:
+  jobName: createMesh
+  outputDir: result
+parallel:
+  enabled: false
+  nProcs: 1
+  split: auto
+  haloTolerance: 1e-08

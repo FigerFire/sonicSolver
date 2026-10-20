@@ -1,0 +1,10 @@
+# thermophysical model module.
+SonicFile:
+  object: models
+  type: thermophysical
+temperature:
+  enabled: true
+  fieldName: T
+  transport: false
+  diffusion: true
+  diffusivity: 0.5

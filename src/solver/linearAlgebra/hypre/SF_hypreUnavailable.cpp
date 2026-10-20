@@ -8,6 +8,8 @@
 
 namespace SF::LinearAlgebra {
 
+bool hypreBackendLinked() { return false; }
+
 struct HypreSolverSession::Impl {
     explicit Impl(FDM::LinearSolverConfig value)
         : config(std::move(value)) {}

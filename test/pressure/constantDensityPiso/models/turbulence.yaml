@@ -1,0 +1,7 @@
+SonicFile:
+  object: models
+  type: turbulence
+enabled: false
+simulationType: RAS
+RAS:
+  model: kOmegaSST

@@ -1,0 +1,13 @@
+SonicFile:
+  object: solver
+  type: numerics
+time:
+  default: forwardEuler
+terms:
+  convection: primitiveUpwind1
+  diffusion: central2Explicit
+transport:
+  type: CENTRAL2
+  enable: true
+  mu: 0.01
+  Pr: 0.72

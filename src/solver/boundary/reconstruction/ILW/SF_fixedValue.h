@@ -24,12 +24,12 @@ namespace FixedValue {
 
 /// @brief 应用ILW标量固定值边界。
 void applyScalar(Field& field, int i, int j, int k,
-                 double bcValue, int vIdx, int accuracyOrder);
+                 double bcValue, int vIdx, int accuracyOrder, int axis);
 
 /// @brief 应用ILW Vector3固定值边界。
 void applyVector3(Field& field, int i, int j, int k,
                   const SF::Vector3& bcValue, int vIdx,
-                  int accuracyOrder);
+                  int accuracyOrder, int axis);
 
 } // namespace FixedValue
 } // namespace ILW

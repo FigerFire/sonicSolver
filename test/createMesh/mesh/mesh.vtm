@@ -1,0 +1,10 @@
+<?xml version="1.0"?>
+<VTKFile type="vtkMultiBlockDataSet" version="1.0" byte_order="LittleEndian">
+  <vtkMultiBlockDataSet>
+    <DataSet index="0" name="block0" file="mesh_block000.vts"/>
+    <DataSet index="1" name="block1" file="mesh_block001.vts"/>
+    <DataSet index="2" name="block2" file="mesh_block002.vts"/>
+    <DataSet index="3" name="block3" file="mesh_block003.vts"/>
+    <DataSet index="4" name="block4" file="mesh_block004.vts"/>
+  </vtkMultiBlockDataSet>
+</VTKFile>
