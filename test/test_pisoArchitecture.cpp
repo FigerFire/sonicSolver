@@ -108,19 +108,8 @@ std::string rawSignature(const System::RawEquationSystem& raw) {
         out << "U:" << unknown.id << ':' << unknown.components << ':'
             << static_cast<int>(unknown.role) << ':' << unknown.storageKey << '\n';
     }
-    for (const auto& equation : raw.legacyEquations) {
-        out << "E:" << equation.id << ':' << static_cast<int>(equation.category);
-        for (const auto& unknown : equation.solvedUnknowns) out << ':' << unknown;
-        out << '\n';
-        const auto& definition = raw.legacyDefinitions.at(equation.id);
-        for (const auto* expression : {&definition.left,&definition.right}) {
-            for (const auto& term : expression->terms) {
-                out << "T:" << static_cast<int>(term.kind) << ':'
-                    << term.primary.name << ':' << term.secondary.name << '\n';
-            }
-            out << "|\n";
-        }
-    }
+    for (const auto& equation:raw.registry.entries())
+        out << "E:" << equation.id << ':' << System::canonicalFormula(equation) << '\n';
     for (const auto& constraint : raw.constraints) {
         out << "C:" << constraint.id << ':' << constraint.equation << ':'
             << constraint.multiplierUnknown << '\n';
@@ -185,7 +174,7 @@ int main() {
     require(system.executableSystem.state.at("rhoU").storageKey=="conservative"
                 && system.executableSystem.state.at("U").derivation==System::StateDerivation::Velocity,
             "conservative momentum was mislabeled as primitive velocity");
-    require(system.executionPolicies.empty() && system.executableSystem.compiledEquations.empty(),
+    require(system.executableSystem.compiledEquations.empty(),
             "single-fluid pressure retained legacy schedule/equation authority");
     const auto& calls=system.solvePlan.compiledProgram.steps;
     require(calls.size()==6 && calls.front().equationMethod=="ConservativePressureMomentum"
@@ -441,8 +430,6 @@ int main() {
         const auto fixedPoint =
             System::build(fixedPointConfig,requestFor(fixedPointConfig));
         System::validate(fixedPoint);
-        require(fixedPoint.executionPolicies.empty(),
-                "SIMPLE/PIMPLE conservative HOW retained a duplicate legacy schedule");
         require(fixedPoint.runtime.report.status
                     == System::RuntimeStatus::Unsupported
                     && !fixedPoint.runtime.report.missingOperations.empty(),
@@ -547,23 +534,14 @@ int main() {
             "Eulerian Plan scheduled turbulence without turbulence equations");
     bool unconsumedVisible = false;
     try {
-        auto policies = eulerian.executionPolicies;
-        System::LegacyExecutionPolicy orphan;
-        orphan.id = "S_ORPHAN";
-        orphan.name = "unconsumed test contribution";
-        orphan.kind = System::LegacyExecutionPolicyKind::BoundaryClosure;
-        orphan.strategyName = "test";
-        orphan.strategyKind = FDM::SolveStrategyKind::BoundaryClosure;
-        policies.push_back(orphan);
-        (void)System::SolvePlanner::compile(
-            eulerian.executableSystem,policies,
+        (void)System::SolvePlanner::compile(eulerian.executableSystem,
             eulerian.numericalSystem.time.recipe);
     } catch (const std::runtime_error& error) {
-        unconsumedVisible = std::string(error.what()).find("S_ORPHAN")
+        unconsumedVisible = std::string(error.what()).find("compiled HOW")
             != std::string::npos;
     }
     require(unconsumedVisible,
-            "Eulerian planning silently ignored an active policy");
+            "Planner accepted missing compiled HOW and could invent a legacy lifecycle");
     FDM::ImmersedAlgorithmDescriptor eulerianImmersed;
     eulerianImmersed.id = "testEulerianIBM";
     eulerianImmersed.enforcement = FDM::IBMEnforcement::FractionalDLM;

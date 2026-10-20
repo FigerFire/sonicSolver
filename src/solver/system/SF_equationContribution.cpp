@@ -12,11 +12,9 @@ namespace SF::System {
 SystemCompositionBuilder::SystemCompositionBuilder(
         RawEquationSystem& system,
         std::vector<TransformationDescriptor>& transformations,
-        std::vector<LegacyExecutionPolicy>& policies,
         Provenance origin)
     : system_(system),
       transformations_(transformations),
-      policies_(policies),
       origin_(std::move(origin)) {}
 
 void SystemCompositionBuilder::recordContribution(
@@ -40,67 +38,10 @@ void SystemCompositionBuilder::addState(StateSymbol unknown) {
     system_.state.add(std::move(unknown));
 }
 
-void SystemCompositionBuilder::addEquation(
-        EquationDescriptor descriptor, SF::Equation::Definition definition) {
-    if (descriptor.id != definition.name) {
-        throw std::runtime_error(
-            "Equation id does not match definition '"+descriptor.id+"'.");
-    }
-    if (hasEquation(system_,descriptor.id)) {
-        throw std::runtime_error("Duplicate equation contribution '"+descriptor.id+"'.");
-    }
-    descriptor.origin = origin_;
-    system_.registry.add(formulaFromEquation(definition,descriptor.origin));
-    system_.legacyEquations.push_back(std::move(descriptor));
-    system_.legacyDefinitions.add(std::move(definition));
-}
-
-void SystemCompositionBuilder::addEquation(
-        EquationDescriptor descriptor, SF::Equation::Definition definition,
-        Equation formula) {
-    if (descriptor.id!=definition.name || descriptor.id!=formula.id)
-        throw std::runtime_error("Authored Equation and equation IDs differ.");
-    if (hasEquation(system_,descriptor.id))
-        throw std::runtime_error("Duplicate equation contribution '"+descriptor.id+"'.");
-    descriptor.origin=origin_;
-    formula.origin=origin_;
-    formula.authored=true;
-    system_.registry.add(std::move(formula));
-    system_.legacyEquations.push_back(std::move(descriptor));
-    system_.legacyDefinitions.add(std::move(definition));
-}
-
 void SystemCompositionBuilder::addEquation(Equation equation) {
     if(equation.origin.source.empty())equation.origin=origin_;
     equation.authored=true;
     system_.registry.add(std::move(equation));
-}
-
-void SystemCompositionBuilder::extendEquation(
-        const std::string& equationId, SF::Equation::Term term) {
-    if (!hasEquation(system_,equationId)) {
-        throw std::runtime_error(
-            "Cannot extend undeclared equation '"+equationId+"'.");
-    }
-    auto equation=system_.registry.at(equationId);
-    const auto legacy=std::find_if(system_.legacyEquations.begin(),system_.legacyEquations.end(),
-        [&](const EquationDescriptor& value) { return value.id==equationId; });
-    if (equation.authored) {
-        if (term.kind!=SF::Equation::TermKind::Source)
-            throw std::runtime_error("Native equation extension requires an explicit mathematical AST contribution.");
-        equation.rhs=FormulaExpr::add(std::move(equation.rhs),
-            FormulaExpr::op("source",{FormulaExpr::symbol(term.primary.name)},term.primary.name));
-        system_.registry.replace(std::move(equation));
-        if (legacy!=system_.legacyEquations.end())
-            system_.legacyDefinitions.addRightTerm(equationId,std::move(term));
-    } else {
-        system_.legacyDefinitions.addRightTerm(equationId,std::move(term));
-        system_.registry.replace(formulaFromEquation(
-            system_.legacyDefinitions.at(equationId),origin_));
-    }
-    system_.modifications.push_back({
-        ModificationKind::Extend,"equation",equationId,
-        "append right-hand term",origin_});
 }
 
 void SystemCompositionBuilder::addConstraint(ConstraintDescriptor constraint) {
@@ -140,27 +81,6 @@ void SystemCompositionBuilder::requestTransformation(
     transformations_.push_back(std::move(descriptor));
 }
 
-void SystemCompositionBuilder::addExecutionPolicy(LegacyExecutionPolicy policy) {
-    if (policy.id.empty()) throw std::runtime_error("Execution policy requires an id.");
-    policy.origin = origin_;
-    policies_.push_back(std::move(policy));
-}
-
-void SystemCompositionBuilder::extendExecutionPolicy(
-        const std::string& policyId,
-        const std::string& equation,
-        const std::string& unknown) {
-    const auto found = std::find_if(
-        policies_.begin(),policies_.end(),
-        [&](const LegacyExecutionPolicy& item) { return item.id == policyId; });
-    if (found == policies_.end()) {
-        throw std::runtime_error(
-            "Cannot extend undeclared execution policy '"+policyId+"'.");
-    }
-    found->equations.push_back(equation);
-    found->unknowns.push_back(unknown);
-}
-
 void SystemCompositionBuilder::applyModification(SystemModification modification) {
     modification.origin = origin_;
     if (modification.kind == ModificationKind::Add) {
@@ -191,15 +111,9 @@ void SystemCompositionBuilder::applyContribution(SystemContribution contribution
     for (auto& node:contribution.execution) {
         node.origin=origin_; execution.push_back(std::move(node));
     }
-    for (auto& node:contribution.legacyExecution) {
-        node.origin=origin_; legacyExecution.push_back(std::move(node));
-    }
     for (auto& binding:contribution.numerics) numerics.push_back(std::move(binding));
     for (auto& unknown : contribution.states) addState(std::move(unknown));
     for (auto& id:contribution.requiredStates) requireState(std::move(id));
-    for (auto& equation : contribution.legacyEquations) {
-        addEquation(std::move(equation.descriptor),std::move(equation.definition));
-    }
     for (auto& formula:contribution.registeredEquations) addEquation(std::move(formula));
     for (const auto& extension:contribution.mathematicalExtensions) {
         bool matched=false;
@@ -217,24 +131,6 @@ void SystemCompositionBuilder::applyContribution(SystemContribution contribution
         }
         if (!matched) throw std::runtime_error("Source contribution has no registered target equation.");
     }
-    for (auto& extension : contribution.equationExtensions) {
-        if (extension.role) {
-            bool matched=false;
-            for (const auto& equation : system_.legacyEquations)
-                if (equation.role == *extension.role
-                    || (extension.alternativeRole
-                        && equation.role==*extension.alternativeRole)) {
-                    extendEquation(equation.id,extension.term);
-                    matched=true;
-                }
-            if (!matched)
-                throw std::runtime_error(
-                    "Model term '"+extension.term.primary.name
-                    +"' has no applicable equation role in the composed system.");
-        } else {
-            extendEquation(extension.equation,std::move(extension.term));
-        }
-    }
     for (auto& constraint : contribution.constraints) addConstraint(std::move(constraint));
     for (auto& closure : contribution.boundaryClosures) {
         if (closure.id.empty() || closure.provider.empty() || closure.reads.empty()
@@ -250,11 +146,6 @@ void SystemCompositionBuilder::applyContribution(SystemContribution contribution
     for (auto& dependency : contribution.dependencies) addDependency(std::move(dependency));
     for (auto& descriptor : contribution.transformations) {
         requestTransformation(std::move(descriptor));
-    }
-    for (auto& policy : contribution.policies) addExecutionPolicy(std::move(policy));
-    for (auto& extension : contribution.policyExtensions) {
-        extendExecutionPolicy(extension.policy,extension.equation,
-                              extension.unknown);
     }
 }
 

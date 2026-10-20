@@ -166,8 +166,6 @@ int main() {
     ExecutableEquationSystem pressureSystem;
     for (const auto* id:{"U","p","pPrime","phi"})
         pressureSystem.state.add(stored(id));
-    pressureSystem.legacyEquations.push_back(
-        {"momentum","momentum","physical",{"U"}});
     pressureSystem.registry.add({"momentum",Expr::symbol("U"),
                                  Expr::symbol("U"),{}});
     pressureSystem.registry.add({"pSimple",

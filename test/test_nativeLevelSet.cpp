@@ -17,7 +17,6 @@ int main() {
     SystemContribution contribution;
     SF::Physics::InterfaceModels::LevelSetContribution::Spec spec;spec.reinitializationSteps=4;spec.pseudoTimeStep=.01;
     SF::Physics::InterfaceModels::LevelSetContribution::contribute(contribution,spec);
-    require(contribution.legacyEquations.empty() && contribution.legacyExecution.empty(),"Level-set retained flat DSL/HOW authority.");
     BuildRequest request;request.composition.stateDeclared=true;request.composition.solutionVariables={"rho","rhoU","rhoE"};
     request.singleFluidPreset=SingleFluidPresetSpec{false};request.modelContributions={contribution};
     auto system=build(config,request);

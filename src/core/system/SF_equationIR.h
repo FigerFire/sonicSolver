@@ -3,7 +3,7 @@
 /// @file SF_equationIR.h
 /// @brief Composition snapshot of independent WHAT and STATE channels.
 /// EquationRegistry owns mathematics; StateRegistry owns base variables.
-/// Legacy operator/storage metadata remains an explicit migration boundary.
+/// Numerical storage and execution metadata remain separate from mathematical definitions.
 
 #include "core/system/SF_formula.h"
 #include "core/interfaces/SF_immersedSystem.h"
@@ -19,26 +19,6 @@ namespace SF::System {
 /// @brief 用户和 preset 对已有 composition item 的显式修改语义。
 enum class ModificationKind { Add, Extend, Replace, Disable };
 
-/// @brief 方程在 raw/executable system 中的数学角色。
-enum class EquationCategory {
-    PhysicalEquation,
-    ConstraintEquation,
-    AlgorithmicDerivedEquation,
-    AlgebraicRelation
-};
-
-/// @brief Mathematical meaning of an equation, independent of its open ID.
-enum class LegacyEquationRole {
-    Generic,
-    Mass,
-    Momentum,
-    Energy,
-    Enthalpy,
-    PressureConstraint,
-    PhaseTransport,
-    TurbulenceTransport
-};
-
 struct ContributionRecord {
     std::string id;
     std::string name;
@@ -51,16 +31,6 @@ struct SystemModification {
     std::string targetId;
     std::string detail;
     Provenance origin;
-};
-
-struct EquationDescriptor {
-    std::string id;
-    std::string name;
-    std::string kind;
-    std::vector<std::string> solvedUnknowns;
-    EquationCategory category = EquationCategory::PhysicalEquation;
-    Provenance origin;
-    LegacyEquationRole role = LegacyEquationRole::Generic;
 };
 
 struct ConstraintDescriptor {
@@ -91,10 +61,7 @@ struct BoundaryClosureContract {
 struct RawEquationSystem {
     std::optional<FDM::ImmersedAlgorithmDescriptor> immersed;
     StateRegistry state;
-    std::vector<EquationDescriptor> legacyEquations;
-    SF::Equation::System legacyDefinitions;
-    /// @brief Equation AST is the mathematical source for migrated FormulaCalls.
-    /// Flat definitions are limited to explicitly unmigrated compatibility contributions.
+    /// @brief 方程 AST 是唯一数学定义。
     EquationRegistry registry;
     std::vector<ConstraintDescriptor> constraints;
     std::vector<std::string> closures;
@@ -201,8 +168,6 @@ struct CompiledEquation {
 struct ExecutableEquationSystem {
     std::optional<FDM::ImmersedAlgorithmDescriptor> immersed;
     StateRegistry state;
-    std::vector<EquationDescriptor> legacyEquations;
-    SF::Equation::System legacyDefinitions;
     EquationRegistry registry;
     std::vector<ConstraintDescriptor> constraints;
     /// @brief Formulation 产生的 executable operations（唯一 authority）。
@@ -237,7 +202,6 @@ const char* toString(VariableLocation location);
 const char* toString(OwnershipKind ownership);
 const char* toString(OriginKind kind);
 const char* toString(ModificationKind kind);
-const char* toString(EquationCategory kind);
 const char* toString(ResourceAccessMode kind);
 const char* toString(SynchronizationRequirement kind);
 

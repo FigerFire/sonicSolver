@@ -137,7 +137,13 @@ Builtin、C++ user contribution 与有限 native typed `equationRegistry.add` �
 
 Formula/Expression AST 是 equation mathematical implementation detail，不是顶层 execution authority。`SF_formula.h/.cpp` 实现 AST、Equation 与 registry；保留此文件名不意味着恢复 Formula solver。FormulaGroup/FormulaGroupRegistry 已移除，守恒向量 fusion 属于 numerical provider 优化。
 
-未迁移模块仍有 `SF::Equation::Definition` in `legacyDefinitions`、`EquationDescriptor` in `legacyEquations`、`LegacyEquationRole` 和 `TermKind` 平面 DSL。它们用于 legacy numerical backend 及诊断，不能重新控制已经迁移的 single-fluid 方程或执行顺序。density、常密度 NS 和 native Eulerian core 不再创建平面数学副本。AssemblyPlan 已没有数值消费者，相关类及实现已删除。
+2026-10-20 退役：Raw/Executable system 不再保存 legacyEquations / legacyDefinitions，
+旧 descriptor/Definition 注册重载、role extension、执行 policy、flat→AST conversion 与
+legacy plan/provider fallback 已删除。唯一数学 authority 是 EquationRegistry/FormulaExpr；
+HOW/WHICH 编译产生 method/temporal 控制流，SolvePlanner 直接冻结它，不推断旧 target。
+兼容链退出后，Definition/Expression/TermKind 已无生产消费者，其定义与实现也已退役；
+Equation::Compressible::System 与 mixture 的旧 RHS/workspace/commit 是独立现役实现，保持不变。
+AssemblyPlan 已没有数值消费者，相关类及实现在此前阶段删除。
 
 ## STATE — Base variables and realized views
 
@@ -344,7 +350,10 @@ HOW 是唯一 loop/count/order authority。WHICH 的局部 fragment 提供原 as
 | Ghost IBM | native boundary read/write/stage/order contract；不增加虚假 equation | every spatial evaluation 的原 BC/halo/ILW 链 | explicit ibm.boundary port；原 kernel |
 | forcing / DLM / KKT | native impulse/work、lagged force、projection 或 coupled constraint AST；original STATE aliases | explicit complete post-predictor group / block | immutable native Immersed method contract；原 kernel；KKT production capability 仍有缺口 |
 
-`legacyEntries` 明确记录尚未独立执行的模块 calls，explain 显示 migration pending。不能同时把这些 entries 和已存在的 legacy local backend 执行一次，造成湍流/相方程重复推进。Eulerian core 的 shared-pressure fragment 和 AssemblyPlan 已删除；Eulerian turbulence 已使用原生 closure/transport occurrences，不再进入 legacyEntries。
+源 HOW 不再包含 legacyEntries；模块只贡献正式 occurrences。没有生产者的
+LegacyExecutionPolicy/LegacyPlanFragment、其 lowering 及 provider 推断已退役。
+未知/缺失的编译调用、provider 或能力仍明确失败，不能回到旧执行器。
+SolveBlock 仅保留由编译 occurrences 投影的既有时间说明，不拥有调度权。
 
 ## Compiler and execution
 

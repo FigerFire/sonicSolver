@@ -118,17 +118,6 @@ const char* toString(ModificationKind value) {
     return "unknown-modification";
 }
 
-const char* toString(EquationCategory value) {
-    switch (value) {
-        case EquationCategory::PhysicalEquation: return "physical";
-        case EquationCategory::ConstraintEquation: return "constraint";
-        case EquationCategory::AlgorithmicDerivedEquation:
-            return "algorithmic-derived";
-        case EquationCategory::AlgebraicRelation: return "algebraic-relation";
-    }
-    return "unknown-equation-category";
-}
-
 const char* toString(TransformationState value) {
     switch (value) {
         case TransformationState::NotRegistered: return "not-registered";

@@ -402,11 +402,10 @@ int main(int argc,char** argv) {
         }
         require(rejected,"Implicit WENO silently became an explicit RHS.");
 
-        const auto old=SF::Equation::named("manual",
-            SF::Equation::ddt({"C"})+SF::Equation::div({"flux"})
-                == SF::Equation::Symbol{"zero"});
-        const auto builtIn=System::formulaFromEquation(old,
-            {System::OriginKind::BuiltinPreset,"builtin"});
+        System::Equation builtIn{"manual",
+            FormulaExpr::add(FormulaExpr::op("ddt",{FormulaExpr::symbol("C")}),
+                             FormulaExpr::op("div",{FormulaExpr::symbol("flux")})),
+            FormulaExpr::constantValue(0),{System::OriginKind::BuiltinPreset,"builtin"}};
         System::Equation manual{"myOwnFormula",
             FormulaExpr::add(
                 FormulaExpr::op("ddt",{FormulaExpr::symbol("C")}),
@@ -418,16 +417,15 @@ int main(int argc,char** argv) {
                 "Built-in and manual Equation ASTs differ by provenance.");
         System::RawEquationSystem composed;
         std::vector<System::TransformationDescriptor> transformations;
-        std::vector<System::LegacyExecutionPolicy> policies;
         System::SystemContribution builtinContribution;
         builtinContribution.addEquation(builtIn);
         System::SystemCompositionBuilder builtinBuilder(composed,transformations,
-            policies,{System::OriginKind::BuiltinPreset,"builtin"});
+            {System::OriginKind::BuiltinPreset,"builtin"});
         builtinBuilder.applyContribution(std::move(builtinContribution));
         System::SystemContribution userContribution;
         userContribution.addEquation(manual);
         System::SystemCompositionBuilder userBuilder(composed,transformations,
-            policies,{System::OriginKind::User,"manual"});
+            {System::OriginKind::User,"manual"});
         userBuilder.applyContribution(std::move(userContribution));
         System::FormulaOperatorCatalog convection;
         convection.add({"test.flux.div","div",

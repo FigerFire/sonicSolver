@@ -44,10 +44,6 @@ bool isPressureConstraint(const std::string& id) {
     return id == "pSimple" || id == "E_SHARED_PRESSURE";
 }
 
-bool isAlgebraicEquation(const EquationDescriptor& equation) {
-    return equation.category != EquationCategory::PhysicalEquation;
-}
-
 bool isAuxiliaryUnknown(const StateSymbol& unknown) {
     return unknown.id == "p" || unknown.id == "pPrime"
         || (unknown.id.size() >= 3
@@ -107,53 +103,6 @@ std::string constraintId(const std::string& id) {
     return id;
 }
 
-std::string constraintName(const EquationDescriptor& equation) {
-    if (isPressureConstraint(equation.id)) return "incompressibility";
-    return equation.name;
-}
-
-std::string termText(const SF::Equation::Term& term) {
-    switch (term.kind) {
-        case SF::Equation::TermKind::Transient:
-            return "ddt("+term.primary.name+")";
-        case SF::Equation::TermKind::Divergence:
-            return "div("+term.primary.name+")";
-        case SF::Equation::TermKind::Gradient:
-            return "grad("+term.primary.name+")";
-        case SF::Equation::TermKind::Diffusion:
-            return "diffusion("+term.secondary.name+","+term.primary.name+")";
-        case SF::Equation::TermKind::Source:
-            return "source("+term.primary.name+")";
-        case SF::Equation::TermKind::Constraint:
-            return "constraint("+term.primary.name+")";
-        case SF::Equation::TermKind::AlgebraicRelation:
-            return "algebraic("+term.primary.name+")";
-    }
-    return "unknownTerm";
-}
-
-std::string expressionText(const SF::Equation::Expression& expression) {
-    std::string result;
-    for (const auto& term : expression.terms) {
-        if (!result.empty()) result += " + ";
-        result += termText(term);
-    }
-    return result.empty() ? "0" : result;
-}
-
-const char* termKindName(SF::Equation::TermKind kind) {
-    switch (kind) {
-        case SF::Equation::TermKind::Transient: return "transient";
-        case SF::Equation::TermKind::Divergence: return "divergence";
-        case SF::Equation::TermKind::Gradient: return "gradient";
-        case SF::Equation::TermKind::Diffusion: return "diffusion";
-        case SF::Equation::TermKind::Source: return "source";
-        case SF::Equation::TermKind::Constraint: return "constraint";
-        case SF::Equation::TermKind::AlgebraicRelation: return "algebraic";
-    }
-    return "unknown";
-}
-
 void printNumericalSystem(
         std::ostringstream& output,
         const CompiledNumericalSystem& numerical) {
@@ -207,22 +156,6 @@ void printNumericalSystem(
     }
 }
 
-void printPhysicalEquations(
-        std::ostringstream& output,
-        const ResolvedSimulationSystem& system) {
-    output << "\nLEGACY COMPATIBILITY PHYSICAL EQUATIONS\n";
-    bool printed = false;
-    for (const auto& equation : system.executableSystem.legacyEquations) {
-        if (isAlgebraicEquation(equation)) continue;
-        output << "  " << equation.id << "  " << equation.name;
-        if (!equation.kind.empty()) output << "  {" << equation.kind << "}";
-        const auto& formula=system.executableSystem.registry.at(equation.id);
-        output << "\n    " << formulaText(formula) << "\n";
-        printed = true;
-    }
-    if (!printed) output << "  (none)\n";
-}
-
 void printAlgebraicConstraints(
         std::ostringstream& output,
         const ResolvedSimulationSystem& system) {
@@ -237,11 +170,6 @@ void printAlgebraicConstraints(
         output << "  " << displayId << "  " << name << "\n";
         printed = true;
     };
-    for (const auto& equation : system.executableSystem.legacyEquations) {
-        if (equation.kind == "constraint" || isPressureConstraint(equation.id)) {
-            emit(equation.id, constraintName(equation));
-        }
-    }
     for (const auto& constraint : system.executableSystem.constraints) {
         emit(constraint.id, constraint.name);
     }
@@ -257,15 +185,6 @@ bool hasAlgebraicContent(
         const ResolvedSimulationSystem& system) {
     for (const auto& id : block.equations) {
         if (isPressureConstraint(id)) return true;
-        const auto equation = std::find_if(
-            system.executableSystem.legacyEquations.begin(),
-            system.executableSystem.legacyEquations.end(),
-            [&](const EquationDescriptor& value) { return value.id == id; });
-        if (equation != system.executableSystem.legacyEquations.end()
-            && equation->category != EquationCategory::AlgorithmicDerivedEquation
-            && isAlgebraicEquation(*equation)) {
-            return true;
-        }
     }
     return !block.constraints.empty();
 }
@@ -282,9 +201,6 @@ std::string algebraicRowLabel(
     if (isPressureConstraint(id)) return "pressure/continuity constraint";
     for (const auto& constraint : system.executableSystem.constraints) {
         if (constraint.id == id) return constraint.name;
-    }
-    for (const auto& equation : system.executableSystem.legacyEquations) {
-        if (equation.id == id) return equation.name;
     }
     return id;
 }
@@ -395,14 +311,7 @@ void printRawSystem(
             << "\n  fluid port: rho / U -> rhoU / rhoE; conservative five-variable implementation only"
             << "\n  provider support and AST are validated independently of this selection.\n";
     }
-    output << "\nRAW EQUATION SYSTEM\n  Legacy compatibility descriptors:\n";
-    if (system.rawSystem.legacyEquations.empty()) output << "  (none)\n";
-    for (const auto& equation : system.rawSystem.legacyEquations) {
-        output << "  " << equation.id << "  " << equation.name
-               << "  category=" << toString(equation.category)
-               << "  origin=" << toString(equation.origin.kind) << "\n";
-    }
-    output << "  constraints:\n";
+    output << "\nRAW EQUATION SYSTEM\n  constraints:\n";
     if (system.rawSystem.constraints.empty()) output << "    (none)\n";
     for (const auto& constraint : system.rawSystem.constraints) {
         output << "    " << constraint.id << "  " << constraint.name << "\n";
@@ -621,11 +530,6 @@ std::string describe(const ResolvedSimulationSystem& system) {
     printHow(printHow,system.solvePlan.sourceProgram.root,1);
     if (system.solvePlan.compiledProgram.steps.empty())
         output << "  Legacy numerical backend / migration pending\n";
-    if (!system.solvePlan.sourceProgram.legacyEntries.empty()) {
-        output << "  Legacy execution authority (pending entries are not scheduled twice):\n";
-        for (const auto& entry:system.solvePlan.sourceProgram.legacyEntries)
-            printHow(printHow,entry,2);
-    }
     output << "\nWHICH / NUMERICS\n";
     output << "  time: " << FDM::toString(system.numericalSelection.recipes.time.id()) << "\n";
     for (const auto& binding:system.numericalSelection.bindings) {
@@ -639,8 +543,6 @@ std::string describe(const ResolvedSimulationSystem& system) {
         output << "  linear: HYPRE (selected pressure linear configuration)\n"
                << "  face coupling: RhieChow\n";
     }
-    if (!system.numericalSelection.legacySpatialInputs.empty())
-        output << "  Legacy numerical backend: explicit spatial input adapter\n";
     output << "  frozen method -> runtime provider bindings:\n";
     for (const auto& call:system.solvePlan.compiledProgram.steps)
         output << "    " << call.source.equation << "@" << call.source.occurrence
@@ -895,7 +797,6 @@ std::string describe(const ResolvedSimulationSystem& system) {
     printUnknownSection(output, "SOLID VARIABLES", system, isSolidUnknown);
     printUnknownSection(output, "CONSTRAINT VARIABLES", system,
                         isConstraintUnknown);
-    printPhysicalEquations(output, system);
     printAlgebraicConstraints(output, system);
     printAlgebraicSystems(output, system);
 

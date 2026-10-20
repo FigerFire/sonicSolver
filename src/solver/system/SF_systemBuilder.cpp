@@ -202,7 +202,7 @@ ResolvedSimulationSystem build(
 
     std::vector<TransformationDescriptor> transformationRequests;
     SystemCompositionBuilder builtin(
-        result.rawSystem,transformationRequests,result.executionPolicies,
+        result.rawSystem,transformationRequests,
         {request.templateOrigin==PhysicsTemplateKind::EulerianEulerian ? OriginKind::Model : OriginKind::BuiltinPreset,
          request.templateOrigin==PhysicsTemplateKind::EulerianEulerian ? "Eulerian PhaseSystem" : "default system"});
 
@@ -275,7 +275,7 @@ ResolvedSimulationSystem build(
     }
 
     SystemCompositionBuilder models(
-        result.rawSystem,transformationRequests,result.executionPolicies,
+        result.rawSystem,transformationRequests,
         {OriginKind::Model,"configured models"});
     for (const SystemContribution& contribution:request.modelContributions)
         models.applyContribution(contribution);
@@ -291,7 +291,7 @@ ResolvedSimulationSystem build(
     // contributions 之后、formulation/transformation 之前。当前没有 typed
     // lowering 的动作会显式失败，绝不静默覆盖。
     SystemCompositionBuilder users(
-        result.rawSystem,transformationRequests,result.executionPolicies,
+        result.rawSystem,transformationRequests,
         {OriginKind::User,"user C++ contribution"});
     for (const SystemContribution& contribution:request.userContributions)
         users.applyContribution(contribution);
@@ -338,29 +338,20 @@ ResolvedSimulationSystem build(
         && couplingPolicyContributed) {
         // DLM/KKT 是完全隐式约束耦合：它取代 segregated pressure policy，
         // 不是与之并存。preset 仍然必须被显式报告为未生效。
-        result.executionPolicies.erase(
-            std::remove_if(
-                result.executionPolicies.begin(),result.executionPolicies.end(),
-                [](const LegacyExecutionPolicy& policy) {
-                    return policy.id == kPressureScheduleId;
-                }),
-            result.executionPolicies.end());
         result.coupling.status = CouplingStatus::Inactive;
         result.coupling.reason =
             "superseded by the monolithic KKT/DLM constraint contribution";
     }
     result.executableSystem = TransformationPipeline::apply(
         result.rawSystem,transformationRequests,transformers,
-        result.executionPolicies,result.transformations);
+        result.transformations);
     for (auto* module:{&builtin,&models,&users}) {
         executionProgram.requirements.insert(executionProgram.requirements.end(),module->placement.begin(),module->placement.end());
         executionProgram.root.children.insert(executionProgram.root.children.end(),
             module->execution.begin(),module->execution.end());
         equationMethods.insert(equationMethods.end(),module->numerics.begin(),module->numerics.end());
-        executionProgram.legacyEntries.insert(executionProgram.legacyEntries.end(),
-            module->legacyExecution.begin(),module->legacyExecution.end());
     }
-    const auto legacyFragments=composeContributions(result,request,executionProgram,equationMethods);
+    composeContributions(result,request,executionProgram,equationMethods);
     requireTargetStates(result.executableSystem.state,executionProgram.root);
     if (request.authoredExecution) {
         if (request.authoredNumerics.empty()) throw std::runtime_error("Authored HOW requires explicit WHICH bindings.");
@@ -377,7 +368,7 @@ ResolvedSimulationSystem build(
     }
     result.numericalSelection=selectNumerics(config,request,result.executableSystem,std::move(equationMethods));
     // Source composition is complete; the compiler receives immutable WHAT/HOW/WHICH.
-    NumericalCompiler::compileSystem(result,executionProgram,result.numericalSelection,legacyFragments,
+    NumericalCompiler::compileSystem(result,executionProgram,result.numericalSelection,
         request.additionalExecutionContributions);
     for (const auto& provider:result.numericalSystem.providerRequirements)
         requireProvider(result,provider,"execute a compiled mathematical term binding");
@@ -386,19 +377,6 @@ ResolvedSimulationSystem build(
             SolvePlanner::requiredOperations(result.solvePlan);
     // A declared equation without HOW lowering is an explicit capability gap;
     // it must never inherit the Flow timestep merely for report ownership.
-    for (const auto& equation:result.executableSystem.legacyEquations) {
-        const bool owned=std::any_of(result.solvePlan.blocks.begin(),
-            result.solvePlan.blocks.end(),[&](const SolveBlock& block) {
-                return std::find(block.equations.begin(),block.equations.end(),
-                                 equation.id)!=block.equations.end();
-            });
-        if (!owned) {
-            result.runtime.report.status=RuntimeStatus::Unsupported;
-            result.runtime.report.reason += " Equation '"+equation.id
-                +"' has no compiled HOW execution step.";
-        }
-    }
-
     const bool nativeTurbulence=std::any_of(result.runtime.operationBindings.begin(),
         result.runtime.operationBindings.end(),[](const auto& binding) {
             return binding.operation==OpIds::TurbulenceAdvance;
@@ -518,12 +496,6 @@ bool hasEquation(const RawEquationSystem& system, std::string_view id) {
 bool hasEquation(const ExecutableEquationSystem& system, std::string_view id) {
     return system.registry.contains(id);
 }
-
-const SF::Equation::Definition& equationDefinition(
-        const ResolvedSimulationSystem& system, std::string_view id) {
-    return system.executableSystem.legacyDefinitions.at(std::string(id));
-}
-
 
 bool hasConstraint(const ResolvedSimulationSystem& system, std::string_view id) {
     return hasConstraint(system.executableSystem,id);

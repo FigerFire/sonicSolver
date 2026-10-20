@@ -4,7 +4,6 @@
 /// @brief Mathematical expression AST; EquationRegistry is the WHAT authority.
 
 #include "core/system/SF_provenance.h"
-#include "core/system/SF_expression.h"
 
 #include <string>
 #include <string_view>
@@ -65,8 +64,4 @@ private:
 std::string canonicalFormula(const Equation& formula);
 std::string formulaText(const Equation& formula);
 bool dependsOn(const FormulaExpr& expression, std::string_view symbol);
-/// @brief Legacy compatibility conversion only; native equations never round-trip through the flat DSL.
-Equation formulaFromEquation(const SF::Equation::Definition& equation,
-                            Provenance origin = {});
-
 } // namespace SF::System

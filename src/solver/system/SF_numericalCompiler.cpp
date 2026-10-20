@@ -45,9 +45,6 @@ std::vector<SelectedFormula> selectFormulas(
         // Other methods own their local numerical realization. The spatial
         // compiler consumes the method's declared residual/source input set.
     }
-    if (!program.root.children.empty() || !program.steps.empty()) return selected;
-    for (const auto& call:program.legacySpatialInputs)
-        selected.push_back({call.equation,call.equation,call.target,"",false,"residual"});
     return selected;
 }
 
@@ -270,7 +267,7 @@ CompiledNumericalSystem compile(
 }
 
 void compileSystem(ResolvedSimulationSystem& result,const ExecutionProgram& executionProgram,
-        const NumericalSelection& selected,const std::vector<LegacyPlanFragment>& legacyFragments,
+        const NumericalSelection& selected,
         bool additionalContributions) {
     result.realization=compileStateRealization(result.executableSystem.state,result.executableSystem.constraints);
     const auto temporalMethods=builtinTemporalMethods();
@@ -290,7 +287,6 @@ void compileSystem(ResolvedSimulationSystem& result,const ExecutionProgram& exec
         });
         if (!owned) throw std::runtime_error("No compiled HOW output owns selected solution STATE '"+id+"'.");
     }
-    compiledExecution.legacySpatialInputs=selected.legacySpatialInputs;
     TermProviderCatalog termProviders=TermProviderCatalog::builtIn();
     for (const auto& descriptor:selected.termProviders) termProviders.addSource(descriptor);
     result.numericalSystem=compile(result.executableSystem,compiledExecution,
@@ -330,16 +326,16 @@ void compileSystem(ResolvedSimulationSystem& result,const ExecutionProgram& exec
         }
     }
     result.solvePlan = SolvePlanner::compile(
-        result.executableSystem,result.executionPolicies,
+        result.executableSystem,
         result.numericalSystem.time.recipe,
-        legacyFragments,compiledExecution);
+        compiledExecution);
     result.solvePlan.sourceProgram=executionProgram;
     result.solvePlan.sourceProgram.root=compiledExecution.root;
     result.solvePlan.compiledProgram=std::move(compiledExecution);
     result.runtime.capabilities=compileExecutionCapabilities(
-        result.executableSystem,result.executionPolicies,&result.solvePlan);
+        result.executableSystem,&result.solvePlan);
     result.runtime.operationBindings=compileOperationBindings(result.executableSystem,
-        result.numericalSystem,result.solvePlan,result.executionPolicies,additionalContributions);
+        result.numericalSystem,result.solvePlan,additionalContributions);
     result.runtime.report=reportOperationBindings(result.solvePlan,result.runtime.operationBindings);
 }
 

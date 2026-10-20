@@ -7,7 +7,6 @@
 
 #include "SF_couplingStatus.h"
 #include "SF_equationContribution.h"
-#include "core/system/SF_planFragment.h"
 #include "core/config/types/SF_pressureConfigTypes.h"
 
 #include <string>
@@ -46,17 +45,5 @@ void applyPressureExecution(ExecutionProgram& program,
 /// Independent WHICH contribution; never mutates HOW.
 std::vector<NumericalBinding> pressureNumerics(const CouplingPresetRequest& request,
     std::string_view momentumTarget = "U");
-
-namespace Legacy {
-/// Only unmigrated Eulerian shared pressure uses this compatibility fragment.
-
-} // namespace Legacy
-
-/// @brief 片段引用的 stage 在 executable system 中是否都有实现。
-///
-/// @param missing 输出缺失（未解析）的 operation id 列表。
-bool couplingPlanResolved(const LegacyPlanFragment& fragment,
-                          const ExecutableEquationSystem& executable,
-                          std::vector<std::string>* missing);
 
 } // namespace SF::System

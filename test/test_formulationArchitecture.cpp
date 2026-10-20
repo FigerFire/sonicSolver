@@ -15,7 +15,6 @@
 #include "solver/system/SF_stateRealization.h"
 #include "solver/system/SF_pressureCoupling.h"
 #include "solver/system/SF_numericalCompiler.h"
-#include "core/system/SF_planFragment.h"
 #include "app/application/model/SF_configParser.h"
 
 #include <cmath>
@@ -234,10 +233,6 @@ int main() {
                     .calls.size()==1,
                 "production conservative stage did not compile Flow -> Q");
         auto roleIndependent=conservativeSystem.executableSystem;
-        for (auto& equation:roleIndependent.legacyEquations)
-            if (equation.id=="continuity" || equation.id=="momentum"
-                || equation.id=="energy")
-                equation.role=SF::System::LegacyEquationRole::Generic;
         const auto compiledWithoutRoles=SF::System::NumericalCompiler::compile(
             roleIndependent,conservativeSystem.solvePlan.compiledProgram,
             conservativeSystem.numericalSystem.recipes,
@@ -245,18 +240,7 @@ int main() {
             conservativeSystem.numericalSystem.time.recipe);
         require(compiledWithoutRoles.operators.size()
                     ==conservativeSystem.numericalSystem.operators.size(),
-                "Fused Flow term selection still depends on legacy LegacyEquationRole.");
-        auto legacyDrifted=roleIndependent;
-        legacyDrifted.legacyDefinitions.add(SF::Equation::named("continuity",
-            SF::Equation::ddt({"rho"}) == SF::Equation::source({"unauthorizedSource"})));
-        const auto compiledLegacyDrift=SF::System::NumericalCompiler::compile(
-            legacyDrifted,conservativeSystem.solvePlan.compiledProgram,
-            conservativeSystem.numericalSystem.recipes,
-            SF::System::TermProviderCatalog::builtIn(),
-            conservativeSystem.numericalSystem.time.recipe);
-        require(compiledLegacyDrift.operators.size()
-                    ==compiledWithoutRoles.operators.size(),
-                "Legacy SF::Equation::Definition still controls migrated density numerics.");
+                "Native AST did not preserve the compiled spatial inputs.");
         bool authoredFormulaChangeVisible=false;
         try {
             auto changed=roleIndependent;

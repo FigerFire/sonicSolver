@@ -36,7 +36,6 @@ add_library(SF_solverSystem STATIC
     SF_executionContract.cpp
     SF_executionComposition.cpp
     SF_builtinNumerics.cpp
-    SF_legacyNumerics.cpp
     SF_builtinProviders.cpp
     SF_methodObjects.cpp
     SF_methodObjects.h

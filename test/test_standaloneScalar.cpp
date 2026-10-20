@@ -209,7 +209,7 @@ int main(int argc,char** argv) {
         for (auto& child:node.children) self(self,child);
     };
     corrupt(corrupt,corrupted.solvePlan.root);
-    auto corruptBindings=System::compileOperationBindings(corrupted.executableSystem,corrupted.numericalSystem,corrupted.solvePlan,{},false);
+    auto corruptBindings=System::compileOperationBindings(corrupted.executableSystem,corrupted.numericalSystem,corrupted.solvePlan,false);
     require(System::reportOperationBindings(corrupted.solvePlan,corruptBindings).status!=System::RuntimeStatus::Runnable,"Flow-only operation falsely Runnable");
     // Missing real storage/boundary/source and wrong geometry must fail during
     // stable binding, before the first numerical stage or physical clock commit.

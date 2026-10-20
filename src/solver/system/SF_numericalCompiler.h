@@ -7,7 +7,6 @@
 #include "SF_termProviderCatalog.h"
 #include "SF_methodObjects.h"
 #include "SF_numericalSelection.h"
-#include "core/system/SF_planFragment.h"
 
 #include <vector>
 
@@ -17,7 +16,7 @@ namespace SF::System::NumericalCompiler {
 
 /// @brief Resolve typed targets, bind methods/operators and lower the ordered program.
 void compileSystem(ResolvedSimulationSystem& result,const ExecutionProgram& program,
-    const NumericalSelection& numerics,const std::vector<LegacyPlanFragment>& legacyFragments,
+    const NumericalSelection& numerics,
     bool additionalContributions = false);
 
 CompiledNumericalSystem compile(

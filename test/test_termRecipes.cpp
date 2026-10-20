@@ -32,12 +32,11 @@ std::string rawSignature(const System::RawEquationSystem& raw) {
     return output.str();
 }
 
-bool hasTerm(const System::RawEquationSystem& raw,
-             const std::string& equationId,
-             SF::Equation::TermKind kind) {
+bool hasDiffusion(const System::RawEquationSystem& raw,
+             const std::string& equationId) {
     const auto& equation=raw.registry.at(equationId);
     const auto visit=[&](const auto& self,const System::FormulaExpr& expression)->bool {
-        if (kind==SF::Equation::TermKind::Diffusion && expression.kind==System::FormulaExpr::Kind::Operator
+        if (expression.kind==System::FormulaExpr::Kind::Operator
             && expression.name=="diffusion") return true;
         return std::any_of(expression.arguments.begin(),expression.arguments.end(),[&](const auto& child) { return self(self,child); });
     };
@@ -145,10 +144,8 @@ int main() {
                     return contribution.id == "builtin.singleFluidNavierStokes";
                 }),
             "density core equations were not installed by the single-fluid preset");
-    require(!hasTerm(rusanov.rawSystem,"momentum",
-                     SF::Equation::TermKind::Diffusion)
-                && !hasTerm(rusanov.rawSystem,"energy",
-                            SF::Equation::TermKind::Diffusion),
+    require(!hasDiffusion(rusanov.rawSystem,"momentum")
+                && !hasDiffusion(rusanov.rawSystem,"energy"),
             "inviscid preset contains a physical diffusion term");
     require(rusanov.timeRecipe.id() == steger.timeRecipe.id()
                 && rusanov.timeRecipe.stageCount()
@@ -240,10 +237,8 @@ int main() {
                 [&] { (void)System::build(unusedDiffusion,constraintRequest); },
                 "without a consuming Equation occurrence"),
             "a constraint incorrectly exempted an unused diffusion recipe");
-    require(hasTerm(viscous.rawSystem,"momentum",
-                    SF::Equation::TermKind::Diffusion)
-                && hasTerm(viscous.rawSystem,"energy",
-                           SF::Equation::TermKind::Diffusion),
+    require(hasDiffusion(viscous.rawSystem,"momentum")
+                && hasDiffusion(viscous.rawSystem,"energy"),
             "viscous preset did not author both physical diffusion terms");
 
     auto sourceConfig = explicitConfig(rusanovRecipe);

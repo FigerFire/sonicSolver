@@ -121,6 +121,6 @@ int main() {
     };
     corrupt(corrupt,compiled.solvePlan.root);
     require(!System::validateCompiledConservativeStage(compiled.executableSystem,compiled.solvePlan).empty(),"Runtime/compiler shared guard missed corrupted fusion");
-    auto bindings=System::compileOperationBindings(compiled.executableSystem,compiled.numericalSystem,compiled.solvePlan,{},false);
+    auto bindings=System::compileOperationBindings(compiled.executableSystem,compiled.numericalSystem,compiled.solvePlan,false);
     require(System::reportOperationBindings(compiled.solvePlan,bindings).status==System::RuntimeStatus::Unsupported,"Static report falsely advertised corrupted fusion as Runnable");
 }

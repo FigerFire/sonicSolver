@@ -19,8 +19,6 @@ public:
     explicit ExecutableEquationSystemBuilder(const ExecutableEquationSystem& composed);
 
     void addState(StateSymbol unknown);
-    void addEquation(
-        EquationDescriptor descriptor, SF::Equation::Definition definition);
     void replaceEquation(Equation formula);
     void addEquation(Equation formula);
     void addOperator(GeneratedOperatorDescriptor operation);
@@ -47,7 +45,6 @@ public:
     virtual void transform(
         const RawEquationSystem& raw,
         ExecutableEquationSystemBuilder& executable,
-        std::vector<LegacyExecutionPolicy>& policies,
         TransformationRecord& record) const = 0;
 };
 
@@ -67,7 +64,6 @@ public:
         const RawEquationSystem& raw,
         const std::vector<TransformationDescriptor>& requests,
         const TransformerRegistry& registry,
-        std::vector<LegacyExecutionPolicy>& policies,
         std::vector<TransformationRecord>& records);
 };
 

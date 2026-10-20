@@ -9,4 +9,4 @@
 #include "viscous/SF_viscous.h"
 #include "methods/math/SF_newtonian.h"
 #include "methods/numerics/state/SF_eulerState.h"
-#include "immersed/SF_immersedOperators.h"
+#include "immersed/SF_immersed.h"

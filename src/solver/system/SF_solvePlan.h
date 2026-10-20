@@ -1,9 +1,8 @@
 #pragma once
 
 /// @file SF_solvePlan.h
-/// @brief Executable equations 与 execution policies 到 structured plan 的 lowering。
+/// @brief 已编译 method/temporal 控制流到唯一 structured plan。
 
-#include "core/system/SF_planFragment.h"
 #include "SF_resolvedSimulationSystem.h"
 #include "SF_compiledTimeRecipe.h"
 
@@ -14,13 +13,10 @@ public:
     static std::vector<OpId> requiredOperations(const CompiledSolvePlan& plan);
     /// @brief 编译 plan。
     ///
-    /// Planner 只做 merge/order/解析：片段（coupling/model 贡献）决定顺序与
-    /// 重复次数，stage -> OpId 由 executable operation authority 解析。
+    /// HOW/WHICH 已决定顺序、重复次数和 OpId；planner 不推断 target 或旧策略。
     static CompiledSolvePlan compile(
         const ExecutableEquationSystem& system,
-        const std::vector<LegacyExecutionPolicy>& policies,
         const CompiledTimeRecipe& timeRecipe,
-        const std::vector<LegacyPlanFragment>& fragments = {},
         const CompiledExecutionProgram& compiledExecution = {});
 };
 

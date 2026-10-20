@@ -12,7 +12,6 @@ int main() {
     gas.name="air";gas.role=SF::Physics::Multiphase::PhaseRole::Gas;
     config.phases={liquid,gas};config.phaseChange.enabled=true;
     SystemContribution contribution;SF::Physics::Multiphase::contributeHomogeneous(contribution,config);
-    require(contribution.legacyEquations.empty() && contribution.legacyExecution.empty(),"Homogeneous retained flat authority.");
     require(contribution.registeredEquations.size()==4,"Homogeneous balances do not match packed components.");
     require(contribution.states[2].componentOffset==2 && contribution.states[3].componentOffset==5,"Homogeneous momentum/energy layout differs from storage.");
     require(dependsOn(contribution.registeredEquations[0].rhs,"phaseChangeMdot") && dependsOn(contribution.registeredEquations[1].rhs,"phaseChangeMdot"),"Phase-transfer sources missing in native WHAT.");
@@ -23,7 +22,6 @@ int main() {
     require(result.solvePlan.compiledProgram.steps.size()==4,"Homogeneous components missing from HOW.");
     config.phaseChange.enabled=false;config.alpha.phaseName="water";config.alpha.transportEnabled=true;
     contribution={};SF::Physics::Multiphase::contributeMixture(contribution,config);
-    require(contribution.legacyEquations.empty() && contribution.legacyExecution.empty(),"Mixture retained flat authority.");
     require(contribution.states.size()==1 && contribution.states[0].id=="phaseMass.water","Mixture integrates alpha cache instead of phase mass.");
     request={};request.composition.stateDeclared=true;request.composition.solutionVariables={"rho","rhoU","rhoE"};
     request.singleFluidPreset=SingleFluidPresetSpec{false};request.modelContributions={contribution};

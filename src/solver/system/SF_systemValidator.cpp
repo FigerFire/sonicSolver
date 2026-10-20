@@ -4,7 +4,6 @@
 #include "SF_systemValidator.h"
 #include "SF_solvePlan.h"
 
-#include <map>
 #include <set>
 #include <stdexcept>
 
@@ -30,19 +29,6 @@ void validateComposition(const RawEquationSystem& raw) {
             throw std::runtime_error(
                 "Raw equation system contains algorithmic pressure-correction "
                 "workspace 'pPrime'.");
-        }
-    }
-    std::set<std::string> equations;
-    for (const auto& equation : raw.legacyEquations) {
-        if (equation.id.empty() || !equations.insert(equation.id).second
-            || raw.legacyDefinitions.at(equation.id).name != equation.id) {
-            throw std::runtime_error(
-                "Raw equation system has an invalid/duplicate equation.");
-        }
-        if (equation.category == EquationCategory::AlgorithmicDerivedEquation) {
-            throw std::runtime_error(
-                "Raw equation system contains algorithmic-derived equation '"
-                +equation.id+"'.");
         }
     }
 }
@@ -212,28 +198,6 @@ void validate(const ResolvedSimulationSystem& system) {
     }
     std::set<std::string> equations;
     for (const auto& equation:executable.registry.entries()) equations.insert(equation.id);
-    std::vector<std::string> equationIds;
-    for (const auto& equation : executable.legacyEquations) {
-        if (equation.id.empty() || equation.name.empty()
-            || !executable.registry.contains(equation.id)) {
-            throw std::runtime_error(
-                "Resolved system has an invalid/duplicate equation.");
-        }
-        const auto& definition = equationDefinition(system,equation.id);
-        equationIds.push_back(equation.id);
-        if (definition.name != equation.id) {
-            throw std::runtime_error(
-                "Equation descriptor and executable definition disagree for '"
-                + equation.id + "'.");
-        }
-        for (const std::string& unknown : equation.solvedUnknowns) {
-            if (unknowns.find(unknown) == unknowns.end()) {
-                throw std::runtime_error(
-                    "Equation '"+equation.id
-                    +"' references undeclared unknown '"+unknown+"'.");
-            }
-        }
-    }
     std::set<std::string> constraints;
     for (const auto& constraint : executable.constraints) {
         if (constraint.id.empty() || constraint.equation.empty()
@@ -245,7 +209,6 @@ void validate(const ResolvedSimulationSystem& system) {
         }
     }
     std::set<std::string> blocks;
-    std::map<std::string,int> equationBlockReferences;
     for (const auto& block : system.solvePlan.blocks) {
         if (block.id.empty() || block.strategy.empty()
             || !blocks.insert(block.id).second) {
@@ -263,7 +226,6 @@ void validate(const ResolvedSimulationSystem& system) {
                     "Solve block '"+block.id
                     +"' references undeclared equation '"+equation+"'.");
             }
-            ++equationBlockReferences[equation];
         }
         for (const auto& constraint : block.constraints) {
             if (constraints.find(constraint) == constraints.end()) {
@@ -278,15 +240,6 @@ void validate(const ResolvedSimulationSystem& system) {
                     "Solve block '"+block.id
                     +"' references undeclared unknown '"+unknown+"'.");
             }
-        }
-    }
-    // Unmigrated compatibility equations still require explicit execution ownership.
-    // Native occurrences were already validated by their selected provider.
-    if (!equationIds.empty() && system.solvePlan.compiledProgram.steps.empty()) {
-        for (const auto& equation:equationIds) {
-            (void)executable.legacyDefinitions.at(equation);
-            if (equationBlockReferences[equation]==0 && system.runtime.report.status==RuntimeStatus::Runnable)
-                throw std::runtime_error("Legacy equation lacks execution ownership: "+equation);
         }
     }
     for (const auto& call:system.solvePlan.compiledProgram.steps) {

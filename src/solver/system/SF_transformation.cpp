@@ -39,7 +39,6 @@ public:
     void transform(
             const RawEquationSystem& raw,
             ExecutableEquationSystemBuilder& executable,
-            std::vector<LegacyExecutionPolicy>&,
             TransformationRecord& record) const override {
         const auto velocity = std::find_if(
             raw.state.symbols().begin(),raw.state.symbols().end(),
@@ -145,7 +144,6 @@ public:
     void transform(
             const RawEquationSystem& raw,
             ExecutableEquationSystemBuilder& executable,
-            std::vector<LegacyExecutionPolicy>&,
             TransformationRecord& record) const override {
         for (auto equation:eulerianPressureRelations()) {
             equation.origin={OriginKind::Generated,"sharedPressureConstraint"};
@@ -160,13 +158,6 @@ private:
     TransformationDescriptor descriptor_;
 };
 
-bool hasEquationId(
-        const std::vector<EquationDescriptor>& equations,
-        std::string_view id) {
-    return std::any_of(equations.begin(),equations.end(),
-        [&](const EquationDescriptor& item) { return item.id == id; });
-}
-
 bool hasUnknownId(
         const std::vector<StateSymbol>& unknowns,
         std::string_view id) {
@@ -180,8 +171,6 @@ ExecutableEquationSystemBuilder::ExecutableEquationSystemBuilder(
         const RawEquationSystem& raw) {
     system_.immersed = raw.immersed;
     system_.state = raw.state;
-    system_.legacyEquations = raw.legacyEquations;
-    system_.legacyDefinitions = raw.legacyDefinitions;
     system_.registry = raw.registry;
     system_.constraints = raw.constraints;
     system_.closures = raw.closures;
@@ -199,18 +188,6 @@ void ExecutableEquationSystemBuilder::addState(StateSymbol unknown) {
                                  +unknown.id+"'.");
     }
     system_.state.add(std::move(unknown));
-}
-
-void ExecutableEquationSystemBuilder::addEquation(
-        EquationDescriptor descriptor, SF::Equation::Definition definition) {
-    if (descriptor.id != definition.name || hasEquationId(system_.legacyEquations,descriptor.id)) {
-        throw std::runtime_error(
-            "Transformation generated invalid/duplicate equation '"
-            +descriptor.id+"'.");
-    }
-    system_.registry.add(formulaFromEquation(definition,descriptor.origin));
-    system_.legacyEquations.push_back(std::move(descriptor));
-    system_.legacyDefinitions.add(std::move(definition));
 }
 
 void ExecutableEquationSystemBuilder::replaceEquation(Equation formula) {
@@ -299,7 +276,6 @@ ExecutableEquationSystem TransformationPipeline::apply(
         const RawEquationSystem& raw,
         const std::vector<TransformationDescriptor>& requests,
         const TransformerRegistry& registry,
-        std::vector<LegacyExecutionPolicy>& policies,
         std::vector<TransformationRecord>& records) {
     ExecutableEquationSystemBuilder executable(raw);
     auto ordered = requests;
@@ -323,7 +299,7 @@ ExecutableEquationSystem TransformationPipeline::apply(
         record.state = match.state;
         record.reason = match.reason;
         if (match.state == TransformationState::RegisteredAndActive) {
-            transformer->transform(raw,executable,policies,record);
+            transformer->transform(raw,executable,record);
             record.state = TransformationState::Applied;
         } else if (request.explicitlyRequested
                    || match.state == TransformationState::RegisteredButInvalid) {

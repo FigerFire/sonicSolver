@@ -30,10 +30,8 @@ int main() {
             request.phaseNames={"water","air"};request.referencePhase="water";
             request.coupling=couplingRequestFrom(config.pressure.coupling,true);
             SystemContribution turbulence;SF::Turbulence::contribute(turbulence,{model,selected,true,request.phaseNames});
-            require(turbulence.legacyExecution.empty() && turbulence.legacyEquations.empty(),"Native model retained compatibility entries.");
             request.modelContributions={turbulence};const auto resolved=build(config,request);
-            require(resolved.runtime.report.status==RuntimeStatus::Runnable && resolved.solvePlan.sourceProgram.legacyEntries.empty(),"Native Eulerian model is not executable.");
-            require(resolved.executableSystem.legacyEquations.empty() && resolved.executableSystem.legacyDefinitions.equations().empty(),"Duplicate legacy math authority.");
+            require(resolved.runtime.report.status==RuntimeStatus::Runnable,"Native Eulerian model is not executable.");
             SF::FDM::TurbulenceConfig tc;tc.enabled=true;tc.phaseNames=selected;
             tc.family=ras ? SF::FDM::TurbulenceFamily::RAS : SF::FDM::TurbulenceFamily::LES;
             tc.model=std::string(model)=="kEpsilon" ? SF::FDM::TurbulenceModelKind::kEpsilon

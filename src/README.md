@@ -18,7 +18,7 @@
 - `core/system/SF_equationIR.h`：Raw/Executable equation system 与 executable operation 的中立描述。
 - `core/system/SF_systemContribution.h`：模型和用户可共享的方程贡献值；native 自定义方程还不能完整降低。
 - `core/config/types/SF_timeRecipe.h`、`SF_termRecipe.h`：当前时间与空间 recipe；RK2/隐式及逐 term 自由选择尚未实现。
-- `core/system/SF_solveProgram.h`：纯 source HOW 与独立 CompiledTarget/plan；`SF_planFragment.h` 仅保留显式 LegacyPlanFragment。
+- `core/system/SF_solveProgram.h`：纯 source HOW 与独立 CompiledTarget/plan；旧 LegacyPlanFragment/policy lowering 已退役，planner 直接冻结原生 method/temporal 控制流。
 - `solver/system/SF_systemBuilder.cpp`：collect modules 与 composition 入口；`SF_numericalCompiler.cpp::compileSystem` 负责 target、numerics 与 lowering。
 - `solver/system/SF_numericalSelection.h`：source WHICH；`SF_builtinProviders.cpp`：domain capabilities、storage 与 numerical lifecycle；`SF_providerResolver.cpp`：builtin runtime provider matching。
 - `solver/system/SF_solvePlan.cpp`：通用 plan lowering；压力与 Eulerian 的顺序来自 contribution/fragment。

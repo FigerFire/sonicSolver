@@ -1,6 +1,5 @@
 #include "SF_numericalCompiler.h"
 #include "SF_buildRequest.h"
-#include "SF_legacyNumerics.h"
 #include "SF_methodObjects.h"
 #include <algorithm>
 namespace SF::System {
@@ -8,7 +7,6 @@ NumericalSelection selectNumerics(const FDM::SolverConfig& config,const BuildReq
         const ExecutableEquationSystem& equations,std::vector<NumericalBinding> bindings) {
     NumericalSelection selection;
     selection.bindings=std::move(bindings);
-    if (selection.bindings.empty()) selection.legacySpatialInputs=Legacy::spatialInputs(equations);
     selection.recipes=config.numerics.recipes;
     selection.recipes.time=config.numerics.timeRecipe;
     const auto diffusion=[](const auto& self,const FormulaExpr& expression)->bool {

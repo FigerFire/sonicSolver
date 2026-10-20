@@ -1,12 +1,11 @@
 #include "SF_executionComposition.h"
 #include "SF_pressureCoupling.h"
 #include "SF_eulerianCoupling.h"
-#include "SF_legacyNumerics.h"
 #include "core/system/SF_operationIds.h"
 #include <algorithm>
 #include <stdexcept>
 namespace SF::System {
-std::vector<LegacyPlanFragment> composeContributions(ResolvedSimulationSystem& result,const BuildRequest& request,
+void composeContributions(ResolvedSimulationSystem& result,const BuildRequest& request,
         ExecutionProgram& program,std::vector<NumericalBinding>& numerics) {
     // Module applicability follows contributed mathematics/default occurrences.
     // StateRealization only binds storage and never chooses this source topology.
@@ -36,6 +35,5 @@ std::vector<LegacyPlanFragment> composeContributions(ResolvedSimulationSystem& r
     } else if (request.coupling && isCouplingActive(result.coupling) && !native) {
         throw std::runtime_error("Single-fluid pressure requires a native default predictor occurrence; no legacy fallback is available.");
     }
-    return {};
 }
 } // namespace SF::System

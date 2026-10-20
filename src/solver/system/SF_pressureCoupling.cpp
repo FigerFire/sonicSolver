@@ -227,68 +227,6 @@ std::vector<NumericalBinding> pressureNumerics(const CouplingPresetRequest& requ
     return bindings;
 }
 
-/// @brief PISO/分离式压力修正的执行片段。
-///
-/// 片段只表达顺序与重复；每个 Leaf 引用 formulation 的 OperationStage。
-/// 具体 OpId 由 executable operation authority 解析，因此这里不再维护任何
-/// operation/provider 名单。
-
-
-namespace Legacy {
-
-
-} // namespace Legacy
-
-namespace {
-
-void collectMissingStages(const PlanFragmentNode& node,
-                          const ExecutableEquationSystem& executable,
-                          std::vector<std::string>* missing) {
-    if (node.kind == PlanFragmentNode::Kind::Leaf) {
-        // Exact EquationCall resolution happens after EquationMethod compilation.
-        if (!node.step.empty()) return;
-        if (!node.operation.empty()) {
-            if (std::any_of(executable.operations.begin(),executable.operations.end(),
-                [&](const ExecutableOperation& item) {
-                    return item.operation == node.operation;
-                })) return;
-            if (std::find(missing->begin(),missing->end(),node.operation)
-                == missing->end()) missing->push_back(node.operation);
-            return;
-        }
-        // 与 planner 的 lowering 规则一致：带具名缺失标记的 leaf 永远
-        // unresolved；否则按 stage 解析由 formulation 声明的 operation。
-        if (node.missingOperation.empty()
-            && findExecutableOperation(executable,node.stage)) {
-            return;
-        }
-        const std::string id = node.missingOperation.empty()
-            ? node.id : node.missingOperation;
-        if (std::find(missing->begin(),missing->end(),id) == missing->end()) {
-            missing->push_back(id);
-        }
-        return;
-    }
-    for (const PlanFragmentNode& child : node.children) {
-        collectMissingStages(child,executable,missing);
-    }
-}
-
-} // namespace
-
-bool couplingPlanResolved(const LegacyPlanFragment& fragment,
-                          const ExecutableEquationSystem& executable,
-                          std::vector<std::string>* missing) {
-    std::vector<std::string> found;
-    for (const PlanFragmentNode& node : fragment.nodes) {
-        collectMissingStages(node,executable,&found);
-    }
-    if (missing) *missing = found;
-    return found.empty();
-}
-
-
-
 CouplingReport matchPressureCoupling(
         const CouplingPresetRequest& request,
         const RawEquationSystem& raw) {

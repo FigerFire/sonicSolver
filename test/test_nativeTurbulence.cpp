@@ -26,7 +26,6 @@ int main() {
     for (const auto* model:{"kEpsilon","kOmegaSST"}) {
         const std::string second=std::string(model)=="kEpsilon" ? "epsilon" : "omega";
         SystemContribution contribution;SF::Turbulence::contribute(contribution,{model,{},false});
-        require(contribution.legacyExecution.empty() && contribution.legacyEquations.empty(),"Single-fluid RAS retained legacy authority.");
         require(contribution.registeredEquations.size()==2 && contribution.execution.size()==2
             && contribution.numerics.size()==2 && contribution.states.size()==3,"Missing native RAS channels.");
         auto system=equations(contribution);
@@ -121,7 +120,7 @@ int main() {
         }),"Closure-only model acquired RAS transport method.");
     }
     SystemContribution eulerian;SF::Turbulence::contribute(eulerian,{"kOmegaSST",{"water"},true,{"water","air"}});
-    require(eulerian.legacyExecution.empty() && eulerian.legacyEquations.empty() && eulerian.execution.size()==3,"Eulerian native model channels are incomplete.");
+    require(eulerian.execution.size()==3,"Eulerian native model channels are incomplete.");
 
     // Real provider-owned backing: STATE views alias ScalarFields, including writes.
     SF::Field field;field.setup(3,3,1,1,5);

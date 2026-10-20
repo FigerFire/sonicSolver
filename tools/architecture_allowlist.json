@@ -34,10 +34,6 @@
       "src/methods/numerics/structured/SF_structured.h",
       "src/solver/discretization/structured/SF_structured.h"
     ],
-    "SF_polynomial.h": [
-      "src/methods/math/discrete/SF_polynomial.h",
-      "src/solver/boundary/reconstruction/polynomial/SF_polynomial.h"
-    ],
     "SF_empty.h": [
       "src/solver/boundary/reconstruction/ILW/SF_empty.h",
       "src/solver/boundary/reconstruction/linear/SF_empty.h"

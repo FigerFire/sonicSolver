@@ -53,9 +53,6 @@ int main() {
     for (const int count:{2,3}) {
         const auto resolved=fixture(count);
         const auto& program=resolved.solvePlan.compiledProgram;
-        require(resolved.rawSystem.legacyEquations.empty() && resolved.rawSystem.legacyDefinitions.equations().empty()
-            && resolved.executableSystem.legacyEquations.empty() && resolved.executableSystem.legacyDefinitions.equations().empty(),
-            "Native Eulerian retained duplicate legacy equations/definitions.");
         require(program.steps.size()==static_cast<std::size_t>(5*count+2),"Missing phase/shared contract.");
         int references=0;
         for (const auto& call:program.steps) {
@@ -86,11 +83,6 @@ int main() {
         for (auto it=symbols.rbegin();it!=symbols.rend();++it) changed.state.add(*it);
         auto compile=[&](const auto& equations) {return compileExecutionProgram(equations,resolved.solvePlan.sourceProgram,resolved.numericalSelection.bindings,builtinProviders());};
         require(signature(compile(changed))==signature(program),"Registry insertion changed frozen phase slots.");
-        changed=resolved.executableSystem;changed.legacyDefinitions=SF::Equation::System{};
-        require(signature(compile(changed))==signature(program),"Native compiled contract reads legacy Definition.");
-        // The shadow legacy system is deliberately poisoned; AST-derived contracts stay identical.
-        changed.legacyDefinitions.add(SF::Equation::named("momentum.liquid",SF::Equation::algebraic({"fake"})==SF::Equation::Symbol{"zero"}));
-        require(signature(compile(changed))==signature(program),"Legacy mutation altered native compiled authority.");
         const auto mutation=[&](const std::string& id,const std::function<void(Equation&)>& edit,bool sameCategories) {
             auto equations=resolved.executableSystem;auto formula=equations.registry.at(id);
             const auto before=categories(formula);edit(formula);

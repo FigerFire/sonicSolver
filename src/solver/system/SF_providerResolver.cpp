@@ -6,7 +6,6 @@
 
 #include "SF_couplingStatus.h"
 #include "SF_executionContract.h"
-#include "SF_legacyNumerics.h"
 #include "SF_providerCatalog.h"
 #include "SF_solvePlan.h"
 #include "SF_scalarMethod.h"
@@ -27,10 +26,9 @@ bool hasCapability(const std::vector<OperationCapability>& values,
 bool pressureOperatorRequirementsSatisfied(
         const ExecutableEquationSystem& equations,
         const ExecutionCapabilitySignature& signature,
-        const std::vector<LegacyExecutionPolicy>& policies,
         const CompiledNumericalSystem& numerics,
         bool additionalContributions) {
-    if (additionalContributions || !policies.empty()
+    if (additionalContributions
         || numerics.time.recipe.topology()!=FDM::TimeTopology::ExplicitStages
         || numerics.time.recipe.stageCount()!=1
         || !signature.pressureConstraint || !signature.constantDensity
@@ -126,7 +124,7 @@ bool pressureOperatorRequirementsSatisfied(
 std::string validateNativeProvider(const std::string& selected,
         const ExecutableEquationSystem& equations,const CompiledNumericalSystem& numerics,
         const CompiledSolvePlan& plan,const ExecutionCapabilitySignature& signature,
-        const std::vector<LegacyExecutionPolicy>& policies,bool additionalContributions) {
+        bool additionalContributions) {
     if (selected==ScalarOps::Provider || selected==ScalarOps::TransportProvider || selected==ScalarOps::SharedFluxProvider || selected==ScalarOps::StageTransportProvider) {
         const auto reason=validateTemporalPlan(plan,numerics.time.recipe.stageCount());
         if(!reason.empty())return reason;
@@ -158,13 +156,13 @@ std::string validateNativeProvider(const std::string& selected,
             return "scalar fixed dt must be finite and positive";
     } else if (selected=="equation.thermal") {
         if(numerics.time.recipe.id()!=FDM::TimeRecipeId::ForwardEuler || plan.compiledProgram.temporalParticipants.empty()
-            || signature.pressureConstraint || !policies.empty())
+            || signature.pressureConstraint)
             return "Unsupported thermal execution: Forward Euler synchronous scalar/flow group required; implicit/pressure thermal treatment is not implemented";
     } else if (selected=="flow.eulerian-pressure" || selected=="flow.eulerian-turbulence") {
         if (!hasConstraint(equations,"C_SHARED_PRESSURE") || !hasConstraint(equations,"C_VOLUME_FRACTION")
             || numerics.phaseTransport.convection!=FDM::PhaseConvectionScheme::Upwind
-            || plan.compiledProgram.hasTemporalRoot || !policies.empty())
-            return "native Eulerian provider requires shared-pressure/volume closures, current Upwind backend and no extra legacy constraint schedule";
+            || plan.compiledProgram.hasTemporalRoot)
+            return "native Eulerian provider requires shared-pressure/volume closures, current Upwind backend and native non-temporal schedule";
     } else if (selected=="flow.homogeneous") {
         return "Unsupported native homogeneous execution: the current reconstructed convection kernel requires five-variable PerfectGas and cannot assemble generic-EOS component fluxes. No Rusanov fallback is permitted.";
     } else if (selected=="ibm.constraint") {
@@ -185,11 +183,10 @@ std::string validateNativeProvider(const std::string& selected,
                 return "native immersed correction must follow the complete physical predictor and precede commit; no pre-predictor or per-stage implementation exists";
         }
     } else if (selected=="flow.turbulence" || selected=="flow.turbulence-closure") {
-        if (signature.pressureConstraint || !plan.compiledProgram.hasTemporalRoot
-            || !policies.empty())
+        if (signature.pressureConstraint || !plan.compiledProgram.hasTemporalRoot)
             return "single-fluid transported turbulence requires explicit flow and the implemented unconstrained predictor treatment";
     } else if (selected=="flow.pressure-operators" || selected=="flow.rhie-chow") {
-        if (!pressureOperatorRequirementsSatisfied(equations,signature,policies,numerics,additionalContributions))
+        if (!pressureOperatorRequirementsSatisfied(equations,signature,numerics,additionalContributions))
             return "selected native pressure provider requires a supported constant-density pressure-multiplier state, equation, recipe and fixed-time capability";
         for (const auto& layout:std::vector<std::pair<std::string,int>>{{"U",3},{"p",1},{"phi",1}}) {
             if (!equations.state.contains(layout.first)) return "selected pressure provider requires STATE "+layout.first;
@@ -201,7 +198,7 @@ std::string validateNativeProvider(const std::string& selected,
             [](const auto& call) {return call.equationMethod=="MixtureBalance";})) {
         return "Unsupported native mixture execution: tracked phase-mass kernel exists, but compatible flow thermodynamic binding and native closure publication are not implemented. No fallback is permitted.";
     } else if (selected=="flow.conservative" && signature.pressureConstraint) {
-        if (additionalContributions || !policies.empty() || !signature.conservativeState
+        if (additionalContributions || !signature.conservativeState
             || !signature.momentumPredictor || !signature.pressureCorrection || signature.auxiliarySchedule
             || signature.outerCorrectors!=1 || signature.pressureCorrectors<=0
             || signature.nonOrthogonalCorrectors!=0 || numerics.time.recipe.stageCount()!=1
@@ -303,7 +300,6 @@ std::string validateSolutionProviderContract(const StateRegistry& state,
 
 ExecutionCapabilitySignature compileExecutionCapabilities(
         const ExecutableEquationSystem& system,
-        const std::vector<LegacyExecutionPolicy>& policies,
         const CompiledSolvePlan* plan) {
     ExecutionCapabilitySignature result;
     result.pressureConstraint = hasConstraint(system,"C_INCOMPRESSIBILITY");
@@ -334,22 +330,6 @@ ExecutionCapabilitySignature compileExecutionCapabilities(
                 || call.equationMethod=="ConservativePressureCorrection";
         }
     }
-    result.auxiliarySchedule = std::any_of(
-        system.legacyEquations.begin(),system.legacyEquations.end(),
-        [](const EquationDescriptor& item) {
-            return item.id != "continuity" && item.id != "momentum"
-                && item.id != "energy" && item.id != "momentum"
-                && item.category == EquationCategory::PhysicalEquation;
-        });
-    const auto pressure = std::find_if(
-        policies.begin(),policies.end(),[](const LegacyExecutionPolicy& item) {
-            return item.id == kPressureScheduleId;
-        });
-    if (pressure != policies.end()) {
-        result.outerCorrectors = pressure->repeatCount;
-        result.pressureCorrectors = pressure->nestedRepeatCount;
-        result.nonOrthogonalCorrectors = pressure->innerRepeatCount-1;
-    }
     if (plan && !plan->compiledProgram.steps.empty()) {
         result.outerCorrectors=1;
         result.pressureCorrectors=1;
@@ -371,9 +351,8 @@ std::vector<ResolvedOperationBinding> compileOperationBindings(
         const ExecutableEquationSystem& equations,
         const CompiledNumericalSystem& numerics,
         CompiledSolvePlan& plan,
-        const std::vector<LegacyExecutionPolicy>& policies,
         bool additionalContributions) {
-    const auto signature=compileExecutionCapabilities(equations,policies,&plan);
+    const auto signature=compileExecutionCapabilities(equations,&plan);
     const ProviderCatalog catalog=ProviderCatalog::builtIn();
     std::vector<ResolvedOperationBinding> bindings;
     const auto bind=[&](const auto& self,SolvePlanNode& leaf)->void {
@@ -386,11 +365,9 @@ std::vector<ResolvedOperationBinding> compileOperationBindings(
                 binding.reason=leaf.unsupportedReason.empty()
                     ? "no ExecutableOperation declares '"+leaf.operation+"'" : leaf.unsupportedReason;
             } else {
-                if (leaf.legacyAdapter && leaf.provider.empty())
-                    leaf.provider=Legacy::selectOperationProvider(*declaration,equations);
                 binding=catalog.resolve(*declaration,leaf.provider);
                 // STATE can reject a selected implementation; it cannot choose another.
-                if (binding.status==BindingStatus::Resolved && !leaf.legacyAdapter) {
+                if (binding.status==BindingStatus::Resolved) {
                     std::vector<std::string> context;
                     std::vector<CapabilityBinding> boundContext;
                     for (const auto& boundary:equations.boundaryClosures) {
@@ -403,7 +380,7 @@ std::vector<ResolvedOperationBinding> compileOperationBindings(
                         if (!requirement.empty()) break;
                     }
                     const auto reason=!requirement.empty()?requirement:validateNativeProvider(binding.provider,equations,numerics,plan,
-                        signature,policies,additionalContributions);
+                        signature,additionalContributions);
                     if (!reason.empty()) {
                         binding.status=BindingStatus::Unsupported;
                         binding.provider.clear();

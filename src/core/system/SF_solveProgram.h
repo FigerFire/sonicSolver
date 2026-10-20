@@ -77,11 +77,10 @@ struct ExecutionScope {
 };
 
 struct ExecutionProgram {
-    /// Root is the single source execution authority; legacy entries are explicit migration debt.
+    /// Root is the single source execution authority.
     ExecutionScope root;
     std::vector<PlacementRequirement> requirements;
     bool explicitOrder=false;
-    std::vector<ExecutionScope> legacyEntries;
     ExecutionProgram() = default;
     ExecutionProgram(std::initializer_list<EquationCall> legacySteps)
     {
@@ -119,12 +118,6 @@ struct CompiledMathRef {
     std::string target;
 };
 
-enum class LegacyExecutionPolicyKind {
-    SegregatedPressureCorrection,
-    PressureVelocityFixedPoint,
-    BoundaryClosure
-};
-
 /// @brief Explain/capability 使用的 typed solve-block view；执行顺序只来自 Plan root。
 struct SolveBlock {
     std::string id;
@@ -134,7 +127,6 @@ struct SolveBlock {
     std::vector<std::string> constraints;
     std::vector<std::string> unknowns;
     FDM::SolveStrategyKind strategyKind = FDM::SolveStrategyKind::AlgebraicUpdate;
-    LegacyExecutionPolicyKind policyKind = LegacyExecutionPolicyKind::BoundaryClosure;
 };
 
 enum class PlanNodeKind {
@@ -156,26 +148,6 @@ enum class PlanNodeKind {
 /// @brief Open operation identifier resolved by Run::OpRegistry at runtime.
 using OpId = std::string;
 using LoopSignalId = std::string;
-
-/// @brief Transformation/preset 对 solve planning 的输入，不含 runtime objects。
-struct LegacyExecutionPolicy {
-    std::string id;
-    std::string name;
-    LegacyExecutionPolicyKind kind = LegacyExecutionPolicyKind::BoundaryClosure;
-    std::string strategyName;
-    FDM::SolveStrategyKind strategyKind =
-        FDM::SolveStrategyKind::AlgebraicUpdate;
-    std::vector<std::string> equations;
-    std::vector<std::string> constraints;
-    std::vector<std::string> unknowns;
-    int priority = 0;
-    int repeatCount = 1;
-    int nestedRepeatCount = 1;
-    int innerRepeatCount = 1;
-    Provenance origin;
-    PlanNodeKind leafKind = PlanNodeKind::Update;
-    OpId leafOperation;
-};
 
 /// @brief Structured control-flow IR；children 的顺序就是执行顺序。
 struct SolvePlanNode {
@@ -299,8 +271,7 @@ struct CompiledExecutionProgram {
     std::vector<CompiledStateView> stateViews;
     ExecutionScope root;
     std::vector<CompiledEquationCall> steps;
-    /// Explicit legacy numerical inputs; never inferred by the generic compiler.
-    std::vector<CompiledMathRef> legacySpatialInputs;
+
     /// The selected TemporalMethod, rather than SolvePlanner, owns this
     /// numerical stage topology for a transient equation body.
     SolvePlanNode temporalRoot;
@@ -320,17 +291,6 @@ struct CompiledSolvePlan {
 
 /// @brief ORDER/IR 枚举的稳定字符串；header-only，使 run/plan-IR consumers
 ///        （例如 PlanExecutor）不依赖 system 编译单元。
-inline const char* toString(LegacyExecutionPolicyKind value) {
-    switch (value) {
-        case LegacyExecutionPolicyKind::SegregatedPressureCorrection:
-            return "segregated-pressure-correction";
-        case LegacyExecutionPolicyKind::PressureVelocityFixedPoint:
-            return "pressure-velocity-fixed-point";
-        case LegacyExecutionPolicyKind::BoundaryClosure: return "boundary-closure";
-    }
-    return "unknown-execution-policy";
-}
-
 inline const char* toString(PlanNodeKind value) {
     switch (value) {
         case PlanNodeKind::Sequence: return "Sequence";

@@ -130,6 +130,14 @@ def main() -> int:
         if "stageCoefficientResource" in (root/file).read_text():
             authority_errors.append("Base STATE regained numerical coefficient publication authority: "+file)
 
+    retired = re.compile(r"\b(?:legacyEquations|legacyDefinitions|LegacyExecutionPolicy|legacyExecution|EquationDescriptor|LegacyEquationRole|legacyEntries|legacySpatialInputs|formulaFromEquation|LegacyPlanFragment)\b")
+    for file in sorted(root.joinpath("src").rglob("*")):
+        if file.suffix not in (".h", ".hpp", ".cpp", ".cc", ".c") or file.name.startswith("._"):
+            continue
+        code = re.sub(r"/\*.*?\*/|//[^\n]*", "", file.read_text(), flags=re.S)
+        if retired.search(code):
+            authority_errors.append("Retired equation/execution authority reintroduced: " + str(file.relative_to(root)))
+
     # Single-fluid once-step RAS exposes physics, never a second dt/sweep entry.
     transport_port=(root/"src/core/interfaces/SF_transportModel.h").read_text()
     if re.search(r'\bcorrect\s*\(',transport_port):
@@ -223,9 +231,9 @@ def main() -> int:
         authority_errors.append("TemporalMethod does not compile a production fragment")
     numerical_header = (root / "src/solver/system/SF_numericalSystem.h").read_text(errors="replace")
     runtime_header = (root / "src/solver/system/SF_runtimeRequirements.h").read_text(errors="replace")
-    if "Equation::System legacyDefinitions" not in equation_header:
+    if "EquationRegistry registry;" not in equation_header:
         authority_errors.append(
-            "Executable equation authority does not own equation definitions")
+            "Executable equation authority lacks its native equation registry")
     run_flow = (root / "src/app/application/execution/SF_flowLoop.cpp").read_text()
     if "stepper.bindSolvePlan(plan)" not in run_flow:
         authority_errors.append(
@@ -243,9 +251,9 @@ def main() -> int:
         authority_errors.append(
             "Generic flowLoop does not realize state before Time::Driver")
     validator = (root / "src/solver/system/SF_systemValidator.cpp").read_text()
-    if "executable.legacyDefinitions.at(equation)" not in validator or "!equationIds.empty()" not in validator:
+    if "executable.registry.at(call.source.equation)" not in validator:
         authority_errors.append(
-            "System validator lacks isolated legacy equation ownership validation")
+            "System validator does not validate compiled calls against native WHAT")
     state_realizer = root / "src/solver/system/SF_stateRealizer.cpp"
     if not state_realizer.is_file() or "workspaceRequirements" not in state_realizer.read_text():
         authority_errors.append(
@@ -385,9 +393,9 @@ def main() -> int:
            ["compileEulerianPimple", "PIMPLE", "PISO", "SIMPLE",
             "ee.pressure", "ee.momentum"]):
         authority_errors.append("SolvePlanner still dispatches a pressure/Eulerian algorithm")
-    if "requireAllPoliciesConsumed" not in solve_plan_source:
+    if "compiledExecution.steps.empty()" not in solve_plan_source or "compileMethodProgram(compiledExecution)" not in solve_plan_source:
         authority_errors.append(
-            "SolvePlanner has no consume-or-fail validation for active policies")
+            "SolvePlanner does not require authoritative compiled HOW")
     if 'operations.bind("ee.pressure.publish",[&] {})' in pressure_stepper:
         authority_errors.append(
             "Eulerian pressure publish is still represented by an empty callback")
@@ -702,17 +710,10 @@ def main() -> int:
             authority_errors.append(
                 "Time::Explicit still owns a global stage loop")
 
-    # Time recipe authority and mathematical Equation::Term purity.
-    expression_header = (
-        root / "src/core/system/SF_expression.h"
-    ).read_text(errors="replace")
-    for token in ["EvaluationMode", "TimeLevel", "ExplicitSource",
-                  "ImplicitSource", "implicitSource", "TimeRecipe",
-                  "TimeScheme", "StageLoop", "Newton", "HYPRE"]:
-        if token in expression_header:
-            authority_errors.append(
-                "Equation::Term contains execution authority token '"
-                + token + "'")
+    # Flat mathematical DSL has no production consumer after native retirement.
+    for retired_path in ("src/core/system/SF_expression.h", "src/solver/equation/SF_expression.cpp"):
+        if (root / retired_path).exists():
+            authority_errors.append("Retired flat equation DSL restored: " + retired_path)
 
     physics_slice = builder_source[
         builder_source.find("void addDensityBasedFluid"):
@@ -872,7 +873,7 @@ def main() -> int:
         if "sharedPressurePlanFragment" in code or "kSharedPressureScheduleId" in code:
             authority_errors.append("obsolete shared-pressure schedule authority remains: " + path)
     transformer = (root / "src/solver/system/SF_transformation.cpp").read_text(errors="replace")
-    shared = transformer[transformer.index("class SharedPressureTransformer"):transformer.index("bool hasEquationId",transformer.index("class SharedPressureTransformer"))]
+    shared = transformer[transformer.index("class SharedPressureTransformer"):transformer.index("bool hasUnknownId",transformer.index("class SharedPressureTransformer"))]
     if "OpIds::Ee" in shared or "addExecutableOperation" in shared:
         authority_errors.append("shared-pressure transformer declares runtime lifecycle")
     system_builder_source = (
@@ -1026,8 +1027,8 @@ def main() -> int:
     method_source = (
         root / "src/solver/system/SF_methodObjects.cpp"
     ).read_text(errors="replace")
-    if "compileLegacyExplicitStep(" not in solve_plan_source:
-        authority_errors.append("legacy explicit target inference is not isolated")
+    if "compileLegacyExplicitStep(" in solve_plan_source:
+        authority_errors.append("legacy explicit target inference was restored")
     if "selectFormulaBinding(" not in (root / "src/solver/system/SF_termProviderCatalog.cpp").read_text():
         authority_errors.append("production spatial binding bypasses shared Formula precedence")
     fused_equation=(root / "src/solver/equation/compressible/SF_compressible.cpp").read_text()
@@ -1243,12 +1244,8 @@ def main() -> int:
         authority_errors.append("pressure HOW mutates WHICH or names runtime operations")
     composition_code = re.sub(r"/\*.*?\*/|//[^\n]*", "",
         (root / "src/solver/system/SF_executionComposition.cpp").read_text(), flags=re.S)
-    legacy_numerics_code = re.sub(r"/\*.*?\*/|//[^\n]*", "",
-        (root / "src/solver/system/SF_legacyNumerics.cpp").read_text(), flags=re.S)
     if "lowerPressure" in composition_code or "legacyCouplingPlanFragment" in coupling_text:
         authority_errors.append("single-fluid pressure retained legacy execution authority")
-    if "conservativePressureScheduleSupported" in legacy_numerics_code:
-        authority_errors.append("legacy selector still owns conservative pressure scheduling")
     native_methods = cpp_body(
         (root / "src/solver/system/SF_builtinProviders.cpp").read_text(), "class ConservativePressureMethod")
     if "legacyAdapter" in native_methods or 'return "flow.conservative"' not in native_methods:
@@ -1280,8 +1277,8 @@ def main() -> int:
     binding_body=cpp_body(resolver_source,"compileOperationBindings(")
     if re.search(r"\b(?:conservativeTransportedMass|phaseTransportedState|pressureMultiplier|constantPressureSchedule)\b",binding_body):
         authority_errors.append("generic compiled binding nominates providers from state shape")
-    if "leaf.legacyAdapter" not in binding_body or "leaf.provider" not in binding_body:
-        authority_errors.append("legacy provider adapter is not isolated from frozen native ownership")
+    if "leaf.legacyAdapter" in binding_body or "leaf.provider" not in binding_body:
+        authority_errors.append("provider resolver bypasses frozen native provider ownership")
     builder_body=cpp_body(builder_source,"ResolvedSimulationSystem build(")
     if re.search(r"\b(?:compileOperationBindings|resolveOperationBindings|ProviderCatalog|ProviderMatchContext)\b",builder_body):
         authority_errors.append("SystemBuilder owns a second numerical provider selection")
@@ -1372,8 +1369,7 @@ def main() -> int:
 
     # Turbulence has native WHAT/STATE/HOW/WHICH; the flow provider cannot insert its solves.
     for name in ("src/solver/system/SF_eulerianMethods.cpp",
-                 "src/solver/algorithm/eulerian/SF_eulerianStepper.cpp",
-                 "src/solver/system/SF_legacyNumerics.cpp"):
+                 "src/solver/algorithm/eulerian/SF_eulerianStepper.cpp"):
         content=(root/name).read_text()
         if re.search(r"E_TURB_|legacyTurbulence|legacyClosure|eulerianTurbulenceInputs",content):
             authority_errors.append(name+" retained Eulerian turbulence string/compatibility authority")

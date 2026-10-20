@@ -8,7 +8,6 @@ namespace SF::System {
 /// Composed WHICH; immutable input to binding/lowering. No execution topology.
 struct NumericalSelection {
     std::vector<NumericalBinding> bindings;
-    std::vector<CompiledMathRef> legacySpatialInputs;
     FDM::NumericalRecipeSet recipes;
     TimeStepPolicy dt;
     CompiledPhaseTransport phaseTransport;

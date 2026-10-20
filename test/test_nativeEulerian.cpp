@@ -26,7 +26,6 @@ int main() {
     request.phaseNames={"water","air","other"};request.referencePhase="water";
     request.coupling=couplingRequestFrom(config.pressure.coupling,true);
     const auto resolved=build(config,request);
-    require(resolved.executionPolicies.empty() && resolved.solvePlan.sourceProgram.legacyEntries.empty(),"Eulerian retained a second schedule authority.");
     require(resolved.executableSystem.state.solutionVariables().empty(),"Phase fields became single-fluid primary selection.");
     require(resolved.solvePlan.compiledProgram.steps.size()==17,"Missing separate phase/correction occurrences.");
     require(!resolved.executableSystem.state.contains("pPrime") && !resolved.executableSystem.state.contains("pressureCorrection"),"Pressure correction became another base state.");
@@ -97,8 +96,7 @@ int main() {
     SF::Turbulence::contribute(turbulence,{"kOmegaSST",request.phaseNames,true,request.phaseNames});
     legacy.modelContributions.push_back(turbulence);
     const auto compatibility=build(config,legacy);
-    require(compatibility.solvePlan.sourceProgram.legacyEntries.empty() && compatibility.executionPolicies.empty()
-        && compatibility.runtime.report.status==RuntimeStatus::Runnable,
+    require(compatibility.runtime.report.status==RuntimeStatus::Runnable,
         "Native Eulerian turbulence has an unsupported or legacy execution authority.");
     // The real PhaseState arrays and correction scalar remain the sole backing authorities.
     SF::Field field;field.setup(2,2,1,1,5);SF::State::StateBundle bundle;bundle.patches={&field};

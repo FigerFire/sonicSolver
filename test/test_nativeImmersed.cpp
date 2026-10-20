@@ -91,12 +91,9 @@ int main() {
         const auto algorithm=configuration.algorithm;
         const auto descriptor=SF::IBM::Descriptor::variational(configuration);
         SystemContribution contribution;SF::IBM::SystemContribution::contribute(contribution,descriptor);
-        require(contribution.legacyEquations.empty() && contribution.legacyExecution.empty()
-            && contribution.policies.empty() && contribution.transformations.empty(),"IBM retained legacy mathematical/execution authority.");
         const bool kkt=descriptor.monolithic;
         auto selected=request;selected.modelContributions={contribution};
         const auto resolved=build(config,selected);
-        require(resolved.solvePlan.sourceProgram.legacyEntries.empty(),"IBM HOW retained legacy entries.");
         require(resolved.runtime.report.status==(kkt?RuntimeStatus::Unsupported:RuntimeStatus::Runnable),
             "IBM capability advertised unimplemented KKT predictor or rejected implemented projection.");
         if (!kkt) {

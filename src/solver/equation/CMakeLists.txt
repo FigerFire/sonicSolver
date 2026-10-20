@@ -1,5 +1,4 @@
 add_library(SF_equation STATIC
-    SF_expression.cpp
     compressible/SF_compressible.cpp
 )
 target_include_directories(SF_equation PUBLIC

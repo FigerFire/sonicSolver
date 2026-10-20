@@ -19,7 +19,6 @@ std::string validateCompiledConservativeStage(const ExecutableEquationSystem&,
 
 ExecutionCapabilitySignature compileExecutionCapabilities(
     const ExecutableEquationSystem& equations,
-    const std::vector<LegacyExecutionPolicy>& policies,
     const CompiledSolvePlan* plan = nullptr);
 
 /// Freeze final leaf ownership during compilation; runtime never calls this.
@@ -27,7 +26,6 @@ std::vector<ResolvedOperationBinding> compileOperationBindings(
     const ExecutableEquationSystem& equations,
     const CompiledNumericalSystem& numerics,
     CompiledSolvePlan& plan,
-    const std::vector<LegacyExecutionPolicy>& policies,
     bool additionalContributions);
 
 RuntimeReport reportOperationBindings(

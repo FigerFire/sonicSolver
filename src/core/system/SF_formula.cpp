@@ -100,40 +100,6 @@ std::string textOf(const FormulaExpr& expression) {
         +textOf(expression.arguments[1])+")";
 }
 
-FormulaExpr termExpr(const SF::Equation::Term& term, std::size_t ordinal) {
-    const auto symbol = term.primary.name == "zero"
-        ? FormulaExpr::constantValue(0.0)
-        : FormulaExpr::symbol(term.primary.name);
-    const std::string occurrence = "term-" + std::to_string(ordinal);
-    switch (term.kind) {
-        case SF::Equation::TermKind::Transient:
-            return FormulaExpr::op("ddt",{symbol},occurrence);
-        case SF::Equation::TermKind::Divergence:
-            return FormulaExpr::op("div",{symbol},occurrence);
-        case SF::Equation::TermKind::Gradient:
-            return FormulaExpr::op("grad",{symbol},occurrence);
-        case SF::Equation::TermKind::Diffusion:
-            return FormulaExpr::op("diffusion",
-                {FormulaExpr::symbol(term.secondary.name),symbol},occurrence);
-        case SF::Equation::TermKind::Source:
-            return symbol;
-        case SF::Equation::TermKind::Constraint:
-            return FormulaExpr::op("constraint",{symbol},occurrence);
-        case SF::Equation::TermKind::AlgebraicRelation:
-            return FormulaExpr::op("algebraic",{symbol},occurrence);
-    }
-    throw std::runtime_error("Unknown equation term kind.");
-}
-
-FormulaExpr sideExpr(const SF::Equation::Expression& side, std::size_t& ordinal) {
-    if (side.terms.empty()) return FormulaExpr::constantValue(0.0);
-    FormulaExpr result = termExpr(side.terms.front(),ordinal++);
-    for (std::size_t i=1;i<side.terms.size();++i)
-        result = FormulaExpr::add(std::move(result),
-                                  termExpr(side.terms[i],ordinal++));
-    return result;
-}
-
 } // namespace
 
 FormulaExpr FormulaExpr::symbol(std::string name) {
@@ -216,13 +182,6 @@ bool dependsOn(const FormulaExpr& expression,std::string_view symbol) {
         && expression.name==symbol) return true;
     return std::any_of(expression.arguments.begin(),expression.arguments.end(),
         [&](const FormulaExpr& argument) { return dependsOn(argument,symbol); });
-}
-
-Equation formulaFromEquation(const SF::Equation::Definition& equation,
-                            Provenance origin) {
-    std::size_t ordinal=0;
-    return {equation.name,sideExpr(equation.left,ordinal),
-            sideExpr(equation.right,ordinal),std::move(origin)};
 }
 
 } // namespace SF::System
