@@ -34,4 +34,7 @@ CaseInspection inspectCase(const CaseConfig& config);
 /// @throws std::exception case 无法读取或组合不支持时抛出。
 CaseInspection inspectCase(const std::string& path);
 
+/// @brief CLI/GUI 共用的输入选择来源、活动性及真实系统解释，不参与调度。
+std::string describeCase(const CaseInspection& inspection);
+
 } // namespace SF::Application

@@ -53,6 +53,8 @@ struct CompiledTarget {
     OwnershipKind workspaceOwnership=OwnershipKind::EulerianGlobalDof;
     StateViewOwner viewOwner=StateViewOwner::CompilerWorkspace;
     std::vector<CompiledResourceBinding> resources;
+    /// @brief 仅显式派生 Update 可写该生产者的输出；普通赋值不能绕过只读契约。
+    std::shared_ptr<const StateProducer> producer;
 };
 
 /// One occurrence references one mathematical definition and a semantic output.
@@ -116,17 +118,6 @@ inline void orderExecution(ExecutionScope& scope) {
 struct CompiledMathRef {
     EquationRef equation;
     std::string target;
-};
-
-/// @brief Explain/capability 使用的 typed solve-block view；执行顺序只来自 Plan root。
-struct SolveBlock {
-    std::string id;
-    std::string name;
-    std::string strategy;
-    std::vector<std::string> equations;
-    std::vector<std::string> constraints;
-    std::vector<std::string> unknowns;
-    FDM::SolveStrategyKind strategyKind = FDM::SolveStrategyKind::AlgebraicUpdate;
 };
 
 enum class PlanNodeKind {
@@ -246,6 +237,10 @@ struct CompiledEquationCall {
     std::vector<std::string> operatorBindings;
     std::vector<std::string> workspaceRequires;
     std::vector<std::string> workspaceProvides;
+    /// @brief 覆写预测器/校正状态使旧资源失效；不插入计算或刷新。
+    std::vector<std::string> workspaceInvalidates;
+    /// @brief 物理 Commit 前必须已由显式 occurrence 发布的资源。
+    std::vector<std::string> commitRequires;
     /// Provider-owned coefficients/correction arrays persist through inner loops of this step.
     std::vector<std::string> stepWorkspaces;
     /// Method-owned numerical micro-topology. A nonempty fragment supersedes
@@ -258,6 +253,8 @@ struct CompiledEquationCall {
     std::string fusionKey;
     std::vector<CompiledMathRef> fusionMembers;
     /// @brief Provider-owned immutable implementation contract; generic HOW lowering never interprets it.
+    /// @brief 方法显式读取的限定版本；compiler 冻结到同一 provider-owned view。
+    std::vector<CompiledStateView> viewReads;
     std::vector<StateUse> stateUses;
     std::vector<StateEffect> stateEffects;
     std::vector<std::string> capabilities;
@@ -284,7 +281,6 @@ struct CompiledExecutionProgram {
 /// @brief SolvePlanner 的冻结输出。它只描述执行控制流，不选择 runtime backend。
 struct CompiledSolvePlan {
     SolvePlanNode root;
-    std::vector<SolveBlock> blocks;
     ExecutionProgram sourceProgram;
     CompiledExecutionProgram compiledProgram;
 };

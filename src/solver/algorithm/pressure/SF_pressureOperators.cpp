@@ -82,7 +82,7 @@ void PressureOperators::bind(System::StateRealization& state,
     momentumTerms_.clear();
     for (const auto& term:numerics_.operators) {
         if (term.output!="U" || term.equationMethod!="PressureMomentum") continue;
-        if (term.operatorName=="div") {
+        if (term.operation==Math::Op::Div) {
             ++convectionCount;
             if (!term.recipe
                 || term.recipe->id()!=FDM::TermRecipeId::PrimitiveUpwind1
@@ -92,7 +92,7 @@ void PressureOperators::bind(System::StateRealization& state,
                     "Constant-density Momentum requires compiled "
                     "div(momentumFlux) -> primitiveUpwind1.");
             }
-        } else if (term.operatorName=="diffusion") {
+        } else if (term.operation==Math::Op::Diffusion) {
             ++diffusionCount;
             if (!term.recipe
                 || term.recipe->id()!=FDM::TermRecipeId::Central2Explicit
@@ -102,7 +102,7 @@ void PressureOperators::bind(System::StateRealization& state,
                     "Constant-density Momentum diffusion requires "
                     "compiled diffusion(nu,U) -> central2Explicit.");
             }
-        } else if (term.operatorName=="source") {
+        } else if (term.operation==Math::Op::Source) {
             if (term.side!=System::CompiledSpatialBinding::Side::Right
                 || !term.primitiveSource) {
                 throw std::runtime_error(
@@ -576,7 +576,7 @@ void PressureOperators::assembleMomentum() {
                                velocity_->read(cell,2));
         Vector3 sourceAcceleration;
         for (const auto& term:momentumTerms_)
-            if (term.operatorName=="source")
+            if (term.operation==Math::Op::Source)
                 sourceAcceleration=sourceAcceleration+term.primitiveSource(
                     *geometry_,i,j,k,velocity);
         const auto source=components(sourceAcceleration);
@@ -584,9 +584,9 @@ void PressureOperators::assembleMomentum() {
             double advective=0.0;
             double laplacian=0.0;
             for (const auto& term:momentumTerms_) {
-                if (term.operatorName=="div")
+                if (term.operation==Math::Op::Div)
                     advective=term.primitiveSpatial(stencil,cell,c);
-                else if (term.operatorName=="diffusion")
+                else if (term.operation==Math::Op::Diffusion)
                     laplacian=term.primitiveSpatial(stencil,cell,c);
             }
             const size_t index=(size_t)c*(size_t)total+(size_t)cell;

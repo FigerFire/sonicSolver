@@ -39,6 +39,8 @@ struct ConstraintDescriptor {
     std::string equation;
     std::string multiplierUnknown;
     Provenance origin;
+    /// @brief 实现该约束的已声明数学成员；不拥有调度或数值实现。
+    std::vector<std::string> equations;
 };
 
 /// @brief Boundary closure is a stencil contract, not an artificial equation.
@@ -55,6 +57,14 @@ struct BoundaryClosureContract {
     std::vector<CapabilityBinding> boundCapabilities;
 };
 
+/// @brief 闭合说明引用现有数学/STATE；不复制公式或持有执行 authority。
+struct ClosureDescriptor {
+    std::string description;
+    std::vector<std::string> equations;
+    std::vector<std::string> states;
+    Provenance origin;
+};
+
 /// @brief Composition 完成、algorithmic transformation 开始前的数学系统。
 ///
 /// 该对象不保存 timestep、RK stage、MPI schedule 或 runner identity。
@@ -64,7 +74,7 @@ struct RawEquationSystem {
     /// @brief 方程 AST 是唯一数学定义。
     EquationRegistry registry;
     std::vector<ConstraintDescriptor> constraints;
-    std::vector<std::string> closures;
+    std::vector<ClosureDescriptor> closures;
     std::vector<std::string> boundaries;
     std::vector<BoundaryClosureContract> boundaryClosures;
     std::vector<std::string> dependencies;
@@ -172,7 +182,7 @@ struct ExecutableEquationSystem {
     std::vector<ConstraintDescriptor> constraints;
     /// @brief Formulation 产生的 executable operations（唯一 authority）。
     std::vector<ExecutableOperation> operations;
-    std::vector<std::string> closures;
+    std::vector<ClosureDescriptor> closures;
     std::vector<std::string> boundaries;
     std::vector<BoundaryClosureContract> boundaryClosures;
     std::vector<std::string> dependencies;

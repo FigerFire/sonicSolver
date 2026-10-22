@@ -1,19 +1,13 @@
 #pragma once
 #include "core/interfaces/SF_termKernel.h"
-#include "core/system/SF_formula.h"
+
 #include "methods/numerics/structured/SF_structured.h"
 #include <cmath>
 namespace SF::Discretization {
 /// Linear body-force density and its mechanical work use the same Stage
 /// tracer. Neither callback mutates physical STATE or controls stage order.
-inline System::StageConservativeSource linearScalarFeedback(const System::FormulaExpr& expression,bool work) {
-        const auto& args=expression.arguments;using K=System::FormulaExpr::Kind;
-        if (args.size()!=4 || args[1].kind!=K::Symbol || args[2].kind!=K::Constant || !std::isfinite(args[2].constant)
-            || args[3].kind!=K::Constant || args[3].constant<0 || args[3].constant>2
-            || args[3].constant!=std::floor(args[3].constant))
-            throw std::runtime_error("Scalar feedback requires Stage symbol, finite coefficient and axis 0/1/2.");
-        const double kappa=args[2].constant;const int axis=static_cast<int>(args[3].constant);
-        System::StageConservativeSource source;source.reads={args[1].name};
+inline System::StageConservativeSource linearScalarFeedback(std::string target,double kappa,int axis,bool work) {
+        System::StageConservativeSource source;source.reads={std::move(target)};
         if(work){source.reads.push_back("rho");source.reads.push_back("rhoU");}
         source.evaluate=[work,kappa,axis](Field& field,Residual& residual,const auto& reads) {
             Math::forFluidInterior(field,[&](int i,int j,int k) {

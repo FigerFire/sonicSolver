@@ -1,3 +1,4 @@
+#include "test/typedSymbols.h"
 #include "SF_config.h"
 #include "solver/system/SF_numericalCompiler.h"
 #include "solver/system/SF_systemBuilder.h"
@@ -36,9 +37,9 @@ bool hasDiffusion(const System::RawEquationSystem& raw,
              const std::string& equationId) {
     const auto& equation=raw.registry.at(equationId);
     const auto visit=[&](const auto& self,const System::FormulaExpr& expression)->bool {
-        if (expression.kind==System::FormulaExpr::Kind::Operator
-            && expression.name=="diffusion") return true;
-        return std::any_of(expression.arguments.begin(),expression.arguments.end(),[&](const auto& child) { return self(self,child); });
+        if (expression.kind()==System::FormulaExpr::Kind::Operator
+            && expression.name()=="diffusion") return true;
+        return std::any_of(expression.arguments().begin(),expression.arguments().end(),[&](const auto& child) { return self(self,child); });
     };
     return visit(visit,equation.lhs) || visit(visit,equation.rhs);
 }
@@ -112,8 +113,7 @@ int main() {
         "Fused backend silently ignored a Equation sign.");
     auto unknownFluxSystem=rusanov.executableSystem;
     auto unknownFlux=unknownFluxSystem.registry.at("continuity");
-    unknownFlux.lhs.arguments.back().arguments.front()=
-        System::FormulaExpr::symbol("userFluxWithoutProvider");
+    unknownFlux.lhs=SF::Test::replaceAt(unknownFlux.lhs,{1,0},SF::Test::symbol("userFluxWithoutProvider"));
     unknownFluxSystem.registry.replace(unknownFlux);
     require(throwsContaining([&] {
         (void)System::NumericalCompiler::compile(unknownFluxSystem,
@@ -124,7 +124,7 @@ int main() {
     auto duplicateTimeSystem=rusanov.executableSystem;
     auto duplicateTime=duplicateTimeSystem.registry.at("continuity");
     duplicateTime.lhs=System::FormulaExpr::add(duplicateTime.lhs,
-        System::FormulaExpr::op("ddt",{System::FormulaExpr::symbol("rho")}));
+        System::FormulaExpr::op("ddt",{SF::Test::symbol("rho")}));
     duplicateTimeSystem.registry.replace(duplicateTime);
     require(throwsContaining([&] {
         (void)System::NumericalCompiler::compile(duplicateTimeSystem,

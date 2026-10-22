@@ -1,3 +1,4 @@
+#include "models/turbulence/SF_transportMathematics.h"
 #include "SF_thermalMethod.h"
 /// Numerical providers own domain matching, storage realization and local lifecycle.
 #include "SF_methodObjects.h"
@@ -7,6 +8,7 @@
 #include "SF_eulerianCoupling.h"
 #include "SF_pressureCoupling.h"
 #include "SF_scalarMethod.h"
+#include "SF_formulaCompiler.h"
 #include "core/system/SF_operationIds.h"
 #include <algorithm>
 #include <stdexcept>
@@ -127,19 +129,17 @@ public:
 };
 
 bool containsDdt(const FormulaExpr& expression, std::string_view target) {
-    if (expression.kind==FormulaExpr::Kind::Operator
-        && expression.name=="ddt" && expression.arguments.size()==1
-        && expression.arguments.front().kind==FormulaExpr::Kind::Symbol
-        && expression.arguments.front().name==target) return true;
-    return std::any_of(expression.arguments.begin(),expression.arguments.end(),
+    if (expression.kind()==FormulaExpr::Kind::Operator
+        && expression.operation()==Math::Op::Ddt && expression.arguments().size()==1
+        && expression.arguments().front().kind()==FormulaExpr::Kind::Symbol
+        && expression.arguments().front().name()==target) return true;
+    return std::any_of(expression.arguments().begin(),expression.arguments().end(),
         [&](const FormulaExpr& child) { return containsDdt(child,target); });
 }
 
 void collectSymbols(const FormulaExpr& expression,std::vector<std::string>& result) {
-    if (expression.kind==FormulaExpr::Kind::Symbol
-        && std::find(result.begin(),result.end(),expression.name)==result.end())
-        result.push_back(expression.name);
-    for (const auto& child:expression.arguments) collectSymbols(child,result);
+    for(const auto& symbol:inspectFormula(expression).symbols)
+        if(std::find(result.begin(),result.end(),symbol)==result.end())result.push_back(symbol);
 }
 
 void requireOutput(const ExecutableEquationSystem&,const EquationCall& step) {
@@ -215,19 +215,19 @@ public:
         collectSymbols(formula.lhs,result.reads);
         collectSymbols(formula.rhs,result.reads);
         const auto stageSources=[&](const auto& self,const FormulaExpr& expression)->void {
-            if (expression.kind==FormulaExpr::Kind::Operator && expression.name=="source" && expression.arguments.size()==4
-                && expression.arguments[0].kind==FormulaExpr::Kind::Symbol
-                && (expression.arguments[0].name=="linearScalarForce" || expression.arguments[0].name=="linearScalarWork")) {
-                const auto& symbol=system.state.at(expression.arguments[1].name);
-                if (symbol.components!=1 || symbol.storageBinding!=StorageBinding::NamedDistributed || symbol.derivation!=StateDerivation::None)
+            if (expression.kind()==FormulaExpr::Kind::Operator && expression.operation()==Math::Op::Source && expression.arguments().size()==4
+                && expression.arguments()[0].kind()==FormulaExpr::Kind::Symbol
+                && (expression.arguments()[0].name()=="linearScalarForce" || expression.arguments()[0].name()=="linearScalarWork")) {
+                const auto& symbol=system.state.at(expression.arguments()[1].name());
+                if (symbol.components!=1 || symbol.storageBinding!=StorageBinding::NamedDistributed || symbol.readOnly())
                     throw std::runtime_error("Scalar feedback requires scalar NamedDistributed Stage input.");
                 result.stateUses.push_back({symbol.id,StateVersion::Stage});
-                if (expression.arguments[0].name=="linearScalarWork") {
+                if (expression.arguments()[0].name()=="linearScalarWork") {
                     result.stateUses.push_back({"rho",StateVersion::Stage});
                     result.stateUses.push_back({"rhoU",StateVersion::Stage});
                 }
             }
-            for(const auto& child:expression.arguments)self(self,child);
+            for(const auto& child:expression.arguments())self(self,child);
         };
         stageSources(stageSources,formula.rhs);
         return result;
@@ -238,7 +238,7 @@ public:
 Equation supportedRasMathematics(const std::string& second,
                                             const std::string& target) {
     using E=FormulaExpr;
-    const auto s=[](const std::string& name) { return E::symbol(name); };
+    const auto s=[](const std::string& name) { return Turbulence::mathematicalSymbol(name); };
     const auto mul=[](E a,E b) { return E::multiply(std::move(a),std::move(b)); };
     const auto div=[](E a,E b) { return E::divide(std::move(a),std::move(b)); };
     if ((second!="epsilon" && second!="omega") || (target!="k" && target!=second))
@@ -263,12 +263,12 @@ Equation supportedRasMathematics(const std::string& second,
     }
     diffusivity=epsilon ? div(s("mu_t"),coefficient(target=="k" ? "sigmaK" : "sigmaEpsilon"))
         : E::add(coefficient("laminarMu"),mul(coefficient(target=="k" ? "sigmaK" : "sigmaOmega"),s("mu_t")));
-    auto diffusion=E::op("diffusion",{diffusivity,s(target)});
+    auto diffusion=E::op(Math::Op::Diffusion,{diffusivity,s(target)});
     if (!epsilon && target=="omega")
         diffusion=E::add(std::move(diffusion),coefficient("crossDiffusion"));
-    return {target,E::op("ddt",{s(target)}),
+    return {target,E::op(Math::Op::Ddt,{s(target)}),
         E::add(std::move(source),div(std::move(diffusion),s("rho"))),
-        {OriginKind::Model,model},true};
+        {OriginKind::Model,model}};
 }
 
 class TurbulenceTransportMethod final : public IProvider {
@@ -319,7 +319,7 @@ public:
         if (second=="omega" && system.immersed
             && system.immersed->wallClosure==FDM::ImmersedWallClosure::StationaryNoSlipAdiabatic) {
             if (!system.state.contains("immersed.wallDistance")
-                || system.state.at("immersed.wallDistance").derivation!=StateDerivation::WallDistance)
+                || !producedBy(system.state.at("immersed.wallDistance"),"geometry.immersedWallDistance"))
                 throw std::runtime_error("SST immersed wall requires the original geometry wall-distance view.");
             result.stateUses.push_back({"immersed.wallDistance"});
             result.boundCapabilities={{"turbulence.boundary.immersed","momentum","rhoU","immersed.ghost"}};
@@ -349,8 +349,8 @@ public:
     std::string_view runtimeProvider() const override { return "flow.turbulence-closure"; }
     CompiledEquationCall compile(const ExecutableEquationSystem& system,
                                 const EquationCall& step,const NumericalBinding&) const override {
-        const Equation expected{"mu_t",FormulaExpr::symbol("mu_t"),
-            FormulaExpr::symbol("Smagorinsky.eddyDynamicViscosity"),{},true};
+        const Equation expected{"mu_t",Turbulence::mathematicalSymbol("mu_t"),
+            Turbulence::mathematicalSymbol("Smagorinsky.eddyDynamicViscosity"),{}};
         if (step.equation!="mu_t" || step.target.symbol!="mu_t" || step.target.kind!=TargetKind::Physical
             || canonicalFormula(system.registry.at(step.equation))!=canonicalFormula(expected)
             || system.state.at("mu_t").storageBinding!=StorageBinding::ProviderDistributed)
@@ -382,8 +382,8 @@ public:
             throw std::runtime_error("DirectEvaluation requires one primary Output symbol.");
         const auto& formula=system.registry.at(step.equation);
         const auto& symbol=step.target.symbol;
-        if (formula.lhs.kind!=FormulaExpr::Kind::Symbol
-            || formula.lhs.name!=symbol)
+        if (formula.lhs.kind()!=FormulaExpr::Kind::Symbol
+            || formula.lhs.name()!=symbol)
             throw std::runtime_error("DirectEvaluation Equation '"+formula.id
                 +"' does not assign the declared primary Output '"+symbol+"'.");
         CompiledEquationCall result;
@@ -411,6 +411,8 @@ public:
             throw std::runtime_error("LinearEquation requires one primary Output symbol.");
         const auto& formula=system.registry.at(step.equation);
         const auto& symbol=step.target.symbol;
+        if(inspectFormula(formula.lhs,symbol).targetDegree>1 || inspectFormula(formula.rhs,symbol).targetDegree>1)
+            throw std::runtime_error("Unsupported: LinearEquation has no nonlinear/Jacobian implementation for target "+symbol);
         if (!dependsOn(formula.lhs,symbol)
             && !dependsOn(formula.rhs,symbol))
             throw std::runtime_error("LinearEquation Equation '"+formula.id
@@ -495,6 +497,68 @@ std::vector<ExecutableOperation> pressureOperations() {
     return operations;
 }
 
+// These resources alias the existing pressure operator arrays. Publication is
+// the authored correction tail, not a read-side refresh of physical STATE.
+void pressureLifecycleContract(CompiledEquationCall& call,bool conservative) {
+    const auto& method=call.equationMethod;
+    if (method=="VelocityCorrection" || method=="PressureUpdate" || method=="FluxCorrection"
+        || method=="ConservativeVelocityCorrection" || method=="ConservativePressureUpdate" || method=="ConservativeFluxCorrection") {
+        CompiledStateView view;view.symbol="p";view.kind=StateViewKind::Correction;call.viewReads.push_back(view);
+    }
+    if (method=="ConservativePressurePublication") {
+        CompiledStateView view;view.symbol="p";view.kind=StateViewKind::Working;call.viewReads.push_back(view);
+    }
+    call.commitRequires={"pressure.published"};
+    const bool predictor=method=="PressureMomentum" || method=="ConservativePressureMomentum";
+    if (predictor) {
+        call.workspaceInvalidates={"pressureCorrection","preparedPressure","derivedFluxValidity","pressure.published","rAU","faceResponse","correctedFlux"};
+        if (conservative) {
+            call.stateUses={{"rho"},{"U"},{"p"}};
+            call.stateEffects={{"rho"},{"rhoU"},{"rhoE"}};
+        } else {
+            call.stateUses={{"U"},{"p"}};
+            if (call.target.kind==TargetKind::Physical) call.stateEffects={{"U",true,true}};
+            call.workspaceProvides.push_back("pressure.working.U");
+            call.requirements.push_back("fixed-time predictor reads original baseVelocity_ (OldTime); iteration velocity is Working(U)");
+        }
+    } else if (method=="PressureCorrection") {
+        call.stateUses={{"faceResponse",StateVersion::Frozen,false,"faceResponse"},
+            {"correctedFlux",StateVersion::Frozen,false,"correctedFlux"}};
+        call.workspaceRequires.push_back("pressure.working.U");
+    } else if (method=="ConservativeVelocityCorrection") {
+        call.stateEffects={{"rhoU"}};
+        call.workspaceInvalidates={"pressure.published"};
+    } else if (method=="VelocityCorrection") {
+        call.workspaceRequires.push_back("pressure.working.U");
+        call.stateUses={{"rAU",StateVersion::Frozen,false,"rAU"}};
+        call.workspaceInvalidates={"pressure.published"};
+        call.stateEffects={{"U",true,true}};
+    } else if (method=="PressureUpdate" || method=="ConservativePressureUpdate") {
+        call.workspaceInvalidates={"pressure.published"};
+        if (!conservative) call.stateEffects={{"p",true,true}};
+    } else if (method=="FluxCorrection" || method=="ConservativePressurePublication") {
+        call.workspaceInvalidates={"pressureCorrection"};
+        if (!conservative) {
+            call.workspaceInvalidates.push_back("correctedFlux");
+            call.workspaceProvides.push_back("correctedFlux");
+        }
+        call.workspaceProvides.push_back("pressure.published");
+        call.stepWorkspaces.push_back("pressure.published");
+        if (!conservative) {
+            call.stateEffects={{"phi",true,true}};
+        } else call.stateEffects={{"rhoE",true,false}};
+    } else if (method=="FixedTimeRelaxation" || method=="ConservativeFixedTimeRelaxation") {
+        call.workspaceRequires.push_back("pressure.published");
+        call.workspaceInvalidates={"pressure.published"};
+        if (!conservative) call.stateEffects={{"U",true,true},{"p",true,true}};
+    } else if (method=="FluxConsistency" || method=="ConservativeFluxConsistency") {
+        call.workspaceProvides.push_back("pressure.published");call.stepWorkspaces.push_back("pressure.published");
+        if (!conservative) call.stateEffects={{"phi",true,true}};
+    } else if (method=="ResidualConvergence" || method=="ConservativeResidualConvergence") {
+        call.workspaceRequires.push_back("pressure.published");
+    }
+}
+
 class PressureMethod final : public IProvider {
 public:
     bool usesSpatialRecipes() const override { return true; }
@@ -566,8 +630,8 @@ public:
             if (!dependsOn(formula.lhs,output_)
                 && !dependsOn(formula.rhs,output_))
                 throw std::runtime_error("Pressure method Equation does not contain its Output.");
-        } else if (formula.lhs.kind!=FormulaExpr::Kind::Symbol
-                   || formula.lhs.name!=output_) {
+        } else if (formula.lhs.kind()!=FormulaExpr::Kind::Symbol
+                   || formula.lhs.name()!=output_) {
             throw std::runtime_error("Pressure method Equation does not assign its Output.");
         }
         if (binding.inputs.size()!=sourceInputs_)
@@ -588,6 +652,7 @@ public:
         result.target.viewOwner=StateViewOwner::NumericalProvider;
         result.temporalCapabilities={FDM::TimeRecipeId::ForwardEuler};
         if (id_=="PressureMomentum") {
+            result.temporalMethod="fixed physical dt; U_n + dt R(U_iterate), pressure constraint correction";
             result.spatialTerms=true;
             result.primitiveSourceRequired=true;
             result.residualWorkspace="pressureMomentumWorkspace";
@@ -606,6 +671,7 @@ public:
         result.fragment.kind=PlanNodeKind::Sequence;
         result.fragment.id=std::string(id_)+".fragment";
         result.fragment.name=std::string(id_)+" numerical fragment";
+        pressureLifecycleContract(result,false);
         result.fragment.children=leaves_;
         result.fragment.children.back().equationCalls=result.calls;
         return result;
@@ -668,7 +734,7 @@ public:
     CompiledEquationCall compile(const ExecutableEquationSystem& system,
             const EquationCall& call,const NumericalBinding& binding) const override {
         requireOutput(system,call);
-        if (call.equation!=equation_ || call.target.symbol!=output_ || call.target.kind!=kind_)
+        if (call.target.symbol!=output_ || call.target.kind!=kind_)
             throw std::runtime_error("Unsupported: provider "+std::string(method_)+" requires "
                 +std::string(equation_)+" -> "+std::string(output_)+" with its declared semantic target.");
         CompiledEquationCall result;
@@ -680,12 +746,13 @@ public:
         result.stepWorkspaces=provides_;
         const auto& formula=system.registry.at(call.equation);
         if (method_=="ConservativePressureMomentum") {
-            if (binding.inputs!=std::vector<std::string>{"continuity","energy"})
+            result.temporalMethod="one forwardEuler conservative predictor; fixed-time pressure corrections";
+            if (binding.inputs.size()!=2)
                 throw std::runtime_error("ConservativePressureMomentum requires explicit continuity/energy fusion inputs.");
             result.spatialTerms=true;result.residualWorkspace="residual";
             result.operations=pressureOperations();
             result.sourceMathInputs=binding.inputs;
-            for (const auto& math:std::vector<CompiledMathRef>{{"continuity","rho"},{"momentum","rhoU"},{"energy","rhoE"}}) {
+            for (const auto& math:std::vector<CompiledMathRef>{{binding.inputs[0],"rho"},{call.equation,"rhoU"},{binding.inputs[1],"rhoE"}}) {
                 const auto& input=system.registry.at(math.equation);
                 if (!containsDdt(input.lhs,math.target))
                     throw std::runtime_error("Conservative pressure predictor requires ddt("+math.target+").");
@@ -697,7 +764,7 @@ public:
         } else {
             if (!binding.inputs.empty()) throw std::runtime_error("Unexpected conservative pressure source-math inputs.");
             const auto relations=conservativePressureRelations();
-            const auto expected=std::find_if(relations.begin(),relations.end(),[&](const auto& value) { return value.id==call.equation; });
+            const auto expected=std::find_if(relations.begin(),relations.end(),[&](const auto& value) { return value.id==equation_; });
             if (expected==relations.end() || canonicalFormula(formula)!=canonicalFormula(*expected))
                 throw std::runtime_error("Unsupported: selected conservative pressure provider cannot execute changed mathematics: "+call.equation);
             result.calls={{formula.id,std::string(output_)}};result.writes={std::string(output_)};
@@ -707,6 +774,7 @@ public:
         result.fragment.kind=PlanNodeKind::Sequence;
         result.fragment.id=std::string(method_)+".fragment";
         result.fragment.name=std::string(method_)+" numerical fragment";
+        pressureLifecycleContract(result,true);
         for (const auto* operation:operations_)
             result.fragment.children.push_back(methodLeaf(PlanNodeKind::Update,
                 std::string(method_)+"."+operation,operation,operation,runtimeProvider()));
@@ -736,6 +804,7 @@ public:
         result.target.viewOwner=StateViewOwner::NumericalProvider;
         result.temporalCapabilities={FDM::TimeRecipeId::ForwardEuler};
         result.backendOperation=operation_;
+        pressureLifecycleContract(result,false);
         result.calls.push_back({equation.id,call.target.symbol});
         result.writes.push_back(call.target.symbol);
         if (!result.target.workspace.empty()) result.workspaceProvides.push_back(result.target.workspace);

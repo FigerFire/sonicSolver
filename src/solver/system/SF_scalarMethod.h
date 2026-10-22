@@ -24,6 +24,9 @@ struct CompiledScalarEquation {
     std::vector<std::string> sources;
     std::vector<std::string> stageReads;
     FormulaValueKernel rhs;
+    std::string normalized;
+    bool nonlinear=false;
+    std::vector<std::string> lowering;
 };
 void addScalarMethod(ProviderRegistry& registry);
 }

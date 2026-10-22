@@ -10,10 +10,10 @@ namespace SF::Physics::MRF {
 namespace {
 
 bool matches(const System::TermMatchContext& context,const char* unknown) {
-    return context.expression.kind==System::FormulaExpr::Kind::Operator
-        && context.expression.name=="source"
-        && context.expression.arguments.size()==1
-        && context.expression.arguments.front().name=="MRF"
+    return context.expression.kind()==System::FormulaExpr::Kind::Operator
+        && context.expression.operation()==Math::Op::Source
+        && context.expression.arguments().size()==1
+        && context.expression.arguments().front().name()=="MRF"
         && context.output==unknown;
 }
 

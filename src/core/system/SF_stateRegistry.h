@@ -8,12 +8,14 @@
 #include "core/system/SF_dataContract.h"
 #include <algorithm>
 #include <optional>
+#include <memory>
 #include <stdexcept>
 #include <string>
 #include <string_view>
 #include <vector>
 
 namespace SF::System {
+struct StateProducer;
 enum class VariableLocation {
     EulerianCell,
     EulerianFace,
@@ -40,9 +42,6 @@ enum class StorageBinding {
     SpecializedExecutor
 };
 
-/// @brief Derived values are views of the physical authority, never a second state.
-enum class StateDerivation { None, Velocity, Pressure, Temperature, Enthalpy, DynamicViscosity, KinematicViscosity, ThermalConductivity, WallDistance };
-
 /// @brief A base symbol; Working/Correction/Stage are compiler-created views.
 struct StateSymbol {
     std::string id;
@@ -51,6 +50,8 @@ struct StateSymbol {
     int components = 1;
     OwnershipKind ownership = OwnershipKind::EulerianGlobalDof;
     ValueShape shape = ValueShape::Scalar;
+    Math::Signature signature;
+    FormulaExpr expression() const {return FormulaExpr::symbol(id,signature);}
     StateRole role = StateRole::Primary;
     StorageBinding storageBinding = StorageBinding::SpecializedExecutor;
     std::string storageKey;
@@ -63,11 +64,13 @@ struct StateSymbol {
     bool outputEligible = true;
     bool runtimeStorageRequired = true;
     std::string nameSpace;
-    StateDerivation derivation = StateDerivation::None;
     Provenance origin;
     StateVersion availableVersion=StateVersion::Current;
     StateEvaluation evaluation=StateEvaluation::Direct;
     std::vector<std::string> dependencies;
+    /// @brief 模块提供的不可变生产者；不持有物理数组、不选择更新顺序。
+    std::shared_ptr<const StateProducer> producer;
+    bool readOnly() const { return constantValue.has_value() || producer; }
 };
 
 /// Active case base variables, independently of the available builtin catalog.
@@ -75,6 +78,14 @@ struct StateSymbol {
 class StateRegistry {
 public:
     void add(StateSymbol symbol) {
+        Math::requireKnown(symbol.signature);
+        const int rank=symbol.shape==ValueShape::Scalar?0:symbol.shape==ValueShape::Vector?1:2;
+        if(symbol.signature.tupleSize || symbol.signature.rank!=rank)throw std::runtime_error("STATE shape/signature mismatch: "+symbol.id);
+        const auto extent=static_cast<long long>(symbol.signature.extent);
+        const auto components=rank==0?1:rank==1?extent:
+            symbol.signature.structure==Math::TensorStructure::Symmetric?extent*(extent+1)/2:extent*extent;
+        if(symbol.components!=components)throw std::runtime_error("STATE component/signature mismatch: "+symbol.id);
+
         if (symbol.id.empty() || symbol.id.find_first_of("*'")!=std::string::npos
             || symbol.components<=0
             || (symbol.shape==ValueShape::Scalar && symbol.components!=1))
@@ -90,7 +101,14 @@ public:
         if (found==symbols_.end()) throw std::runtime_error("Unknown base STATE symbol: "+std::string(id));
         return *found;
     }
+    /// @brief 只核验已注册STATE声明的引用一致性，不重新推导AST数学。
+    void validateSymbols(const FormulaExpr& expression) const {
+        if(expression.kind()==FormulaExpr::Kind::Symbol && contains(expression.name()))
+            Math::requireCompatible(expression.signature(),at(expression.name()).signature,"STATE reference "+expression.name());
+        for(const auto& a:expression.arguments())validateSymbols(a);
+    }
     const std::vector<StateSymbol>& symbols() const { return symbols_; }
+    FormulaExpr expression(std::string_view id) const {return at(id).expression();}
     void selectSolution(std::string id) {
         if (!contains(id)) throw std::runtime_error("Solution STATE has no metadata: "+id);
         if (isSolution(id)) throw std::runtime_error("Duplicate solution STATE: "+id);

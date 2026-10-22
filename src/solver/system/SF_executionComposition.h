@@ -4,5 +4,5 @@
 namespace SF::System {
 /// Compose pressure contributions before freezing source inputs.
 void composeContributions(ResolvedSimulationSystem&,const BuildRequest&,
-    ExecutionProgram&,std::vector<NumericalBinding>&);
+    ExecutionProgram&,std::vector<NumericalBinding>&,const PressureCouplingInputs*);
 }

@@ -100,6 +100,11 @@ std::optional<Model::FieldDescriptor> builtinField(
             result.symbol = name;
             result.outputName = name;
             result.type = entry.type;
+            static const std::map<std::string,std::array<double,7>> dimensions{
+                {"rho",{1,-3,0,0,0,0,0}},{"U",{0,1,-1,0,0,0,0}},{"p",{1,-1,-2,0,0,0,0}},
+                {"T",{0,0,0,1,0,0,0}},{"h",{0,2,-2,0,0,0,0}},{"e",{0,2,-2,0,0,0,0}},
+                {"alpha",{}},{"k",{0,2,-2,0,0,0,0}},{"omega",{0,0,-1,0,0,0,0}},{"epsilon",{0,2,-3,0,0,0,0}}};
+            result.dimensions=dimensions.at(name);
             return result;
         }
     }
@@ -139,6 +144,7 @@ IO::IORegistry nativeRegistry() {
                 }
                 field = *builtin;
                 field.output = value.value("output",field.output);
+                field.outputDeclared=value.contains("output");
                 field.outputName = value.value("outputName",field.outputName);
                 field.restart = value.value("restart",field.restart);
             } else {
@@ -202,6 +208,7 @@ IO::IORegistry nativeRegistry() {
     registry.add("solver","numerics",[](IO::LoadContext& context,const Sonic& document) {
         if(!context.model.numerics.empty())throw std::runtime_error(document.source+": numerics is already loaded");
         context.model.numerics=document.body;
+        context.model.selectionOrigins["solver/numerics"]=document.source;
     });
     registry.add("solver","algorithm",[](IO::LoadContext& context,const Sonic& document) {
         if(!context.model.solver.empty())throw std::runtime_error(document.source+": algorithm is already loaded");

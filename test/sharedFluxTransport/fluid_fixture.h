@@ -1,3 +1,4 @@
+#include "test/typedSymbols.h"
 #define main standaloneSingleMain
 #include "../test_standaloneScalar.cpp"
 #undef main
@@ -22,15 +23,16 @@ System::BuildRequest fluidRequest(bool scalar,bool feedback,bool reverse=false,d
     r.singleFluidPreset=System::SingleFluidPresetSpec{false};
     if(!scalar)return r;
     auto extra=request("rhoC",.02,true).userContributions.front();using E=System::FormulaExpr;
-    auto target=E::symbol("rhoC"),rho=E::symbol("rho"),c=E::divide(target,rho);
-    extra.registeredEquations[0].lhs=E::add(E::op("ddt",{target}),E::op("div",{E::symbol("rhoU"),c}));
-    extra.registeredEquations[0].rhs=E::add(E::op("diffusion",{E::multiply(rho,E::constantValue(.02)),c}),E::op("source",{E::symbol("Sc")}));
+    extra.states.front().signature=Math::signature(0,{1,-3,0,0,0,0,0});
+    auto target=SF::Test::symbol("rhoC"),rho=SF::Test::symbol("rho"),c=E::divide(target,rho);
+    extra.registeredEquations[0].lhs=E::add(E::op("ddt",{target}),E::op("div",{SF::Test::symbol("rhoU"),c}));
+    extra.registeredEquations[0].rhs=E::add(E::op("diffusion",{E::multiply(rho,E::constantValue(.02,Math::signature(0,{0,2,-1,0,0,0,0}))),c}),E::op("source",{SF::Test::symbol("Sc")}));
     extra.numerics[0].method="ScalarTransportUpwindCentral2";
     extra.execution.front().order=reverse?-1:100;
     extra.execution.pop_back();r.userContributions.push_back(extra);r.composition.solutionVariables.push_back("rhoC");
     if(feedback) {
-        r.userContributions.back().extendMathematics({"momentum"},E::op("source",{E::symbol("linearScalarForce"),target,E::constantValue(kappa),E::constantValue(0)}));
-        r.userContributions.back().extendMathematics({"energy"},E::op("source",{E::symbol("linearScalarWork"),target,E::constantValue(kappa),E::constantValue(0)}));
+        r.userContributions.back().extendMathematics({"momentum"},E::op("source",{SF::Test::symbol("linearScalarForce"),target,E::constantValue(kappa,Math::signature(0,{0,1,-2,0,0,0,0})),E::constantValue(0)}));
+        r.userContributions.back().extendMathematics({"energy"},E::op("source",{SF::Test::symbol("linearScalarWork"),target,E::constantValue(kappa,Math::signature(0,{0,1,-2,0,0,0,0})),E::constantValue(0)}));
     }
     return r;
 }

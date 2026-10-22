@@ -9,10 +9,10 @@ System::SourceTermProviderDescriptor termProvider(
         const std::vector<WallHeatSetting>& settings) {
     return {"source.wallHeat.energy",
         [](const System::TermMatchContext& context) {
-            return context.expression.kind==System::FormulaExpr::Kind::Operator
-                && context.expression.name=="source"
-                && context.expression.arguments.size()==1
-                && context.expression.arguments.front().name=="wallHeat"
+            return context.expression.kind()==System::FormulaExpr::Kind::Operator
+                && context.expression.operation()==Math::Op::Source
+                && context.expression.arguments().size()==1
+                && context.expression.arguments().front().name()=="wallHeat"
                 && context.output=="rhoE";
         },FDM::builtInSourceRecipe(FDM::SourceKind::WallHeat),{},
         "models.physics.wallHeat",

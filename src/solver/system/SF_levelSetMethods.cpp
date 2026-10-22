@@ -1,3 +1,4 @@
+#include "models/physics/interfaceModel/levelSet/SF_levelSetSystemContribution.h"
 #include "SF_levelSetMethods.h"
 #include "core/system/SF_operationIds.h"
 #include <algorithm>
@@ -9,13 +10,13 @@ namespace SF::System {
 namespace {
 using E=FormulaExpr;
 Equation supportedMathematics(std::string_view method) {
-    if (method=="LevelSetAdvection") return {"",E::add(E::op("ddt",{E::symbol("phi")}),
-        E::op("advect",{E::symbol("U"),E::symbol("phi")})),E::constantValue(0.0)};
-    if (method=="LevelSetReference") return {"",E::symbol("phi0"),E::symbol("phi")};
-    if (method=="LevelSetReinitialization") return {"",E::op("ddtau",{E::symbol("phi")}),
-        E::negate(E::multiply(E::op("smoothedSign",{E::symbol("phi0")}),
-            E::subtract(E::op("gradientNorm",{E::symbol("phi")}),E::constantValue(1.0))))};
-    return {"",E::symbol("interfaceCurvature"),E::op("meanCurvature",{E::symbol("phi")})};
+    if (method=="LevelSetAdvection") return {"",E::add(E::op(Math::Op::Ddt,{Physics::InterfaceModels::LevelSetContribution::Mathematics::symbol("phi")}),
+        Physics::InterfaceModels::LevelSetContribution::Mathematics::op("advect",{Physics::InterfaceModels::LevelSetContribution::Mathematics::symbol("U"),Physics::InterfaceModels::LevelSetContribution::Mathematics::symbol("phi")})),E::constantValue(0.0)};
+    if (method=="LevelSetReference") return {"",Physics::InterfaceModels::LevelSetContribution::Mathematics::symbol("phi0"),Physics::InterfaceModels::LevelSetContribution::Mathematics::symbol("phi")};
+    if (method=="LevelSetReinitialization") return {"",Physics::InterfaceModels::LevelSetContribution::Mathematics::op("ddtau",{Physics::InterfaceModels::LevelSetContribution::Mathematics::symbol("phi")}),
+        E::negate(E::multiply(Physics::InterfaceModels::LevelSetContribution::Mathematics::op("smoothedSign",{Physics::InterfaceModels::LevelSetContribution::Mathematics::symbol("phi0")}),
+            E::subtract(Physics::InterfaceModels::LevelSetContribution::Mathematics::op("gradientNorm",{Physics::InterfaceModels::LevelSetContribution::Mathematics::symbol("phi")}),E::constantValue(1.0))))};
+    return {"",Physics::InterfaceModels::LevelSetContribution::Mathematics::symbol("interfaceCurvature"),Physics::InterfaceModels::LevelSetContribution::Mathematics::op("meanCurvature",{Physics::InterfaceModels::LevelSetContribution::Mathematics::symbol("phi")})};
 }
 class LevelSetMethod final : public IProvider {
     std::string method_,target_,operation_;
@@ -98,10 +99,10 @@ public:
                 throw std::runtime_error("Invalid frozen interface source/jump selection.");
             if (csf) {
                 if (binding.parameters.at("width")<=0) throw std::runtime_error("CSF requires positive interface thickness.");
-                auto force=E::multiply(E::multiply(E::constantValue(-binding.parameters.at("sigma")),E::symbol("interfaceCurvature")),
-                    E::multiply(E::op("regularizedDelta",{E::symbol("phi"),E::constantValue(binding.parameters.at("width"))}),E::symbol("interfaceNormal")));
-                Equation momentum{"interfaceMomentumSource",E::symbol("interfaceForce"),force};
-                Equation energy{"interfaceEnergySource",E::symbol("interfacePower"),E::op("dot",{E::symbol("U"),force})};
+                auto force=E::multiply(E::multiply(E::constantValue(-binding.parameters.at("sigma"),Math::signature(0,{1,0,-2,0,0,0,0})),Physics::InterfaceModels::LevelSetContribution::Mathematics::symbol("interfaceCurvature")),
+                    E::multiply(Physics::InterfaceModels::LevelSetContribution::Mathematics::op("regularizedDelta",{Physics::InterfaceModels::LevelSetContribution::Mathematics::symbol("phi"),E::constantValue(binding.parameters.at("width"),Math::signature(0,{0,1,0,0,0,0,0}))}),Physics::InterfaceModels::LevelSetContribution::Mathematics::symbol("interfaceNormal")));
+                Equation momentum{"interfaceMomentumSource",Physics::InterfaceModels::LevelSetContribution::Mathematics::symbol("interfaceForce"),force};
+                Equation energy{"interfaceEnergySource",Physics::InterfaceModels::LevelSetContribution::Mathematics::symbol("interfacePower"),E::op(Math::Op::Dot,{Physics::InterfaceModels::LevelSetContribution::Mathematics::symbol("U"),force})};
                 if (canonicalFormula(system.registry.at(momentum.id))!=canonicalFormula(momentum)
                     || canonicalFormula(system.registry.at(energy.id))!=canonicalFormula(energy))
                     throw std::runtime_error("Unsupported compiled CSF momentum/energy contribution.");
@@ -111,15 +112,15 @@ public:
                 result.operatorBindings.push_back("fused CSF residual source and U.dot(force) energy exchange");
             }
             if (ghost) {
-                Equation jump{"interfacePressureJump",E::symbol("pLiquidMinusGas"),
-                    E::multiply(E::constantValue(-binding.parameters.at("sigma")),E::symbol("interfaceCurvature"))};
+                Equation jump{"interfacePressureJump",Physics::InterfaceModels::LevelSetContribution::Mathematics::symbol("pLiquidMinusGas"),
+                    E::multiply(E::constantValue(-binding.parameters.at("sigma"),Math::signature(0,{1,0,-2,0,0,0,0})),Physics::InterfaceModels::LevelSetContribution::Mathematics::symbol("interfaceCurvature"))};
                 if (canonicalFormula(system.registry.at(jump.id))!=canonicalFormula(jump))
                     throw std::runtime_error("Unsupported frozen ghost-fluid pressure-jump relation.");
                 result.requirements.push_back("declared jump query; a pressure operator must explicitly consume it");
             }
-            result.operatorBindings={"HJ-WENO"+std::to_string((int)binding.parameters.at("order"))+" Hamilton-Jacobi advection"};
-            result.requirements={"registered HamiltonJacobi scalar uses the same RK tableau as the conservative state",
-                "phi BC -> halo -> geometry -> HJ-WENO RHS before stage publication"};
+            result.operatorBindings.push_back("HJ-WENO"+std::to_string((int)binding.parameters.at("order"))+" Hamilton-Jacobi advection");
+            result.requirements.insert(result.requirements.end(),{"registered HamiltonJacobi scalar uses the same RK tableau as the conservative state",
+                "phi BC -> halo -> geometry -> HJ-WENO RHS before stage publication"});
         } else {
             if (method_=="LevelSetReference") {
                 result.target.viewOwner=StateViewOwner::NumericalProvider;
@@ -133,7 +134,7 @@ public:
             result.operations.push_back({operation_,method_,OperationStage::StepCommit,
                 {OperationCapability::LevelSetExecution},{OriginKind::Generated,method_}});
             if (method_=="LevelSetGeometry") {
-                Equation normal{"interfaceNormal",E::symbol("interfaceNormal"),E::op("normalizedGradient",{E::symbol("phi")})};
+                Equation normal{"interfaceNormal",Physics::InterfaceModels::LevelSetContribution::Mathematics::symbol("interfaceNormal"),Physics::InterfaceModels::LevelSetContribution::Mathematics::op("normalizedGradient",{Physics::InterfaceModels::LevelSetContribution::Mathematics::symbol("phi")})};
                 if (canonicalFormula(system.registry.at("interfaceNormal"))!=canonicalFormula(normal))
                     throw std::runtime_error("Unsupported interface normal mathematical contract.");
                 const auto& view=system.state.at("interfaceNormal");

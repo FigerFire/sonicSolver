@@ -17,37 +17,52 @@ System::BuildRequest multiRequest(const std::string& a,const std::string& b,bool
     }
     return r;
 }
-System::BuildRequest coupledRequest(bool reverse=false,double gamma=.7) {
-    auto r=multiRequest("a","b",reverse);using E=System::FormulaExpr;
+System::BuildRequest coupledRequest(bool reverse=false,double gamma=.7,
+        const std::string& first="a",const std::string& second="b") {
+    auto r=multiRequest(first,second,reverse);using E=System::FormulaExpr;
     for(auto& c:r.userContributions) {
         auto& e=c.registeredEquations.front();const auto target=c.states.front().id;
-        e.rhs=E::add(E::op("diffusion",{E::constantValue(.1),E::symbol(target)}),
-            E::multiply(E::constantValue(gamma),E::symbol(target=="a"?"b":"a")));
+        e.rhs=E::add(E::op("diffusion",{E::constantValue(.1,Math::signature(0,{0,2,-1,0,0,0,0})),E::symbol(target,Math::signature(0,{}))}),
+            E::multiply(E::constantValue(gamma,Math::signature(0,{0,0,-1,0,0,0,0})),E::symbol(target==first?second:first,Math::signature(0,{}))));
     }
     return r;
 }
-std::array<Result,2> coupled(double dt,FDM::TimeRecipeId recipe,bool reverse=false,double start=0,double gamma=.7) {
+std::array<Result,2> coupled(double dt,FDM::TimeRecipeId recipe,bool reverse=false,double start=0,double gamma=.7,
+        const std::string& first="a",const std::string& second="b",bool extraInstance=false) {
     constexpr int n=9;const double h=1./8,pi=std::acos(-1.),end=start+.1;
     FDM::SolverConfig config;config.numerics.maxDeltaT=dt;config.numerics.timeRecipe=FDM::builtInTimeRecipe(recipe);
-    auto system=System::build(config,coupledRequest(reverse,gamma));System::validate(system);
-    Field mesh;mesh.setupGeometry(n,1,1,1);ScalarField a,b;a.setupLike(mesh,"a");b.setupLike(mesh,"b");
+    auto selected=coupledRequest(reverse,gamma,first,second);
+    if (extraInstance) {
+        auto third=request("thirdIndependent",.03);
+        selected.userContributions.back().execution.pop_back();
+        third.userContributions.front().records.front().id+=".third";
+        selected.userContributions.push_back(third.userContributions.front());
+        selected.composition.solutionVariables.push_back("thirdIndependent");
+    }
+    auto system=System::build(config,selected);System::validate(system);
+    require(system.solvePlan.compiledProgram.temporalParticipants.size()==(extraInstance?3:2),"Participant identity lost after adding an instance");
+    Field mesh;mesh.setupGeometry(n,1,1,1);ScalarField a,b,c;a.setupLike(mesh,first);b.setupLike(mesh,second);if(extraInstance)c.setupLike(mesh,"thirdIndependent");
     for(int k=0;k<mesh.MZ();++k)for(int j=0;j<mesh.MY();++j)for(int i=0;i<mesh.MX();++i) {
-        mesh.X(i,j,k)=(i-1)*h;a(i,j,k)=std::sin(pi*(i-1)*h);b(i,j,k)=0;
+        mesh.X(i,j,k)=(i-1)*h;a(i,j,k)=std::sin(pi*(i-1)*h);b(i,j,k)=0;if(extraInstance)c(i,j,k)=a(i,j,k);
     }
     State::StateBundle state;state.patches={&mesh};state.time=start;state.step=start?17:0;
-    state.distributed.add(State::scalarView("a",0,mesh,a));state.distributed.add(State::scalarView("b",0,mesh,b));
-    auto da=std::make_shared<FDM::ScalarEquationData>(),db=std::make_shared<FDM::ScalarEquationData>();da->target="a";db->target="b";
+    state.distributed.add(State::scalarView(first,0,mesh,a));state.distributed.add(State::scalarView(second,0,mesh,b));
+    if(extraInstance)state.distributed.add(State::scalarView("thirdIndependent",0,mesh,c));
+    auto da=std::make_shared<FDM::ScalarEquationData>(),db=std::make_shared<FDM::ScalarEquationData>();da->target=first;db->target=second;
     for(auto* data:{da.get(),db.get()}) {
         for(auto& bc:data->boundary)bc.kind=FDM::ScalarBoundaryKind::ZeroGradient;
         for(int side=0;side<2;++side) {data->boundary[side].kind=FDM::ScalarBoundaryKind::FixedValue;
             data->boundary[side].value=[](double,double,double,double){return 0;};}
     }
-    FDM::SolverServices services;services.scalarInstances={{"advance.b",db},{"advance.a",da}};
+    FDM::SolverServices services;services.scalarInstances={{"advance."+second,db},{"advance."+first,da}};
+    auto dc=std::make_shared<FDM::ScalarEquationData>(*da);dc->target="thirdIndependent";
+    if(extraInstance)services.scalarInstances.push_back({"advance.thirdIndependent",dc});
     Time::RunControl control;control.startTime=start;control.endTime=end;control.writeByStep=true;control.writeIntervalSteps=1000;
     Application::Execution::executeEquations(config,system,state,services,control);
     require(std::abs(state.time-end)<1e-14 && state.step==int(std::round(.1/dt))+(start?17:0),"Coupled clock/restart wrong");
     std::array<Result,2> results;const double lambda=4*std::pow(std::sin(pi*h/2),2)/(h*h);
     for(int i=1;i<=n;++i) {
+        if(extraInstance)require(std::abs(c(i,1,1)-std::exp(-.03*lambda*.1)*std::sin(pi*(i-1)*h))<1e-4,"Independent third equation not executed correctly");
         const double spatial=std::sin(pi*(i-1)*h),t=.1;
         const std::array<double,2> discrete{std::exp(-.1*lambda*t)*std::cosh(gamma*t)*spatial,std::exp(-.1*lambda*t)*std::sinh(gamma*t)*spatial};
         const std::array<double,2> exact{std::exp(-.1*pi*pi*t)*std::cosh(gamma*t)*spatial,std::exp(-.1*pi*pi*t)*std::sinh(gamma*t)*spatial};
@@ -159,7 +174,10 @@ int main() {
         require(uncoupled[0].values==run("a",9,.1,.005,.1,recipe).values,"Zero coupling did not reduce to independent diffusion");
         for(double value:uncoupled[1].values)require(value==0,"Zero coupling created partner state");
         auto normal=coupled(.005,recipe),reversed=coupled(.005,recipe,true),restart=coupled(.005,recipe,false,.3);
+        const auto renamed=coupled(.005,recipe,false,0,.7,"fuel","oxidizer");
+        const auto third=coupled(.005,recipe,false,0,.7,"fuel","oxidizer",true);
         for(int v=0;v<2;++v) {
+            require(normal[v].values==renamed[v].values && renamed[v].values==third[v].values,"Coupled solution depends on symbol names or extra instance");
             require(normal[v].values==reversed[v].values,"Coupled HOW order changed solution");
             for(std::size_t i=0;i<normal[v].values.size();++i) require(std::abs(normal[v].values[i]-restart[v].values[i])<1e-14,"Restart clock truncation changed solution beyond roundoff");
         }
@@ -169,7 +187,9 @@ int main() {
     auto unscheduled=coupledRequest();unscheduled.userContributions[1].execution.erase(unscheduled.userContributions[1].execution.begin());rejects([&]{System::build(config,unscheduled);});
     auto shape=coupledRequest();shape.userContributions[1].states[0].components=3;rejects([&]{System::build(config,shape);});
     auto nonlinear=coupledRequest();using E=System::FormulaExpr;
-    nonlinear.userContributions[0].registeredEquations[0].rhs=E::add(nonlinear.userContributions[0].registeredEquations[0].rhs,E::multiply(E::symbol("a"),E::symbol("b")));
+    nonlinear.userContributions[0].registeredEquations[0].rhs=E::add(nonlinear.userContributions[0].registeredEquations[0].rhs,E::multiply(E::constantValue(1,Math::signature(0,{0,0,-1,0,0,0,0})),E::multiply(E::symbol("a",Math::signature(0,{})),E::symbol("b",Math::signature(0,{})))));
+    System::validate(System::build(config,nonlinear));
+    nonlinear.userContributions[0].numerics[0].method="LinearEquation";
     rejects([&]{System::build(config,nonlinear);});
     auto duplicate=coupledRequest();duplicate.userContributions[1].execution.front()=duplicate.userContributions[0].execution.front();duplicate.userContributions[1].execution.front().step.occurrence="another";
     rejects([&]{System::build(config,duplicate);});

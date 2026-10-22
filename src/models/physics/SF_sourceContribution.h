@@ -11,6 +11,7 @@ namespace SF::Physics::SourceContribution {
 
 void contribute(
     System::SystemContribution& system,
-    const FDM::SourceConfig& config);
+    const FDM::SourceConfig& config,
+    Math::Signature momentumRhs=Math::signature(1,{1,-2,-2,0,0,0,0}));
 
 } // namespace SF::Physics::SourceContribution

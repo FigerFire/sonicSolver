@@ -17,6 +17,23 @@ def invoke(args,cwd,log,success=True):
 
 def copy(source,p):
  shutil.copytree(source,p,ignore=shutil.ignore_patterns('result','reference','*.log','._*'))
+ # These test fixtures declare dimensionless tracers and SI diffusivity/rate constants.
+ # Historical source inputs remain frozen; no production reader fallback is involved.
+ path=p/'fields/fields.yaml';doc=json.loads(path.read_text())
+ for value in doc.values():
+  if isinstance(value,dict) and value.get('new'):value['dimensions']=[0]*7
+ path.write_text(json.dumps(doc,indent=2))
+ path=p/'solvers/equationRegistry.yaml';doc=json.loads(path.read_text())
+ def declarations(node):
+  if not isinstance(node,dict):return
+  if node.get('op')=='diffusion':node['args'][0]['dimensions']=[0,2,-1,0,0,0,0]
+  if node.get('op')=='multiply' and 'constant' in node['args'][0]:node['args'][0]['dimensions']=[0,0,-1,0,0,0,0]
+  if node.get('op')=='add' and 'constant' in node['args'][1]:node['args'][1]['dimensions']=[0,0,-1,0,0,0,0]
+  for value in node.values():
+   if isinstance(value,list):
+    for item in value:declarations(item)
+   else:declarations(value)
+ declarations(doc);path.write_text(json.dumps(doc,indent=2))
  return p
 
 def jsonfile(p):return json.loads(p.read_text())
@@ -86,16 +103,16 @@ def negative(name,relative,action,expected,mode='check',extra=None):
  assert not list((p/'result').glob('*.vts')),'Rejected binding wrote a physical output frame'
  negatives.append({'name':name,'case':str(p),'mode':mode,'changedFile':relative,'additionalChangedFile':extra[0] if extra else None,'expected':expected,'actual':text[-1800:]})
 q='solvers/equationRegistry.yaml';h='solvers/how.yaml';s='solvers/state.yaml';w='solvers/which.yaml'
-negative('unknown-symbol',q,lambda x:x['add']['spreadDye']['rhs']['args'][1].update(symbol='notRegistered'),'unknown declared STATE symbol')
+negative('unknown-symbol',q,lambda x:x['add']['spreadDye']['rhs']['args'][1].update(symbol='notRegistered'),'Unknown declared mathematical symbol')
 negative('duplicate-equation',q,lambda x:x['use'].append('spreadDye'),'duplicate/empty WHAT')
 negative('duplicate-state',s,lambda x:x['use'].append('dye'),'Duplicate solution STATE')
 negative('missing-target',h,lambda x:x['root']['children'][0].pop('target'),'requires equation/target')
 negative('wrong-target',h,lambda x:x['root']['children'][0].update(target='notRegistered'),'Unknown')
 negative('no-provider',w,lambda x:x['bindings'].pop(0),'no provider for equation occurrence')
 negative('unknown-provider',w,lambda x:x['bindings'][0].update(method='NotImplemented'),'has no registered implementation')
-negative('unknown-operator',q,lambda x:x['add']['spreadDye']['rhs'].update(op='curl'),'unsupported native formula operator')
-negative('bad-arity',q,lambda x:x['add']['spreadDye']['rhs']['args'].pop(),'wrong argument count')
-negative('nonlinear-ast',q,lambda x:x['add']['spreadDye'].update(rhs={'op':'add','args':[x['add']['spreadDye']['rhs'],{'op':'multiply','args':[{'symbol':'dye'},{'symbol':'salt'}]}]}),'Unsupported scalar coupling')
+negative('unknown-operator',q,lambda x:x['add']['spreadDye']['rhs'].update(op='curl'),'Math operator curl')
+negative('bad-arity',q,lambda x:x['add']['spreadDye']['rhs']['args'].pop(),'Wrong operand count')
+negative('unsupported-local-operator',q,lambda x:x['add']['spreadDye'].update(rhs={'op':'add','args':[x['add']['spreadDye']['rhs'],{'op':'multiply','args':[{'constant':1,'dimensions':[0,0,-1,0,0,0,0]},{'op':'sin','args':[{'symbol':'dye'}]}]}]}),'has no compatible numerical provider')
 negative('unsupported-recipe','solvers/numerics.yaml',lambda x:x['time'].update(default='SSPRK3'),'recipe')
 negative('missing-initial','fields/internalField.yaml',lambda x:x.pop('dye'),'missing initialization backing','run')
 negative('missing-bc','fields/boundaries.yaml',lambda x:x.pop('dye'),'Missing scalar boundary backing','run')
@@ -103,8 +120,8 @@ negative('wrong-bc','fields/boundaries.yaml',lambda x:x['dye']['Left'].update(ty
 negative('duplicate-commit',h,lambda x:x['root']['children'].append({'kind':'Commit','id':'another'}),'Commit')
 negative('missing-commit',h,lambda x:x['root']['children'].pop(),'Commit')
 negative('operation-collision',h,lambda x:x['root']['children'][1].update(occurrence='advance.dye'),'Duplicate')
-negative('target-workspace-collision',h,lambda x:x['root']['children'][1].update(target='dye'),'LHS does not match')
-negative('duplicate-physical-writer',h,lambda x:x['root']['children'][1].update(target='dye'),'Duplicate temporal physical target',extra=(q,lambda x:x['add'].update(spreadSalt={'lhs':{'op':'ddt','args':[{'symbol':'dye'}]},'rhs':{'op':'diffusion','args':[{'constant':.08},{'symbol':'dye'}]}})))
+negative('target-workspace-collision',h,lambda x:x['root']['children'][1].update(target='dye'),'positive additive ddt(target)')
+negative('duplicate-physical-writer',h,lambda x:x['root']['children'][1].update(target='dye'),'Duplicate temporal physical target',extra=(q,lambda x:x['add'].update(spreadSalt={'lhs':{'op':'ddt','args':[{'symbol':'dye'}]},'rhs':{'op':'diffusion','args':[{'constant':.08,'dimensions':[0,2,-1,0,0,0,0]},{'symbol':'dye'}]}})))
 negative('unregistered-initial','fields/fields.yaml',lambda x:x.pop('internalField'),'missing initialization backing','run')
 negative('wrong-child-identity',s,lambda x:x['SonicFile'].update(type='stateRegistry'),'expected object solver type state')
 negative('incomplete-fluid',q,lambda x:(x.update(use=['Momentum']),x.pop('add')),'requires Continuity and Momentum')

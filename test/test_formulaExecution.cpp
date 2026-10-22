@@ -1,3 +1,4 @@
+#include "test/typedSymbols.h"
 #include "core/system/SF_formula.h"
 #include "solver/system/SF_formulaCompiler.h"
 #include "solver/system/SF_methodObjects.h"
@@ -24,12 +25,12 @@ void require(bool condition,const char* message) {
 }
 
 System::Equation diffusion(std::string id,std::string target) {
-    auto gradient=FormulaExpr::op("grad",{FormulaExpr::symbol(target)});
-    auto flux=FormulaExpr::multiply(FormulaExpr::symbol("nu"),
+    auto gradient=FormulaExpr::op("grad",{SF::Test::symbol(target)});
+    auto flux=FormulaExpr::multiply(SF::Test::symbol("nu"),
                                     std::move(gradient));
     return {std::move(id),
         FormulaExpr::negate(FormulaExpr::op("div",{std::move(flux)},"diffusion")),
-        FormulaExpr::symbol("S"),{}};
+        SF::Test::symbol("S"),{}};
 }
 
 System::FormulaValues valuesFor(std::string target,int components,
@@ -39,7 +40,7 @@ System::FormulaValues valuesFor(std::string target,int components,
     values.components=components;
     values.read=[&field,target,components](const std::string& symbol,int cell,int c) {
         if (symbol=="nu") return 1.0;
-        if (symbol=="phi") return 1.0;
+        if (symbol=="flux") return 1.0;
         if (symbol=="S") return 0.0;
         if (symbol!=target) throw std::runtime_error("Unbound Equation symbol: "+symbol);
         return field.at(static_cast<std::size_t>(cell)*components+c);
@@ -81,373 +82,66 @@ LinearAlgebra::SolveResult solve(const LinearAlgebra::GlobalDofSystem& system,
 int main(int argc,char** argv) {
     try {
         Parallel::ParallelContext parallel(argc,argv,true);
-        System::EquationRegistry formulas;
-        formulas.add(diffusion("anyName","Y_O2"));
+        auto equation=diffusion("arbitraryEquation","Y_O2");
         System::FormulaOperatorCatalog catalog;
-        catalog.add(Discretization::central2FormulaDiffusion({3,3,1.0,1.0}));
-        auto alternate=Discretization::central2FormulaDiffusion({3,3,1.0,1.0});
-        alternate.id="central2.cartesian.alternate";
-        catalog.add(std::move(alternate));
-        const std::vector<System::FormulaOperatorBinding> bindings{
-            {"","div","central2.cartesian.alternate"},
-            {"anyName","","central2.cartesian.alternate"},
-            {"anyName","diffusion","central2.cartesian.diffusion"}};
-        System::ExecutableEquationSystem executable;
-        System::StateSymbol oxygen;
-        oxygen.id="Y_O2";
-        oxygen.storageKey="scalarStorage";
-        executable.state.add(oxygen);
-        executable.registry=formulas;
-        const auto lowered=System::compileExecutionProgram(executable,
-            System::ExecutionProgram{System::EquationCall{"anyName",{"Y_O2"}}},
-            {{"anyName","LinearEquation"}},System::builtinProviders());
-        const auto compiled=System::FormulaCompiler::compile(formulas,
-            {lowered.steps.front().calls.front().equation,
-             lowered.steps.front().calls.front().target,
-             System::Legacy::FormulaMode::Implicit},catalog,bindings);
-        require(compiled.backend=="formula.linear-assembly",
-                "Implicit Equation did not compile to linear assembly.");
-        require(compiled.numericalProviders.size()==1
-                    && compiled.numericalProviders.front()
-                        =="central2.cartesian.diffusion",
-                "Occurrence binding did not override Equation/global defaults.");
-        bool badPathRejected=false;
-        try {
-            (void)System::FormulaCompiler::compile(formulas,
-                {"anyName","Y_O2",System::Legacy::FormulaMode::Implicit},catalog,
-                {{"anyName","difffusion","central2.cartesian.diffusion"}});
-        } catch (const std::runtime_error& error) {
-            badPathRejected=std::string(error.what()).find("does not address")
-                !=std::string::npos;
+        auto provider=Discretization::central2FormulaDiffusion({3,3,1.,1.});catalog.add(provider);
+        const auto& occurrence=equation.lhs.arguments()[0];
+        const auto& selected=catalog.resolve(equation,occurrence,{{equation.id,"diffusion",provider.id}});
+        const auto linear=selected.compileLinear(occurrence,"Y_O2");
+        std::vector<double> field(9,0);auto values=valuesFor("Y_O2",1,field);
+        LinearAlgebra::GlobalDofSystem matrix;
+        for(int cell=0;cell<9;++cell) {
+            const auto term=linear(values,cell,0);
+            LinearAlgebra::GlobalDofRow row(values.dof("Y_O2",cell,0));
+            for(const auto& coefficient:term.coefficients)row.add(coefficient.column,-coefficient.value);
+            row.setRightHandSide(term.constant);row.setInitialGuess(0);matrix.rows.push_back(row);
         }
-        require(badPathRejected,"Unknown numerical operator path was ignored.");
-        bool duplicatePathRejected=false;
-        try {
-            System::EquationRegistry invalid;
-            invalid.add({"duplicatePath",
-                FormulaExpr::add(
-                    FormulaExpr::op("grad",{FormulaExpr::symbol("C")},"same"),
-                    FormulaExpr::op("div",{FormulaExpr::symbol("C")},"same")),
-                FormulaExpr::constantValue(0.0),{}});
-        } catch (const std::runtime_error& error) {
-            duplicatePathRejected=std::string(error.what()).find(
-                "duplicate operator occurrence")!=std::string::npos;
-        }
-        require(duplicatePathRejected,"Duplicate operator paths were accepted.");
-        std::vector<double> scalar(9,0.0);
-        auto scalarValues=valuesFor("Y_O2",1,scalar);
-        auto matrix=compiled.assemble(scalarValues);
-        require(matrix.rows.size()==9,"Scalar Equation row count is wrong.");
-        require(matrix.rows.front().coefficients().size()==3,
-                "Central2 corner stencil is wrong.");
-        System::CompiledSolvePlan implicitPlan;
-        implicitPlan.root.kind=System::PlanNodeKind::Sequence;
-        implicitPlan.root.id="formula.implicit.test";
-        implicitPlan.root.children.push_back({});
-        implicitPlan.root.children.back().kind=System::PlanNodeKind::Solve;
-        implicitPlan.root.children.back().id="formula.implicit";
-        implicitPlan.root.children.back().operation="formula.linear.solve";
-        implicitPlan.root.children.back().equationCalls.push_back(
-            {compiled.call.equation,compiled.call.target});
-        Run::OpRegistry implicitOperations;
-        implicitOperations.bind("formula.linear.solve",[&] {
-            compiled.writeSolution(scalarValues,solve(compiled.assemble(scalarValues),1));
-        });
-        Run::PlanExecutor::execute(implicitPlan,implicitOperations);
-        for (double value:scalar)
-            require(std::abs(value-1.0)<1e-9,
-                    "Implicit arbitrary scalar Equation solution is wrong.");
-
-        formulas.add(diffusion("vectorFormula","V"));
-        std::vector<double> vector(18,0.0);
-        auto vectorValues=valuesFor("V",2,vector);
-        const auto vectorCall=System::FormulaCompiler::compile(formulas,
-            {"vectorFormula","V",System::Legacy::FormulaMode::Implicit},catalog,
-            {{"","div","central2.cartesian.alternate"},
-             {"vectorFormula","","central2.cartesian.diffusion"}});
-        require(vectorCall.numericalProviders.size()==1
-                    && vectorCall.numericalProviders.front()
-                        =="central2.cartesian.diffusion",
-                "Equation binding did not override global default.");
-        vectorCall.writeSolution(vectorValues,solve(vectorCall.assemble(vectorValues),2));
-        for (int cell=0;cell<9;++cell)
-            for (int c=0;c<2;++c)
-                require(std::abs(vector[cell*2+c]-(c+1.0))<1e-9,
-                        "Implicit vector Equation solution is wrong.");
-
-        // Use actual registered Field storage and StateRealization, rather
-        // than a test-owned vector, for the same scalar/vector method path.
-        Field physical;
-        physical.setup(3,3,1,1,3);
-        State::StateBundle physicalState;
-        physicalState.patches={&physical};
-        physicalState.registerConservativeState();
-        System::ExecutableEquationSystem storedSystem;
-        System::StateSymbol storedScalar;
-        storedScalar.id="Y_O2";
-        storedScalar.storageBinding=System::StorageBinding::PackedDistributed;
-        storedScalar.storageKey="conservative";
-        storedScalar.componentOffset=0;
-        storedSystem.state.add(storedScalar);
-        System::StateSymbol storedVector=storedScalar;
-        storedVector.id="V";
-        storedVector.components=2;
-        storedVector.componentOffset=1;
-        storedVector.shape=System::ValueShape::Vector;
-        storedSystem.state.add(storedVector);
-        System::StateSymbol viscosity;
-        viscosity.id="nu";
-        viscosity.runtimeStorageRequired=false;
-        viscosity.constantValue=1.0;
-        storedSystem.state.add(viscosity);
-        System::StateSymbol source=viscosity;
-        source.id="S";
-        source.constantValue=0.0;
-        storedSystem.state.add(source);
-        const auto realized=System::realizeState(
-            storedSystem.state,System::RuntimeRequirements{},physicalState);
-        const auto boundary=[](const std::string&,int,int,int,int component) {
-            return static_cast<double>(component+1);
-        };
-        auto boundScalar=System::bindFormulaCellValues(
-            realized,{"Y_O2"},boundary);
-        compiled.writeSolution(boundScalar,solve(compiled.assemble(boundScalar),1));
-        auto boundVector=System::bindFormulaCellValues(
-            realized,{"V"},boundary);
-        vectorCall.writeSolution(boundVector,solve(vectorCall.assemble(boundVector),2));
-        for (int j=1;j<=3;++j)
-            for (int i=1;i<=3;++i) {
-                require(std::abs(physical(i,j,1,0)-1.0)<1e-9,
-                        "Registered scalar Field binding did not receive linear solution.");
-                require(std::abs(physical(i,j,1,1)-1.0)<1e-9
-                            && std::abs(physical(i,j,1,2)-2.0)<1e-9,
-                        "Registered vector Field binding did not receive linear solution.");
-            }
-        formulas.add({"storedAssignment",FormulaExpr::symbol("Y_O2"),
-            FormulaExpr::add(FormulaExpr::symbol("Y_O2"),
-                             FormulaExpr::constantValue(2.0)),{}});
-        storedSystem.registry=formulas;
-        const auto storedMethod=System::compileExecutionProgram(storedSystem,
-            System::ExecutionProgram{System::EquationCall{"storedAssignment",{"Y_O2"}}},
-            {{"storedAssignment","DirectEvaluation"}},
-            System::builtinProviders());
-        const auto storedAssign=System::FormulaCompiler::compile(formulas,
-            {storedMethod.steps.front().calls.front().equation,
-             storedMethod.steps.front().calls.front().target,
-             System::Legacy::FormulaMode::Assign},catalog,{});
-        storedAssign.assign(boundScalar);
-        for (int j=1;j<=3;++j)
-            for (int i=1;i<=3;++i)
-                require(std::abs(physical(i,j,1,0)-3.0)<1e-9,
-                        "Registered scalar Field binding did not receive direct assignment.");
-
-        // The same equation writes lazy Working/Correction views. Neither
-        // registration nor a view write may publish into physical state.
-        System::ExecutionProgram temporaryProgram{
-            System::EquationCall{"storedAssignment",System::targetFromSyntax("Y_O2*")},
-            System::EquationCall{"storedAssignment",System::targetFromSyntax("Y_O2'")}};
-        const auto temporary=System::compileExecutionProgram(storedSystem,temporaryProgram,
-            {{"storedAssignment","DirectEvaluation"}},System::builtinProviders());
-        require(temporary.stateViews.size()==2 && temporaryProgram.root.children.size()==2,
-                "STATE realization changed HOW or created unrequested versions.");
-        const auto physicalBeforeTemporary=physical(1,1,1,0);
-        const auto temporaryState=System::realizeState(storedSystem.state,
-            System::RuntimeRequirements{},physicalState,temporary.stateViews);
-        for (const auto& method:temporary.steps) {
-            auto values=System::bindFormulaCellValues(temporaryState,method.target,boundary);
-            storedAssign.assign(values);
-        }
-        for (int j=1;j<=3;++j)
-            for (int i=1;i<=3;++i) {
-                const int cell=physical.getIdx(i,j,1);
-                require(std::abs(physical(i,j,1,0)-3.0)<1e-9
-                    && std::abs(temporaryState.view("Y_O2",System::StateViewKind::Working).fields.front()->read(cell,0)-5.0)<1e-9
-                    && temporaryState.view("Y_O2",System::StateViewKind::Correction).fields.front()->read(cell,0)==2.0,
-                    "Temporary assignment corrupted the physical STATE authority.");
-            }
-
-        require(physical(1,1,1,0)==physicalBeforeTemporary,
-                "Working/Correction writes changed the physical state bitwise.");
-
-        // A standard symbol is available without any user addState call.
-        System::ExecutableEquationSystem common;
-        const System::BuiltinStateCatalog builtinCatalog;
-        require(builtinCatalog.contains("U") && builtinCatalog.contains("k")
-                    && common.state.size()==0,
-                "Available builtin metadata activated case STATE.");
-        System::requireTargetStates(common.state,
-            System::ExecutionProgram{System::EquationCall{"pressureDelta",System::targetFromSyntax("p'")}}.root);
-        common.registry.add({"pressureDelta",FormulaExpr::symbol("p"),
-            FormulaExpr::constantValue(7.0),{}});
-        System::ExecutableEquationSystem mathematicsOnly;
-        mathematicsOnly.registry=common.registry;
-        const auto commonMethod=System::compileExecutionProgram(mathematicsOnly,common.state,
-            System::ExecutionProgram{System::EquationCall{"pressureDelta",System::targetFromSyntax("p'")}},
-            {{"pressureDelta","DirectEvaluation"}},System::builtinProviders());
-        require(common.state.contains("p") && common.state.size()==1
-                    && !common.state.contains("U") && !common.state.contains("k")
-                    && !common.state.contains("omega") && !common.state.contains("rhoE")
-                    && !common.state.contains("p'") && !common.state.contains("pPrime")
-                    && commonMethod.stateViews.size()==1,
-                "Builtin STATE catalog requires user registration or synthetic symbols.");
-        const auto commonState=System::realizeState(common.state,System::RuntimeRequirements{},
-            physicalState,commonMethod.stateViews);
-        auto commonValues=System::bindFormulaCellValues(commonState,commonMethod.steps.front().target,boundary);
-        const auto commonAssign=System::FormulaCompiler::compile(common.registry,
-            {"pressureDelta","p",System::Legacy::FormulaMode::Assign},catalog,{});
-        commonAssign.assign(commonValues);
-        require(commonState.view("p",System::StateViewKind::Correction).fields.front()->read(
-                    physical.getIdx(1,1,1),0)==7.0 && std::abs(physical(1,1,1,0)-3.0)<1e-9,
-                "Builtin correction view was not realized independently of physical state.");
-        bool missingBaseRejected=false;
-        try {
-            System::compileExecutionProgram(common,
-                System::ExecutionProgram{System::EquationCall{"pressureDelta",{"missing",System::TargetKind::Working}}},
-                {{"pressureDelta","DirectEvaluation"}},System::builtinProviders());
-        } catch (const std::runtime_error& error) {
-            missingBaseRejected=std::string(error.what()).find("base STATE symbol")!=std::string::npos;
-        }
-        require(missingBaseRejected,"Working target bypassed STATE base lookup.");
-
-        formulas.add({"assignment",FormulaExpr::symbol("C"),
-            FormulaExpr::add(FormulaExpr::symbol("C"),
-                             FormulaExpr::constantValue(2.0)),{}});
-        std::vector<double> assignment(9,1.0);
-        auto assignmentValues=valuesFor("C",1,assignment);
-        const auto assign=System::FormulaCompiler::compile(formulas,
-            {"assignment",{},System::Legacy::FormulaMode::Assign},catalog,{});
-        System::CompiledSolvePlan plan;
-        plan.root.kind=System::PlanNodeKind::Sequence;
-        plan.root.id="formula.test";
-        plan.root.children.push_back({});
-        plan.root.children.back().kind=System::PlanNodeKind::Update;
-        plan.root.children.back().id="formula.assignment";
-        plan.root.children.back().operation="formula.assignment";
-        plan.root.children.back().equationCalls.push_back(
-            {assign.call.equation,assign.call.target});
-        Run::OpRegistry operations;
-        operations.bind("formula.assignment",[&] { assign.assign(assignmentValues); });
-        Run::PlanExecutor::execute(plan,operations);
-        for (double value:assignment)
-            require(value==3.0,"Equation assignment or PlanExecutor dispatch failed.");
-
-        formulas.add({"explicitTransport",
-            FormulaExpr::add(
-                FormulaExpr::op("ddt",{FormulaExpr::symbol("C")}),
-                diffusion("unused","C").lhs),
-            FormulaExpr::constantValue(0.0),{}});
-        const auto explicitCall=System::FormulaCompiler::compile(formulas,
-            {"explicitTransport","C",System::Legacy::FormulaMode::Explicit},catalog,
-            {{"","div","central2.cartesian.diffusion"}});
-        require(explicitCall.backend=="formula.explicit-residual",
-                "Explicit Equation did not compile a residual.");
-        require(std::abs(explicitCall.evaluateRhs(assignmentValues,0,0)+4.0)<1e-12,
-                "Explicit Central2 Equation residual is wrong at a boundary cell.");
-        for (double value:assignment) require(value==3.0,"Explicit compile changed state.");
-
-        formulas.add({"scalarTransport",
-            FormulaExpr::add(
-                FormulaExpr::add(
-                    FormulaExpr::op("ddt",{FormulaExpr::symbol("C")}),
-                    FormulaExpr::op("div",{FormulaExpr::symbol("phi"),
-                                            FormulaExpr::symbol("C")},"convection")),
-                diffusion("unused","C").lhs),
-            FormulaExpr::symbol("S"),{}});
-        System::FormulaOperatorCatalog transportCatalog;
-        transportCatalog.add(
-            Discretization::central2FormulaDiffusion({3,3,1.0,1.0}));
-        transportCatalog.add({"test.upwind1.scalar","div",
-            [](const FormulaExpr& expression) {
-                return expression.arguments.size()==2
-                    && expression.arguments[0].kind==FormulaExpr::Kind::Symbol
-                    && expression.arguments[1].kind==FormulaExpr::Kind::Symbol;
-            },
-            [](const FormulaExpr& expression) {
-                const auto flux=expression.arguments[0].name;
-                const auto target=expression.arguments[1].name;
-                return System::FormulaValueKernel{
-                    [flux,target](const System::FormulaValues& values,int cell,int c) {
-                        const double faceFlux=values.read(flux,cell,0);
-                        if (faceFlux<0.0)
-                            throw std::runtime_error("Test upwind provider needs positive flux.");
-                        const double upstream=cell%3==0
-                            ? values.boundaryValue(target,cell,0,-1,c)
-                            : values.read(target,cell-1,c);
-                        return faceFlux*(values.read(target,cell,c)-upstream);
-                    }};
-            },{}});
-        const auto transport=System::FormulaCompiler::compile(formulas,
-            {"scalarTransport","C",System::Legacy::FormulaMode::Explicit},
-            transportCatalog,{});
-        require(transport.numericalProviders.size()==2
-                    && std::abs(transport.evaluateRhs(assignmentValues,0,0)+6.0)
-                        <1e-12,
-                "Generic scalar transport did not combine convection and diffusion.");
-
-        System::FormulaOperatorCatalog weno;
-        weno.add({"weno.evaluate","div",
-            [](const FormulaExpr&) { return true; },
-            [](const FormulaExpr&) { return System::FormulaValueKernel{
-                [](const System::FormulaValues&,int,int) { return 0.0; }}; },{}});
-        formulas.add({"unsupportedWeno",
-            FormulaExpr::op("div",{FormulaExpr::symbol("C")},"convection"),
-            FormulaExpr::constantValue(0.0),{}});
+        const auto result=solve(matrix,1);require(result.converged,"Existing Central2/HYPRE linear solve failed");
+        for(double x:result.solution)require(std::abs(x-1)<1e-9,"Central2 fixed boundary solution changed");
+        const auto explicitKernel=selected.compileValue(occurrence);
+        require(explicitKernel(values,0,0)==2 && explicitKernel(values,4,0)==0,"Existing Central2 value kernel changed");
         bool rejected=false;
-        try {
-            (void)System::FormulaCompiler::compile(formulas,
-                {"unsupportedWeno","C",System::Legacy::FormulaMode::Implicit},weno,{});
-        } catch (const std::runtime_error& error) {
-            rejected=std::string(error.what()).find("linear assembly capability")
-                !=std::string::npos;
+        try{catalog.resolve(equation,occurrence,{{equation.id,"diffusion","missing"}});}catch(const std::runtime_error&){rejected=true;}
+        require(rejected,"Explicit incompatible provider silently replaced");
+        rejected=false;try{catalog.resolve(equation,occurrence,{{equation.id,"missingOccurrence",provider.id}});}catch(const std::runtime_error&){rejected=true;}
+        require(rejected,"Unmatched explicit occurrence was silently ignored");
+        auto c=SF::Test::symbol("C");auto k=FormulaExpr::constantValue(.7,Math::signature(0,{0,0,-1,0,0,0,0}));
+        auto rhs=FormulaExpr::op(Math::Op::Diffusion,{FormulaExpr::constantValue(.03,Math::signature(0,{0,2,-1,0,0,0,0})),c})-k*FormulaExpr::power(c,2);
+        System::Equation nonlinear{"reaction",FormulaExpr::op(Math::Op::Ddt,{c}),rhs};
+        require(System::inspectFormula(rhs,"C").targetDegree==2,"Nonlinear structure not extracted");
+        require(System::formulaText({"",System::explicitFormulaRhs(nonlinear,"C"),rhs})==System::formulaText({"",rhs,rhs}),"Bare ddt reordered RHS");
+        rejected=false;try{System::Equation wrong{"wrongK",nonlinear.lhs,FormulaExpr::op(Math::Op::Diffusion,{FormulaExpr::constantValue(.03,Math::signature(0,{0,2,-1,0,0,0,0})),c})-FormulaExpr::constantValue(.7)*FormulaExpr::power(c,2)};}catch(const std::runtime_error&){rejected=true;}
+        require(rejected,"Wrong reaction coefficient dimensions bypassed construction");
+        for(const auto& invalid:std::vector<System::Equation>{{"algebraic",c,c},{"massMatrix",FormulaExpr::constantValue(2)*nonlinear.lhs,rhs}}) {
+            rejected=false;try{System::explicitFormulaRhs(invalid,"C");}catch(const std::runtime_error&){rejected=true;}
+            require(rejected,"Unsupported temporal structure silently inverted or converted");
         }
-        require(rejected,"Implicit WENO silently became an explicit RHS.");
-
-        System::Equation builtIn{"manual",
-            FormulaExpr::add(FormulaExpr::op("ddt",{FormulaExpr::symbol("C")}),
-                             FormulaExpr::op("div",{FormulaExpr::symbol("flux")})),
-            FormulaExpr::constantValue(0),{System::OriginKind::BuiltinPreset,"builtin"}};
-        System::Equation manual{"myOwnFormula",
-            FormulaExpr::add(
-                FormulaExpr::op("ddt",{FormulaExpr::symbol("C")}),
-                FormulaExpr::op("div",{FormulaExpr::symbol("flux")})),
-            FormulaExpr::constantValue(0.0),
-            {System::OriginKind::User,"manual"}};
-        require(System::canonicalFormula(builtIn)
-                    ==System::canonicalFormula(manual),
-                "Built-in and manual Equation ASTs differ by provenance.");
-        System::RawEquationSystem composed;
-        std::vector<System::TransformationDescriptor> transformations;
-        System::SystemContribution builtinContribution;
-        builtinContribution.addEquation(builtIn);
-        System::SystemCompositionBuilder builtinBuilder(composed,transformations,
-            {System::OriginKind::BuiltinPreset,"builtin"});
-        builtinBuilder.applyContribution(std::move(builtinContribution));
-        System::SystemContribution userContribution;
-        userContribution.addEquation(manual);
-        System::SystemCompositionBuilder userBuilder(composed,transformations,
-            {System::OriginKind::User,"manual"});
-        userBuilder.applyContribution(std::move(userContribution));
-        System::FormulaOperatorCatalog convection;
-        convection.add({"test.flux.div","div",
-            [](const FormulaExpr& expression) {
-                return expression.arguments.size()==1
-                    && expression.arguments[0].kind==FormulaExpr::Kind::Symbol
-                    && expression.arguments[0].name=="flux";
-            },
-            [](const FormulaExpr&) { return System::FormulaValueKernel{
-                [](const System::FormulaValues&,int,int) { return 2.0; }}; },{}});
-        const auto presetCall=System::FormulaCompiler::compile(composed.registry,
-            {"manual","C",System::Legacy::FormulaMode::Explicit},convection,{});
-        const auto userCall=System::FormulaCompiler::compile(composed.registry,
-            {"myOwnFormula","C",System::Legacy::FormulaMode::Explicit},convection,{});
-        require(presetCall.backend==userCall.backend
-                    && presetCall.numericalProviders==userCall.numericalProviders
-                    && presetCall.evaluateRhs(assignmentValues,0,0)
-                        ==userCall.evaluateRhs(assignmentValues,0,0),
-                "Built-in and user Equation did not compile through the same backend.");
-        std::cout << "Equation execution contract passed\n";
-    } catch (const std::exception& error) {
-        std::cerr << error.what() << '\n';
-        return 1;
-    }
+        System::ExecutableEquationSystem system;System::StateSymbol state;state.id=state.storageKey="C";state.signature=c.signature();state.storageBinding=System::StorageBinding::NamedDistributed;system.state.add(state);system.registry.add(nonlinear);
+        rejected=false;try{System::builtinProviders().at("LinearEquation").compile(system,{"reaction",{"C"}},{"reaction","LinearEquation"});}catch(const std::runtime_error& e){rejected=std::string(e.what()).find("Unsupported")!=std::string::npos;}
+        require(rejected,"Nonlinear explicit equation masqueraded as implemented implicit solve");
+        system.registry.add({"spoof",FormulaExpr::symbol("C",SF::Test::symbol("p").signature()),FormulaExpr::symbol("C",SF::Test::symbol("p").signature())});
+        rejected=false;try{System::compileExecutionProgram(system,System::ExecutionProgram{System::EquationCall{"spoof",{"C"}}},{{"spoof","DirectEvaluation"}},System::builtinProviders());}catch(const std::runtime_error&){rejected=true;}
+        require(rejected,"Same-name logical symbol overrode STATE signature");
+        auto other=state;other.id=other.storageKey="partner";system.state.add(other);
+        auto otherDiffusion=FormulaExpr::op(Math::Op::Diffusion,{FormulaExpr::constantValue(.03,Math::signature(0,{0,2,-1,0,0,0,0})),other.expression()});
+        system.registry.add({"wrongDiffusion",nonlinear.lhs,rhs+otherDiffusion});
+        rejected=false;try{System::builtinProviders().at("ScalarDiffusionCentral2").compile(system,{"wrongDiffusion",{"C"}},{"wrongDiffusion","ScalarDiffusionCentral2"});}catch(const std::runtime_error& e){rejected=std::string(e.what()).find("only diffuses its declared target")!=std::string::npos;}
+        require(rejected,"Selected diffusion kernel silently consumed another variable's operator");
+        const Math::OperatorRule twice{"test.module.twice",[](const std::vector<Math::Signature>& a){if(a.size()!=1 || a[0].rank)throw std::runtime_error("scalar required");return a[0];}};
+        const Math::OperatorRule conflict{"test.module.twice",[](const std::vector<Math::Signature>& a){return a.at(0);}};
+        auto extension=FormulaExpr::op(twice,{c},"module.operator");System::Equation ext{"module",c,extension};
+        System::EquationRegistry definitions;definitions.add(ext);
+        rejected=false;try{definitions.add({"conflict",c,FormulaExpr::op(conflict,{c})});}catch(const std::runtime_error&){rejected=true;}
+        require(rejected,"Conflicting mathematical extension rules shared an identity");
+        System::FormulaOperatorProvider implementation;implementation.id="test.module.twice.values";implementation.mathematicalOperator=Math::Op::Extension;implementation.extensionName=twice.id;implementation.extensionRule=twice.result;
+        implementation.matches=[](const auto& n){return n.arguments().size()==1 && n.arguments()[0].kind()==FormulaExpr::Kind::Symbol;};
+        implementation.compileValue=[](const auto&){return System::FormulaValueKernel{[](const System::FormulaValues& v,int cell,int component){return 2*v.boundReads.at(0)(cell,component);}};};
+        System::FormulaOperatorCatalog module;module.add(implementation);std::vector<std::string> used;
+        const auto kernel=System::compileFormulaValue(ext,extension,module,used,{"C"});System::FormulaValues input;input.boundReads.push_back([](int,int){return 3.;});
+        require(kernel(input,0,0)==6 && used==std::vector<std::string>{implementation.id},"Module extension did not bind its existing catalog implementation");
+        implementation.id="test.module.conflict";implementation.extensionRule=conflict.result;
+        rejected=false;try{module.add(implementation);}catch(const std::runtime_error&){rejected=true;}
+        require(rejected,"Numerics accepted a second mathematical rule for the same extension");
+        std::cout<<"Formula structure, module extension and independent Central2 linear/value verification passed\n";
+    } catch(const std::exception& e){std::cerr<<e.what()<<'\n';return 1;}
 }

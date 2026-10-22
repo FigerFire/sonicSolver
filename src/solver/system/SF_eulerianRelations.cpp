@@ -2,8 +2,8 @@
 namespace SF::System {
 namespace {
 using E=FormulaExpr;
-E s(const std::string& name) { return E::symbol(name); }
-E op(const std::string& name,std::vector<E> args) { return E::op(name,std::move(args)); }
+E s(const std::string& name) { return EulerianMathematics::symbol(name); }
+E op(const std::string& name,std::vector<E> args) { return EulerianMathematics::op(name,std::move(args)); }
 }
 std::vector<Equation> eulerianPhaseRelations(const std::string& phase,bool reference) {
     const auto q=[&](const char* name) { return s(std::string(name)+"."+phase); };

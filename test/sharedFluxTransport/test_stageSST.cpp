@@ -1,3 +1,4 @@
+#include "test/typedSymbols.h"
 #include "solver/algorithm/transport/SF_transportBinding.h"
 #include "fluid_fixture.h"
 #include "models/turbulence/SF_turbulence.h"
@@ -27,7 +28,7 @@ std::vector<double> sst(FDM::TimeRecipeId id,bool active,bool diffusion=true,dou
     config.numerics.timeRecipe=FDM::builtInTimeRecipe(id);config.numerics.viscousEnabled=diffusion;config.numerics.dynamicViscosity=mu;
     auto r=fluidRequest(false,false);r.singleFluidPreset=System::SingleFluidPresetSpec{diffusion};
     if(active){System::SystemContribution c;Turbulence::contribute(c,{"kOmegaSST",{},false,{},true});r.modelContributions.push_back(c);}
-    if(manufactured)for(auto& equation:r.modelContributions.front().registeredEquations){using E=System::FormulaExpr;equation.rhs=E::op("diffusion",{E::multiply(E::symbol("rho"),E::constantValue(0)),E::symbol(equation.id)});}
+    if(manufactured)for(auto& equation:r.modelContributions.front().registeredEquations){using E=System::FormulaExpr;equation.rhs=E::op("diffusion",{E::multiply(SF::Test::symbol("rho"),E::constantValue(0,Math::signature(0,{0,2,-1,0,0,0,0}))),SF::Test::symbol(equation.id)});}
     auto system=System::build(config,r);System::validate(system);
     require(std::find(system.runtime.report.requiredOperations.begin(),system.runtime.report.requiredOperations.end(),System::OpIds::TurbulenceAdvance)==system.runtime.report.requiredOperations.end(),"Native SST retained old advance authority");
     Field mesh;mesh.setup(n,1,1,g,5);auto model=Physics::FluidStateModel::makeSingleFluidPerfectGas(1.4,287.05,mu,.72);mesh.setStateModel(model);
@@ -97,7 +98,7 @@ void otherKernels() {
     require(c.production[0]>0 && c.sink[0]>0 && c.crossSource>0,"SST nonzero production/sink/cross diffusion not exercised");require(std::abs(c.crossSource-expected)<1e-16,"SST cross diffusion sign/rho/F1 weight failed");
     System::FormulaValues v;v.spacing=[](int a){return a==0?1.:0.;};v.boundReads={[](int cell,int){return .02+.001*cell*cell;},[](int,int){return 1.2;},[](int,int){return 0.;},[=](int,int){return c.diffusivity[0];}};
     v.boundNeighbor=[&](std::size_t slot,int cell,int,int offset,int component){return v.boundReads.at(slot)(cell+offset,component);};
-    double diffusion=Discretization::conservativeScalarCentral2(0,3,true).compileValue({})(v,4,0);
+    double diffusion=Discretization::conservativeCentral2Kernel(0,3,true)(v,4,0);
     require(std::abs(diffusion-.002*1.2*c.diffusivity[0])<1e-16,"SST concentration diffusion coefficient/sign failed");
     std::cout<<"SST production="<<c.production[0]<<" sink="<<c.sink[0]<<" cross="<<c.crossSource<<" F1="<<c.blending1<<" rhoWeightedDiffusion="<<diffusion<<'\n';
     auto bad=samples;bad[0]=[](int,int,int){return -1.;};rejects([&]{model.stageCoefficients(f,bad,config,7,3,3);});bad=samples;bad[1]=[](int,int,int){return std::numeric_limits<double>::quiet_NaN();};rejects([&]{model.stageCoefficients(f,bad,config,7,3,3);});

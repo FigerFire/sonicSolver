@@ -2,6 +2,7 @@
 /// @brief Resolved unknown runtime binding implementation.
 
 #include "SF_stateRealizer.h"
+#include "SF_stateRealization.h"
 #include <cmath>
 
 #include <algorithm>
@@ -9,28 +10,29 @@
 
 namespace SF::System {
 void StateRealization::beginStage(int index,int count,double time) {
-    if (stagePhase_!=StagePhase::Closed || index<0 || index>=count || !std::isfinite(time))
+    if (epoch_->phase!=StagePhase::Closed || index<0 || index>=count || !std::isfinite(time))
         throw std::runtime_error("Stage epoch already active or invalid index/time.");
-    activeStage_=index;activeStageTime_=time;stagePhase_=StagePhase::Preparing;
+    epoch_->index=index;epoch_->time=time;epoch_->phase=StagePhase::Preparing;
+    for (auto& view:derived_) if (view->descriptor.kind==StateViewKind::Stage) view->ready=false;
 }
 void StateRealization::stageReady() {
-    if (stagePhase_!=StagePhase::Preparing) throw std::runtime_error("Stage preparation barrier out of order.");
-    stagePhase_=StagePhase::Reading;
+    if (epoch_->phase!=StagePhase::Preparing) throw std::runtime_error("Stage preparation barrier out of order.");
+    epoch_->phase=StagePhase::Reading;
 }
 void StateRealization::rhsReady() {
-    if (stagePhase_!=StagePhase::Reading) throw std::runtime_error("Stage RHS barrier out of order.");
-    stagePhase_=StagePhase::Advancing;
+    if (epoch_->phase!=StagePhase::Reading) throw std::runtime_error("Stage RHS barrier out of order.");
+    epoch_->phase=StagePhase::Advancing;
 }
 void StateRealization::finishStage() {
-    if (stagePhase_!=StagePhase::Advancing) throw std::runtime_error("Stage close before RHS/advance completion.");
-    stagePhase_=StagePhase::Closed;activeStage_=-1;
+    if (epoch_->phase!=StagePhase::Advancing) throw std::runtime_error("Stage close before RHS/advance completion.");
+    epoch_->phase=StagePhase::Closed;epoch_->index=-1;
 }
 void StateRealization::requireStageRead(int index,double time) const {
-    if (stagePhase_!=StagePhase::Reading || activeStage_!=index || activeStageTime_!=time)
+    if (epoch_->phase!=StagePhase::Reading || epoch_->index!=index || epoch_->time!=time)
         throw std::runtime_error("Stage STATE read outside its readable index/time epoch.");
 }
 void StateRealization::requireStageAdvance(int index,double time) const {
-    if (stagePhase_!=StagePhase::Advancing || activeStage_!=index || activeStageTime_!=time)
+    if (epoch_->phase!=StagePhase::Advancing || epoch_->index!=index || epoch_->time!=time)
         throw std::runtime_error("Stage advance before complete RHS barrier or wrong index/time.");
 }
 std::function<double(int,int)> StateRealization::stageReader(std::string_view symbol,int stages) {
@@ -40,10 +42,11 @@ std::function<double(int,int)> StateRealization::stageReader(std::string_view sy
         if (item.fields.size()!=1) throw std::runtime_error("Stage reader requires one bound patch: "+std::string(symbol));
         fields.push_back(item.fields.front());
     }
-    return [this,fields=std::move(fields)](int cell,int component) {
-        if (stagePhase_!=StagePhase::Reading || activeStage_<0)
+    return [epoch=std::weak_ptr<StageEpoch>(epoch_),fields=std::move(fields)](int cell,int component) {
+        const auto scope=epoch.lock();
+        if (!scope || scope->phase!=StagePhase::Reading || scope->index<0)
             throw std::runtime_error("Expired or unprepared Stage STATE view.");
-        return fields.at(activeStage_)->read(cell,component);
+        return fields.at(scope->index)->read(cell,component);
     };
 }
 
@@ -80,40 +83,13 @@ StateRealization realizeState(
         const RuntimeRequirements& requirements, State::StateBundle& state,
         const std::vector<CompiledStateView>& views) {
     state.validatePatches();
-    StateRealization result;
+    StateRealization result;result.state_=&state;result.symbols_=&symbols;
+    auto demands=views;compileDerivedViews(symbols,demands);
     result.unknowns_.reserve(symbols.symbols().size());
     for (const StateSymbol& unknown : symbols.symbols()) {
         RealizedUnknown realized;
         realized.descriptor = &unknown;
-        if (unknown.derivation!=StateDerivation::None) {
-            for (std::size_t patch=0;patch<state.patches.size();++patch) {
-                auto storage=std::make_unique<StateRealization::ViewStorage>();
-                auto& view=storage->field;
-                view.name=unknown.id;view.blockId=(int)patch;view.geometry=state.patches[patch];
-                view.components=unknown.components;view.haloDepth=view.geometry->NG();
-                view.exchange=State::ExchangeKind::None;
-                view.read=[field=view.geometry,kind=unknown.derivation](int cell,int component) {
-                    int i=0,j=0,k=0;field->getIJK(cell,i,j,k);
-                    if (kind==StateDerivation::WallDistance) return field->wallDistance(i,j,k);
-                    const auto value=field->thermodynamicState(i,j,k);
-                    switch (kind) {
-                    case StateDerivation::Velocity:return value.velocity.at((std::size_t)component);
-                    case StateDerivation::Pressure:return value.pressure;
-                    case StateDerivation::Temperature:return value.temperature;
-                    case StateDerivation::Enthalpy:return (value.internalEnergyDensity+value.pressure)/value.density;
-                    case StateDerivation::DynamicViscosity:return value.dynamicViscosity;
-                    case StateDerivation::KinematicViscosity:return value.dynamicViscosity/value.density;
-                    case StateDerivation::ThermalConductivity:return value.thermalConductivity;
-                    case StateDerivation::WallDistance:break;
-                    case StateDerivation::None:break;
-                    }
-                    throw std::runtime_error("Unsupported STATE derivation.");
-                };
-                view.write=[](int,int,double) { throw std::runtime_error("Cannot write a derived STATE view."); };
-                realized.fields.push_back(&view);result.owned_.push_back(std::move(storage));
-            }
-            result.unknowns_.push_back(std::move(realized));continue;
-        }
+        if (unknown.producer) { result.unknowns_.push_back(std::move(realized));continue; }
         if (!unknown.runtimeStorageRequired
             || unknown.storageBinding == StorageBinding::TransientWorkspace
             || unknown.storageBinding == StorageBinding::SpecializedExecutor) {
@@ -143,8 +119,14 @@ StateRealization realizeState(
         }
         result.unknowns_.push_back(std::move(realized));
     }
-    for (const auto& descriptor:views) {
+    for (const auto& descriptor:demands) if (descriptor.producer && descriptor.kind==StateViewKind::Physical)
+        result.bindDerived(descriptor);
+    for (const auto& descriptor:demands) {
+        if (descriptor.producer && descriptor.kind==StateViewKind::Physical) continue;
         RealizedStateView realized{descriptor,{}};
+        if (descriptor.producer) {
+            result.views_.push_back(std::move(realized));continue;
+        }
         if (descriptor.owner==StateViewOwner::PhysicalState
             || (descriptor.owner==StateViewOwner::NumericalProvider
                 && descriptor.kind==StateViewKind::Physical
@@ -206,6 +188,137 @@ StateRealization realizeState(
     return result;
 }
 
+void StateRealization::bindDerived(const CompiledStateView& descriptor) {
+    if (std::any_of(derived_.begin(),derived_.end(),[&](const auto& v) {
+        return v->descriptor.symbol==descriptor.symbol && v->descriptor.kind==descriptor.kind && v->descriptor.stage==descriptor.stage;
+    })) return;
+    const auto& symbol=symbols_->at(descriptor.symbol);
+    const auto& producer=*descriptor.producer;
+    for (const auto& id:symbol.dependencies) if (symbols_->at(id).producer) {
+        if (descriptor.kind==StateViewKind::Physical) {
+            std::vector<CompiledStateView> inputs;compileDerivedViews(*symbols_,inputs);
+            for (const auto& input:inputs) if (input.symbol==id) bindDerived(input);
+        } else {
+            const auto input=std::find_if(views_.begin(),views_.end(),[&](const auto& v) {
+                return v.descriptor.symbol==id && v.descriptor.kind==descriptor.kind && v.descriptor.stage==descriptor.stage;
+            });
+            if(input==views_.end())throw std::runtime_error("Unsupported missing derived dependency version: "+symbol.id+" -> "+id);
+            const auto requested=input->descriptor;bindDerived(requested);
+        }
+    }
+    const bool materialized=symbol.evaluation==StateEvaluation::Materialized;
+    std::vector<State::DistributedFieldView*> outputs;
+    if (materialized) outputs=localFields(*state_,descriptor.storage);
+    if (materialized && outputs.size()!=state_->patches.size())
+        throw std::runtime_error("Unsupported missing derived output storage: "+symbol.id+"/"+toString(descriptor.kind)+" producer="+producer.id);
+    std::vector<State::DistributedFieldView*> fields;
+    for (std::size_t patch=0;patch<state_->patches.size();++patch) {
+        std::vector<State::DistributedFieldView> inputs;
+        for (const auto& id:symbol.dependencies) {
+            const auto& dependency=symbols_->at(id);
+            const auto& available=descriptor.kind==StateViewKind::Physical ? at(id).fields
+                : view(id,descriptor.kind,descriptor.stage).fields;
+            if (available.size()!=state_->patches.size())
+                throw std::runtime_error("Unsupported missing dependency view: "+symbol.id+" -> "+id+"/"+toString(descriptor.kind)+" producer="+producer.id);
+            auto input=*available.at(patch);
+            const int offset=descriptor.kind==StateViewKind::Physical?dependency.componentOffset:0;
+            // Provider Stage views are already sliced; Physical packed aliases are not.
+            if (input.geometry!=state_->patches[patch] || input.location!=State::FieldLocation::Cell
+                || input.components<offset+dependency.components)
+                throw std::runtime_error("Invalid derived input layout: "+symbol.id+" -> "+id);
+            input.read=[read=input.read,offset](int cell,int component){return read(cell,offset+component);};
+            input.components=dependency.components;
+            input.write=[id](int,int,double){throw std::runtime_error("Execution contract: derived input is read-only: "+id);};
+            inputs.push_back(std::move(input));
+        }
+        auto bound=std::make_shared<DerivedView>();bound->descriptor=descriptor;
+        if (materialized) bound->field=*outputs.at(patch);
+        else {
+            auto& v=bound->field;v.name=symbol.id;v.blockId=(int)patch;v.geometry=state_->patches[patch];
+            v.components=symbol.components;v.haloDepth=v.geometry->NG();v.exchange=State::ExchangeKind::None;
+        }
+        if (bound->field.components!=symbol.components || bound->field.geometry!=state_->patches[patch]
+            || bound->field.location!=State::FieldLocation::Cell)
+            throw std::runtime_error("Invalid derived output layout: "+symbol.id);
+        auto* distributed=&state_->distributed;
+        // As with distributed field handles, registration is complete before binding.
+        std::vector<const unsigned long long*> revisions;
+        const unsigned long long* outputRevision=nullptr;
+        if (materialized) {
+            for (const auto& input:inputs) revisions.push_back(&distributed->generation(input.name,input.blockId));
+            outputRevision=&distributed->generation(bound->field.name,bound->field.blockId);
+            bound->versions.resize(revisions.size());
+        }
+        bound->update=producer.bind(*state_->patches[patch],inputs,bound->field);
+        if (materialized!=static_cast<bool>(bound->update) || !bound->field.read)
+            throw std::runtime_error("Invalid STATE producer update/access contract: "+symbol.id+" producer="+producer.id);
+        const auto weak=std::weak_ptr<DerivedView>(bound);
+        const auto epoch=std::weak_ptr<StageEpoch>(epoch_);
+        const std::string context=symbol.id+"/"+toString(descriptor.kind)+" stage="+std::to_string(descriptor.stage)+" producer="+producer.id;
+        bound->field.requireReadable=[weak,epoch,inputs,revisions,outputRevision,materialized,distributed,context] {
+            const auto value=weak.lock();const auto scope=epoch.lock();
+            if (!value || !scope) throw std::runtime_error("Execution contract: expired derived view "+context);
+            if (value->descriptor.kind==StateViewKind::Stage && (scope->phase!=StagePhase::Reading || scope->index!=value->descriptor.stage))
+                throw std::runtime_error("Execution contract: wrong Stage epoch "+context);
+            if (materialized) {
+                if (!value->ready) throw std::runtime_error("Execution contract: unready derived dependencies "+context);
+                if (*outputRevision!=value->outputVersion)
+                    throw std::runtime_error("Execution contract: overwritten derived output "+context);
+                for (std::size_t i=0;i<inputs.size();++i) {
+                    if (inputs[i].requireReadable) inputs[i].requireReadable();
+                    if (*revisions[i]!=value->versions[i])
+                        throw std::runtime_error("Execution contract: stale derived dependency "+inputs[i].name+" "+context);
+                }
+            }
+            if (value->descriptor.haloRequired && distributed->needsExchange(value->field.name,1))
+                throw std::runtime_error("Execution contract: unpublished derived halo "+context);
+        };
+        bound->field.read=[validate=bound->field.requireReadable,read=bound->field.read](int cell,int component) {
+            validate();return read(cell,component);
+        };
+        if (bound->update) {
+            bound->update=[weak,epoch,revisions,outputRevision,compute=bound->update,distributed,context] {
+                const auto value=weak.lock();const auto scope=epoch.lock();
+                if (!value || !scope) throw std::runtime_error("Execution contract: expired derived update "+context);
+                if (value->descriptor.kind==StateViewKind::Stage && (scope->phase!=StagePhase::Preparing || scope->index!=value->descriptor.stage))
+                    throw std::runtime_error("Execution contract: update outside Stage preparation "+context);
+                value->ready=false;
+                for(std::size_t i=0;i<revisions.size();++i)value->versions[i]=*revisions[i];
+                compute();
+                for(std::size_t i=0;i<revisions.size();++i)if(*revisions[i]!=value->versions[i])
+                    throw std::runtime_error("Execution contract: producer wrote its dependencies "+context);
+                distributed->markModified(value->field.name,value->field.blockId);
+                value->outputVersion=*outputRevision;value->ready=true;
+            };
+        }
+        bound->field.write=[context](int,int,double){throw std::runtime_error("Execution contract: read-only derived view "+context);};
+        bound->field.validate();fields.push_back(&bound->field);derived_.push_back(std::move(bound));
+    }
+    if (descriptor.kind==StateViewKind::Physical) {
+        for (auto& base:unknowns_) if (base.descriptor->id==descriptor.symbol) base.fields=fields;
+    }
+    const auto found=std::find_if(views_.begin(),views_.end(),[&](const auto& v){
+        return v.descriptor.symbol==descriptor.symbol && v.descriptor.kind==descriptor.kind && v.descriptor.stage==descriptor.stage;
+    });
+    if (found==views_.end()) views_.push_back({descriptor,std::move(fields)});
+    else found->fields=std::move(fields);
+}
+
+void StateRealization::bindDerivedViews() {
+    // Binding resolves handles only. It never runs a closure or inserts an Update.
+    std::vector<CompiledStateView> pending;
+    for (const auto& view:views_) if (view.descriptor.producer && view.fields.empty()) pending.push_back(view.descriptor);
+    for (const auto& descriptor:pending) bindDerived(descriptor);
+}
+void StateRealization::updateView(std::string_view symbol,StateViewKind kind,int stage) {
+    bool found=false;
+    for (const auto& item:derived_) if (item->descriptor.symbol==symbol && item->descriptor.kind==kind && item->descriptor.stage==stage) {
+        if (!item->update) throw std::runtime_error("Execution contract: no explicit update for readonly closure "+std::string(symbol));
+        found=true;item->update();
+    }
+    if (!found) throw std::runtime_error("Execution contract: unbound derived update "+std::string(symbol)+"/"+toString(kind));
+}
+
 const RealizedStateView& StateRealization::view(std::string_view symbol,
         StateViewKind kind,int stage) const {
     const auto found=std::find_if(views_.begin(),views_.end(),[&](const auto& value) {
@@ -231,7 +344,8 @@ void StateRealization::bindView(std::string_view symbol,StateViewKind kind,
         return value.descriptor.symbol==symbol && value.descriptor.kind==kind
             && value.descriptor.stage==stage;
     });
-    if (found==views_.end() || found->descriptor.owner!=StateViewOwner::NumericalProvider)
+    if (found==views_.end() || found->descriptor.owner!=StateViewOwner::NumericalProvider
+        || found->descriptor.producer)
         throw std::runtime_error("Provider cannot bind unrequested/owned STATE view: "+std::string(symbol));
     if (found->descriptor.components!=field.components)
         throw std::runtime_error("Provider STATE view component mismatch: "+std::string(symbol));

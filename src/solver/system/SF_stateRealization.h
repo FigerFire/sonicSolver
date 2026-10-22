@@ -60,4 +60,7 @@ CompiledStateView realizeTarget(const StateRegistry& state,CompiledTarget& targe
 void realizeTemporalViews(const StateRegistry& state,CompiledExecutionProgram& program,
     int stages);
 
+/// @brief 验证唯一 STATE 声明并冻结所需生产者；不添加更新或重排 HOW。
+void compileDerivedViews(const StateRegistry& state,std::vector<CompiledStateView>& views);
+
 } // namespace SF::System

@@ -1,5 +1,7 @@
 # src 源码导航
 
+当前开发顺序见 [四轴优先工作计划](../docs/four-axis-first-work-plan.md)：耦合契约 → 解释 → 内置控制 → 外部公式。架构首页的 2026-10-20 章节定义当前分层；较早报告保留为历史证据。
+
 `src/` 以 WHAT（EquationRegistry）、STATE（base variables / lazy compiled views）、HOW（ordered EquationCall / generic scopes）、WHICH（Numerics/providers）组织。当前实现和 legacy 边界见 [ARCHITECTURE.md](ARCHITECTURE.md) 与 [四模块迁移报告](../docs/four-module-state-migration.md)。
 
 | 目录 | 主要职责 |

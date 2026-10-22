@@ -13,6 +13,7 @@ Model::ValueType valueType(const std::string& type,const std::string& name) {
 }
 void validateDescriptor(Model::FieldDescriptor& f,const std::string& name) {
     if(f.storage!="primary"&&f.storage!="solveVariable"&&f.storage!="derived")throw std::runtime_error("field/"+name+": invalid storage role");
+    if(f.dimensions.is_null())return;
     if(!f.dimensions.is_array()||f.dimensions.size()!=7)throw std::runtime_error("field/"+name+": dimensions must contain 7 values");
     for(const auto& x:f.dimensions)if(!x.is_number())throw std::runtime_error("field/"+name+": dimensions must be numeric");
 }
@@ -26,7 +27,7 @@ Model::FieldDescriptor decodeRegistry(const std::string& name,const Model::Param
     Model::FieldDescriptor f;f.name=name;f.symbol=name;f.type=valueType(v.at("type").get<std::string>(),name);
     f.domain=v.value("domain",f.domain);f.location=v.value("location",f.location);
     f.dimensions=v.value("dimensions",f.dimensions);f.storage=v.value("storage",f.storage);
-    f.output=v.value("output",true);f.restart=v.value("restart",false);f.outputName=v.value("outputName",name);
+    f.output=v.value("output",true);f.outputDeclared=v.contains("output");f.restart=v.value("restart",false);f.outputName=v.value("outputName",name);
     validateDescriptor(f,name);return f;
 }
 Model::FieldDescriptor decode(const std::string& name,const Model::Parameters& v) {
@@ -59,7 +60,8 @@ Model::Parameters encodeRegistry(const Model::FieldDescriptor& f) {
     const char* types[]={"scalar","vector","symmetricTensor","tensor"};
     Model::Parameters value={{"type",types[static_cast<int>(f.type)]},{"domain",f.domain},
         {"location",f.location},{"dimensions",f.dimensions},{"storage",f.storage}};
-    if(!f.output) value["output"]=false;
+    if(f.dimensions.is_null())value.erase("dimensions");
+    if(!f.output || f.outputDeclared) value["output"]=f.output;
     if(f.outputName!=f.name&&!f.outputName.empty()) value["outputName"]=f.outputName;
     if(f.restart) value["restart"]=true;
     return value;

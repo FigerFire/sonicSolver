@@ -1,3 +1,4 @@
+#include "test/typedSymbols.h"
 #include "models/physics/multiphase/SF_multiphaseSystemContribution.h"
 #include "solver/system/SF_systemBuilder.h"
 #include "solver/system/SF_builtinState.h"
@@ -22,7 +23,7 @@ int main(){
         contribution.addState(System::builtinState(System::BuiltinState::Velocity));
         for(auto variable:{System::BuiltinState::Density,System::BuiltinState::Momentum}) {
             auto symbol=System::builtinState(variable);symbol.storageBinding=System::StorageBinding::PackedDistributed;
-            symbol.runtimeStorageRequired=true;contribution.addState(symbol);
+            symbol.runtimeStorageRequired=true;contribution.addState(SF::Test::state(symbol));
         }
     }
     System::ExecutionScope commit;commit.kind=System::ExecutionKind::Commit;commit.id="commit";commit.order=1000000;contribution.addExecution(commit);

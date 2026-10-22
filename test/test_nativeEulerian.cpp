@@ -18,13 +18,19 @@ void calls(ExecutionScope& scope,const std::string& id,const std::function<void(
 }
 }
 int main() {
-    SF::FDM::SolverConfig config;config.numerics.maxDeltaT=0.001;
+    SF::FDM::SolverConfig config;config.numerics.timeRecipe=SF::FDM::builtInTimeRecipe(SF::FDM::TimeRecipeId::ForwardEuler);config.numerics.maxDeltaT=0.001;
     config.pressure.coupling.preset=SF::FDM::PressureCouplingPreset::PIMPLE;
     config.pressure.coupling.outerCorrectors=2;config.pressure.coupling.pressureCorrectors=3;
     config.pressure.coupling.nonOrthogonalCorrectors=1;
     BuildRequest request;request.templateOrigin=PhysicsTemplateKind::EulerianEulerian;
     request.phaseNames={"water","air","other"};request.referencePhase="water";
     request.coupling=couplingRequestFrom(config.pressure.coupling,true);
+    auto wrongRecipe=config;wrongRecipe.numerics.timeRecipe=SF::FDM::builtInTimeRecipe(SF::FDM::TimeRecipeId::ClassicalRK4);
+    bool wrongTimeRejected=false;
+    try {(void)build(wrongRecipe,request);} catch(const std::runtime_error& error) {
+        wrongTimeRejected=std::string(error.what()).find("selected temporal method classicalRK4")!=std::string::npos;
+    }
+    require(wrongTimeRejected,"Eulerian fixed-time provider silently ignored the selected RK4 recipe");
     const auto resolved=build(config,request);
     require(resolved.executableSystem.state.solutionVariables().empty(),"Phase fields became single-fluid primary selection.");
     require(resolved.solvePlan.compiledProgram.steps.size()==17,"Missing separate phase/correction occurrences.");

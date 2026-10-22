@@ -2,6 +2,8 @@
 /// @brief Authoritative density single-fluid Navier-Stokes composition.
 
 #include "SF_singleFluidPreset.h"
+#include "SF_builtinState.h"
+#include "SF_pressureCoupling.h"
 
 #include <algorithm>
 #include <utility>
@@ -11,15 +13,15 @@ namespace SF::System::Preset {
 namespace {
 
 FormulaExpr transient(const char* symbol,const char* occurrence) {
-    return FormulaExpr::op("ddt",{FormulaExpr::symbol(symbol)},occurrence);
+    return FormulaExpr::op(Math::Op::Ddt,{BuiltinStateCatalog().expression(symbol)},occurrence);
 }
 FormulaExpr divergence(const char* flux,const char* occurrence) {
-    return FormulaExpr::op("div",{FormulaExpr::symbol(flux)},occurrence);
+    return FormulaExpr::op(Math::Op::Div,{BuiltinStateCatalog().expression(flux)},occurrence);
 }
 FormulaExpr diffusion(const char* coefficient,const char* unknown,
                       const char* occurrence) {
-    return FormulaExpr::op("diffusion",
-        {FormulaExpr::symbol(coefficient),FormulaExpr::symbol(unknown)},
+    return FormulaExpr::op(Math::Op::Diffusion,
+        {BuiltinStateCatalog().expression(coefficient),BuiltinStateCatalog().expression(unknown)},
         occurrence);
 }
 
@@ -65,6 +67,9 @@ void installSingleFluid(
         call.order=std::get<2>(item);
         call.step={std::get<0>(item),{target}};
         call.origin={OriginKind::BuiltinPreset,"NavierStokes"};
+        if (std::string(std::get<0>(item))=="momentum")
+            system.pressureInputs=pressureCouplingInputs(call.step,
+                PressurePredictorKind::ConservativeMomentum);
         system.addExecution(std::move(call));
         system.bindNumerics({std::get<0>(item),"ConservativeResidual"});
     }

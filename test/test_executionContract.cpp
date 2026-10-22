@@ -1,5 +1,9 @@
+#include "test/typedSymbols.h"
 #include "solver/system/SF_executionContract.h"
 #include "solver/system/SF_methodObjects.h"
+#include "solver/system/SF_systemBuilder.h"
+#include "solver/system/SF_systemPrinter.h"
+#include "solver/system/SF_systemValidator.h"
 #include "solver/system/SF_builtinState.h"
 #include "solver/system/SF_formulaStorage.h"
 #include "models/physics/fluidStateModel/SF_factory.h"
@@ -18,7 +22,11 @@ void fails(const std::function<void()>& test,const std::string& reason) {
 StateSymbol symbol(std::string id,std::string storage,int offset=0,int components=1) {
     StateSymbol result;result.id=id;result.name=id;result.storageKey=storage;
     result.storageBinding=StorageBinding::PackedDistributed;result.componentOffset=offset;result.components=components;
-    result.shape=components==1?ValueShape::Scalar:ValueShape::Vector;return result;
+    result.shape=components==1?ValueShape::Scalar:ValueShape::Vector;
+    // This fixture tests alias/version ownership with abstract dimensionless components.
+    result.signature=SF::Math::signature(components==1?0:1,{});
+    if(components>1)result.signature.extent=components;
+    return result;
 }
 ExecutionScope call(std::string id) {
     ExecutionScope result;result.kind=ExecutionKind::EquationCall;result.id=id;result.step={id,{"m"},id};return result;
@@ -32,7 +40,52 @@ CompiledExecutionProgram program(std::initializer_list<CompiledEquationCall> cal
     return result;
 }
 }
+namespace {
+void compositionCoverage() {
+    using E=FormulaExpr;
+    SF::FDM::SolverConfig config;config.numerics.maxDeltaT=.001;
+    config.numerics.timeRecipe=SF::FDM::builtInTimeRecipe(SF::FDM::TimeRecipeId::ClassicalRK4);
+    BuildRequest request;request.includeDefaultFluidPreset=false;
+    request.composition.stateDeclared=true;request.composition.solutionVariables={"tracer"};
+    SystemContribution scalar;scalar.recordContribution("internal.transport","internal scalar contribution");
+    StateSymbol field;field.id=field.name=field.storageKey="tracer";field.storageBinding=StorageBinding::NamedDistributed;
+    scalar.addState(SF::Test::state(field));
+    scalar.addEquation({"transport",E::op("ddt",{SF::Test::symbol("tracer")}),E::op("diffusion",{E::constantValue(.02,SF::Math::signature(0,{0,2,-1,0,0,0,0})),SF::Test::symbol("tracer")})});
+    ExecutionScope call;call.kind=ExecutionKind::EquationCall;call.step={"transport",{"tracer"},"transport.once"};scalar.addExecution(call);
+    ExecutionScope commit;commit.kind=ExecutionKind::Commit;commit.id="commit";commit.order=100;scalar.addExecution(commit);
+    scalar.bindNumerics({"transport","ScalarDiffusionCentral2"});
+    scalar.addClosure("internal algebraic view",{"transport"},{"tracer"});
+    request.userContributions={scalar};
+    auto system=build(config,request);validate(system);
+    require(equationConsumers(system.executableSystem,system.solvePlan.compiledProgram,"transport").size()==1,"Equation coverage lost native occurrence");
+    require(system.executableSystem.closures[0].origin.source.find("internal.transport")!=std::string::npos,"Closure lost contribution provenance");
+    require(describe(system).find("TIME_RECIPE")==std::string::npos,"Explain restored a second time authority");
+    require(describe(system).find("compiled recipe stages, count=4")!=std::string::npos,"Actual recipe stage treatment is missing");
+    require(!equationOperations(system.executableSystem,system.solvePlan,"transport").empty(),"Equation has no real compiled leaves");
+    auto erased=system.solvePlan;erased.root={};
+    fails([&]{validateMathematicalCoverage(system.executableSystem,erased,true);},"no compiled operation");
+    auto bad=system.executableSystem;bad.registry.add({"orphan",SF::Test::symbol("tracer"),SF::Test::symbol("tracer")});
+    fails([&]{validateMathematicalCoverage(bad,system.solvePlan,true);},"no compiled consumer");
+    bad=system.executableSystem;bad.constraints.push_back({"missing","missing","relation","",{},{"notRegistered"}});
+    fails([&]{validateMathematicalCoverage(bad,system.solvePlan,true);},"not registered");
+    bad=system.executableSystem;bad.closures[0].states={"unknownState"};
+    fails([&]{validateMathematicalCoverage(bad,system.solvePlan,true);},"Unknown base STATE");
+    auto missing=system.solvePlan;missing.compiledProgram.steps[0].sourceMathInputs.push_back("unknownMath");
+    fails([&]{validateMathematicalCoverage(system.executableSystem,missing,true);},"not registered");
+    auto extended=request;
+    SystemContribution term;term.recordContribution("internal.reaction","reaction term");
+    term.extendMathematics({"transport"},E::multiply(E::constantValue(.2,SF::Math::signature(0,{0,0,-1,0,0,0,0})),SF::Test::symbol("tracer")));
+    extended.userContributions.push_back(term);
+    auto modified=build(config,extended);validate(modified);
+    require(modified.rawSystem.modifications.size()==1 && modified.rawSystem.modifications[0].origin.source.find("internal.reaction")!=std::string::npos,"Term contribution lost source identity");
+    extended.userContributions.back().mathematicalExtensions.push_back(term.mathematicalExtensions[0]);
+    fails([&]{(void)build(config,extended);},"Duplicate mathematical contribution");
+    auto wrong=request;term.mathematicalExtensions[0].families={"missingEquation"};wrong.userContributions.push_back(term);
+    fails([&]{(void)build(config,wrong);},"no registered target equation");
+}
+}
 int main() {
+    compositionCoverage();
     StateRegistry state;
     state.add(symbol("m","Q",1,3));state.add(symbol("e","Q",4));state.add(symbol("packed","Q",0,5));
     auto prior=symbol("laggedM","laggedM");prior.availableVersion=StateVersion::Lagged;state.add(prior);

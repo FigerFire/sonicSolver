@@ -32,6 +32,7 @@
 ///   auto q    = Taylor::evaluate1D<5>(derivs, dist, order); // Taylor外推
 /// @endcode
 
+#include "SF_signature.h"
 #include "SF_vector.h"
 #include "SF_tensor.h"
 #include "SF_taylor.h"
@@ -97,50 +98,6 @@ inline double nonuniformFirstDiff(
 inline double minmod(double a, double b) {
     if (a * b <= 0.0) return 0.0;
     return (std::abs(a) < std::abs(b)) ? a : b;
-}
-
-/// @brief 速度平方 (RU²+RV²+RW²) / RHO²。
-/// @param rho 密度。
-/// @param ru x方向动量。
-/// @param rv y方向动量。
-/// @param rw z方向动量。
-/// @return 速度模长的平方 u²+v²+w²。
-inline double velocitySquared(double rho, double ru, double rv, double rw) {
-    double invRho = 1.0 / rho;
-    return (ru * ru + rv * rv + rw * rw) * invRho * invRho;
-}
-
-/// @brief 从守恒量计算压力 p = (γ-1)(E - KE)。
-/// @param rho 密度。
-/// @param ru x方向动量。
-/// @param rv y方向动量。
-/// @param rw z方向动量。
-/// @param e 总能量。
-/// @param gamma 比热比, 默认1.4。
-/// @return 压力 p。
-inline double pressureFromConserved(
-    double rho, double ru, double rv, double rw, double e,
-    double gamma = 1.4)
-{
-    double invRho = 1.0 / rho;
-    double ke = 0.5 * (ru * ru + rv * rv + rw * rw) * invRho;
-    return (gamma - 1.0) * (e - ke);
-}
-
-/// @brief 从守恒量计算声速 c = sqrt(γ p / ρ)。
-/// @param rho 密度。
-/// @param ru x方向动量。
-/// @param rv y方向动量。
-/// @param rw z方向动量。
-/// @param e 总能量。
-/// @param gamma 比热比, 默认1.4。
-/// @return 声速 c。
-inline double soundSpeed(
-    double rho, double ru, double rv, double rw, double e,
-    double gamma = 1.4)
-{
-    double p = pressureFromConserved(rho, ru, rv, rw, e, gamma);
-    return std::sqrt(gamma * p / rho);
 }
 
 /// @brief 判断值是否有限(非NaN非Inf)。

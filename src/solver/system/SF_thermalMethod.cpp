@@ -20,11 +20,11 @@ public:
             const NumericalBinding& binding) const override {
         const auto& state=system.state.at(call.target.symbol);
         if (call.target.symbol!="thermal.T" || call.target.kind!=TargetKind::Physical
-            || state.components!=1 || state.componentOffset!=0 || state.derivation!=StateDerivation::None
+            || state.components!=1 || state.componentOffset!=0 || state.readOnly()
             || state.storageBinding!=StorageBinding::NamedDistributed || state.storageKey.empty()
             || state.storageKey=="conservative" || !binding.inputs.empty())
             throw std::runtime_error("Thermal transport requires an independent named scalar STATE, not the EOS temperature/energy authority.");
-        if(system.state.contains("T") && system.state.at("T").derivation==StateDerivation::Temperature && state.storageKey=="T")
+        if(system.state.contains("T") && producedBy(system.state.at("T"),"closure.thermodynamic.T") && state.storageKey=="T")
             throw std::runtime_error("Independent thermal target conflicts with EOS T identity: choose an explicit distinct fieldName, e.g. thermalTemperature.");
         const std::set<std::string> names={"convection","diffusion","D","bounded","lower","upper","boundMode","ilw","ilwOrder"};
         if (binding.parameters.size()!=names.size()) throw std::runtime_error("Incomplete thermal numerical recipe.");
@@ -40,15 +40,15 @@ public:
             throw std::runtime_error("Thermal ILW requires order 3/5/7/9.");
         if(p.at("convection")) {
             const auto& u=system.state.at("U");const auto& rho=system.state.at("rho");const auto& momentum=system.state.at("rhoU");
-            if(u.derivation!=StateDerivation::Velocity || u.components!=3
+            if(!producedBy(u,"closure.thermodynamicVelocity") || u.components!=3
                 || rho.storageBinding!=StorageBinding::PackedDistributed || rho.storageKey!="conservative" || rho.componentOffset!=0
                 || momentum.storageBinding!=StorageBinding::PackedDistributed || momentum.storageKey!="conservative"
                 || momentum.componentOffset!=1 || momentum.components!=3)
                 throw std::runtime_error("Unsupported thermal velocity port: requires U closure from five-variable packed rho/rhoU, not an unrelated STATE alias.");
         }
-        using E=FormulaExpr;auto lhs=E::op("ddt",{E::symbol("thermal.T")});
-        if(p.at("convection"))lhs=E::add(std::move(lhs),E::op("div",{E::symbol("U"),E::symbol("thermal.T")}));
-        auto rhs=p.at("diffusion")?E::op("diffusion",{E::constantValue(p.at("D")),E::symbol("thermal.T")}):E::constantValue(0);
+        using E=FormulaExpr;auto lhs=E::op(Math::Op::Ddt,{system.state.expression("thermal.T")});
+        if(p.at("convection"))lhs=E::add(std::move(lhs),E::op(Math::Op::Div,{system.state.expression("U"),system.state.expression("thermal.T")}));
+        auto rhs=p.at("diffusion")?E::op(Math::Op::Diffusion,{E::constantValue(p.at("D"),Math::signature(0,{0,2,-1,0,0,0,0})),system.state.expression("thermal.T")}):E::constantValue(0);
         if(canonicalFormula(system.registry.at(call.equation))!=canonicalFormula(Equation{call.equation,std::move(lhs),std::move(rhs)}))
             throw std::runtime_error("Unsupported thermal mathematics: numerical recipe does not match WHAT.");
         CompiledEquationCall r;r.source=call;r.equationMethod=id();r.target.symbol=call.target.symbol;r.target.kind=call.target.kind;

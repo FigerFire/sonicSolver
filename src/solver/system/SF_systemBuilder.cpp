@@ -261,11 +261,11 @@ ResolvedSimulationSystem build(
         if (eos == "rhoConst") {
             result.classification.densityBehavior = "constant";
             result.classification.thermodynamicCompressibility = "zero";
-            result.rawSystem.closures.push_back("rho = rho0 (rhoConst)");
+            builtin.addClosure("rho = rho0 (rhoConst)",{},{"rho"});
         } else if (eos == "perfectGas") {
             result.classification.densityBehavior = "variable";
             result.classification.thermodynamicCompressibility = "available";
-            result.rawSystem.closures.push_back("p = p(rho,T) (perfectGas)");
+            builtin.addClosure("p = p(rho,T) (perfectGas)",{},{"p","rho","T"});
         }
     }
 
@@ -310,18 +310,17 @@ ResolvedSimulationSystem build(
 
     validateImmersedComposition(result.rawSystem);
     TransformerRegistry transformers;
-    const auto momentum=std::find_if(builtin.execution.begin(),builtin.execution.end(),[](const auto& node) {
-        return node.kind==ExecutionKind::EquationCall && node.step.equation=="momentum";
-    });
+    const auto pressureInputs=request.pressureInputs ? request.pressureInputs : builtin.pressureInputs;
     transformers.registerTransformer(makePressureConstraintTransformer(
-        momentum==builtin.execution.end()?std::string{}:momentum->step.target.symbol));
+        pressureInputs.value_or(PressureCouplingInputs{}),
+        request.coupling && request.coupling->presetKind!=FDM::PressureCouplingPreset::PISO));
     transformers.registerTransformer(makeSharedPressureTransformer());
     // REGISTERED MODEL：压力耦合 preset。它的生效条件来自 resolved raw
     // equation/constraint structure，而不是 density/pressure 标签；状态必须
     // 显式报告，禁止静默忽略。
     if (request.coupling) {
         result.coupling = contributePressureCoupling(
-            models,*request.coupling,result.rawSystem);
+            models,*request.coupling,result.rawSystem,pressureInputs ? &*pressureInputs : nullptr);
     }
     // phase-1 是否真的贡献了 policy；resolution 之后 status 可能变成
     // Unsupported（缺 formulation operation），但 plan 仍必须真实描述该
@@ -351,7 +350,7 @@ ResolvedSimulationSystem build(
             module->execution.begin(),module->execution.end());
         equationMethods.insert(equationMethods.end(),module->numerics.begin(),module->numerics.end());
     }
-    composeContributions(result,request,executionProgram,equationMethods);
+    composeContributions(result,request,executionProgram,equationMethods,pressureInputs ? &*pressureInputs : nullptr);
     requireTargetStates(result.executableSystem.state,executionProgram.root);
     if (request.authoredExecution) {
         if (request.authoredNumerics.empty()) throw std::runtime_error("Authored HOW requires explicit WHICH bindings.");

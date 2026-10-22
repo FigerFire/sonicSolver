@@ -11,21 +11,8 @@ CompiledSolvePlan SolvePlanner::compile(
         const CompiledExecutionProgram& compiledExecution) {
     if (compiledExecution.steps.empty())
         throw std::runtime_error("SolvePlanner requires compiled HOW equation occurrences; no legacy lowering is available.");
+    if (timeRecipe.stageCount()<1) throw std::runtime_error("Invalid configured time recipe.");
     CompiledSolvePlan result;
-    SolveBlock time;
-    time.id="TIME_RECIPE";
-    time.name=std::string(FDM::toString(timeRecipe.id()))+" time recipe";
-    time.strategy=FDM::toString(timeRecipe.id());
-    time.strategyKind=FDM::SolveStrategyKind::ExplicitTimeIntegration;
-    for (const auto& step:compiledExecution.steps) {
-        for (const auto& input:step.sourceMathInputs)
-            if (system.registry.contains(input)) time.equations.push_back(input);
-        for (const auto& call:step.calls)
-            if (system.registry.contains(call.equation)) time.equations.push_back(call.equation);
-        if (system.state.contains(step.source.target.symbol))
-            time.unknowns.push_back(step.source.target.symbol);
-    }
-    result.blocks.push_back(std::move(time));
     result.root=compiledExecution.hasTemporalRoot
         ? compiledExecution.temporalRoot : compileMethodProgram(compiledExecution);
     return result;

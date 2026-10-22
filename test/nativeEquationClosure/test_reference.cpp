@@ -1,3 +1,4 @@
+#include "test/typedSymbols.h"
 #include "app/application/SF_inspection.h"
 #include "app/application/execution/SF_flowLoop.h"
 #include "app/application/output/SF_fields.h"
@@ -26,11 +27,11 @@ int main(int argc,char** argv) {
         if(std::getline(parameters,token,':'))source=std::stod(token);
         request.composition.solutionVariables.push_back(symbol);
         System::StateSymbol state;state.id=state.name=state.storageKey=symbol;state.storageBinding=System::StorageBinding::NamedDistributed;state.restartEligible=false;
-        contribution.addState(state);
-        auto rhs=E::op("diffusion",{E::constantValue(D),E::symbol(symbol)});
-        if(reaction)rhs=E::add(std::move(rhs),E::multiply(E::constantValue(reaction),E::symbol(symbol)));
-        if(source)rhs=E::add(std::move(rhs),E::constantValue(source));
-        contribution.addEquation(System::Equation{equation,E::op("ddt",{E::symbol(symbol)}),std::move(rhs)});
+        contribution.addState(([&]{state.signature=SF::Math::signature(0,{});return state;})());
+        auto rhs=E::op("diffusion",{E::constantValue(D,SF::Math::signature(0,{0,2,-1,0,0,0,0})),E::symbol(symbol,SF::Math::signature(0,{}))});
+        if(reaction)rhs=E::add(std::move(rhs),E::multiply(E::constantValue(reaction,SF::Math::signature(0,{0,0,-1,0,0,0,0})),E::symbol(symbol,SF::Math::signature(0,{}))));
+        if(source)rhs=E::add(std::move(rhs),E::constantValue(source,SF::Math::signature(0,{0,0,-1,0,0,0,0})));
+        contribution.addEquation(System::Equation{equation,E::op("ddt",{E::symbol(symbol,SF::Math::signature(0,{}))}),std::move(rhs)});
         System::ExecutionScope call;call.kind=System::ExecutionKind::EquationCall;call.step={equation,{symbol,System::TargetKind::Physical},"advance."+symbol};how.root.children.push_back(call);
         request.authoredNumerics.push_back({equation,"ScalarDiffusionCentral2"});
     }

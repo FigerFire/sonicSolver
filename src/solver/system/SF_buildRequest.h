@@ -5,6 +5,7 @@
 
 #include "SF_physicsTemplate.h"
 #include "SF_couplingStatus.h"
+#include "SF_pressureCoupling.h"
 #include "SF_termProviderCatalog.h"
 #include "core/system/SF_equationIR.h"
 #include "core/system/SF_systemContribution.h"
@@ -54,6 +55,8 @@ struct BuildRequest {
     /// @brief 显式注册的压力耦合 preset；生效与否由 resolved equation system
     ///        决定（active/inactive/invalid/unsupported），不做静默忽略。
     std::optional<CouplingPresetRequest> coupling;
+    /// @brief 显式方法引用覆盖内置方案的引用，不按 equation ID 搜索预测器。
+    std::optional<PressureCouplingInputs> pressureInputs;
     /// @brief 用户对已有 equation/未知量的显式修改请求。
     ///
     /// Precedence（§15，typed system layer）：

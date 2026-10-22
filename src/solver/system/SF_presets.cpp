@@ -1,3 +1,4 @@
+#include "SF_builtinState.h"
 /// @file SF_presets.cpp
 /// @brief COMPOSE — built-in 物理方程 bundle 的四模块贡献。
 ///
@@ -41,6 +42,7 @@ void addState(
     unknown.storageKey = std::move(storageKey);
     unknown.componentOffset = componentOffset;
     unknown.nameSpace = std::move(nameSpace);
+    unknown.signature=EulerianMathematics::signature(unknown.id);
     system.addState(std::move(unknown));
 }
 
@@ -54,7 +56,7 @@ void addPressureConstraintFluid(
     // Its native WHICH method explicitly fuses these inputs without duplicating WHAT.
     Preset::installSingleFluid(system,SingleFluidPresetSpec{false},composition);
     system.addConstraint({"C_INCOMPRESSIBILITY","pressure/continuity constraint",
-                          "pressureVelocityConsistency = 0","p"});
+                          "pressureVelocityConsistency = 0","p",{},{"pSimple","correctU","correctFluxp"}});
 }
 
 /// @brief Raw U/p composition for rho=rho0.  It intentionally does not
@@ -74,18 +76,18 @@ void addConstantDensityFluid(
     system.recordContribution("model.rhoConst","constant-density EOS closure");
     if (includeDiffusion) system.requireState("nu");
     auto momentumFormula=FormulaExpr::add(
-        FormulaExpr::op("ddt",{FormulaExpr::symbol("U")},"momentum.time"),
-        FormulaExpr::op("div",{FormulaExpr::symbol("momentumFlux")},
+        FormulaExpr::op(Math::Op::Ddt,{BuiltinStateCatalog().expression("U")},"momentum.time"),
+        FormulaExpr::op(Math::Op::Div,{FormulaExpr::symbol("momentumFlux",Math::signature(2,{0,2,-2,0,0,0,0}))},
                         "momentum.convection"));
     if (includeDiffusion)
         momentumFormula=FormulaExpr::add(std::move(momentumFormula),
-            FormulaExpr::op("diffusion",
-                {FormulaExpr::symbol("nu"),FormulaExpr::symbol("U")},
+            FormulaExpr::op(Math::Op::Diffusion,
+                {BuiltinStateCatalog().expression("nu"),BuiltinStateCatalog().expression("U")},
                 "momentum.diffusion"));
     system.addEquation({"momentum",std::move(momentumFormula),
         FormulaExpr::constantValue(0.0),{}});
     system.addEquation({"continuity",
-        FormulaExpr::op("div",{FormulaExpr::symbol("U")},"continuity.constraint"),
+        FormulaExpr::op(Math::Op::Div,{BuiltinStateCatalog().expression("U")},"continuity.constraint"),
         FormulaExpr::constantValue(0.0),{}});
     ExecutionScope call;
     call.kind=ExecutionKind::EquationCall;
@@ -93,9 +95,10 @@ void addConstantDensityFluid(
     call.id="momentum.default";
     call.step={"momentum",{"U"}};
     call.origin={OriginKind::BuiltinPreset,"NavierStokes"};
+    system.pressureInputs=pressureCouplingInputs(call.step,PressurePredictorKind::Velocity);
     system.addExecution(std::move(call));
     system.addConstraint({"C_INCOMPRESSIBILITY","constant-density continuity",
-                          "div(U) = 0","p"});
+                          "div(U) = 0","p",{},{"continuity","pSimple","correctU","correctFluxp"}});
 }
 
 void addPhaseEquationPack(
@@ -131,10 +134,12 @@ void addPhaseEquationPack(
 void addSharedPressureConstraint(SystemCompositionBuilder& system) {
     system.addConstraint({
         "C_SHARED_PRESSURE","shared pressure relationship",
-        "p.phase = p",""});
-    system.addConstraint({
-        "C_VOLUME_FRACTION","volume-fraction closure",
-        "sum(alpha.phase) = 1",""});
+        "p.phase = p","",{},{"E_SHARED_PRESSURE","correctSharedP"}});
+    std::vector<std::string> phaseBalances;
+    for (const auto& equation:system.rawSystem().registry.entries())
+        if (equation.id.rfind("E_CONTINUITY.",0)==0) phaseBalances.push_back(equation.id);
+    system.addConstraint({"C_VOLUME_FRACTION","volume-fraction closure",
+        "sum(alpha.phase) = 1","",{},std::move(phaseBalances)});
     system.requestTransformation({
         "sharedPressureConstraint","PIMPLE shared-pressure transformation",
         110,true,{}});
@@ -177,12 +182,19 @@ void addEulerianEulerianTemplate(
     resolved.runtime.workspaceRequirements.push_back({
         "pressureCorrection",1,VariableLocation::EulerianCell,
         OwnershipKind::EulerianGlobalDof});
-    system.addClosure("pressure reference row: pPrime(referenceCell)=0; homogeneous correction boundary closure follows existing pressure matrix");
-    system.addClosure("referencePhaseRemainder = 1 - sum(non-reference alpha); existing recovery guards and EOS remain unchanged");
-    system.addClosure("sumFaceAlphaSquaredOverDiagonal = sum_phase faceAverage(alpha^2 / momentumDiagonal)");
-    system.addClosure("mixtureCompressibilityOverDt = sum(perfectGas alpha/p) / dt; pressureHistory = sum(perfectGas alpha/p)*(p-pOld)/dt");
-    system.addClosure("effectivePhaseViscosity = alpha*(mu+mu_t); effectivePhaseConductivity = alpha*(k/Cp+eddyEnergyDiffusivity)");
-    system.addClosure("materialPressureRate.phase = (p-pOld)/dt + U.phase dot gradient(p)");
+    std::vector<std::string> phaseBalances,phaseStressAndHeat,phaseHeat;
+    for (const auto& name:names) {
+        phaseBalances.push_back("E_CONTINUITY."+name);
+        phaseStressAndHeat.push_back("momentum."+name);
+        phaseStressAndHeat.push_back("E_ENTHALPY."+name);
+        phaseHeat.push_back("E_ENTHALPY."+name);
+    }
+    system.addClosure("pressure reference row: pPrime(referenceCell)=0; homogeneous correction boundary closure follows existing pressure matrix",{"E_SHARED_PRESSURE"});
+    system.addClosure("referencePhaseRemainder = 1 - sum(non-reference alpha); existing recovery guards and EOS remain unchanged",phaseBalances);
+    system.addClosure("sumFaceAlphaSquaredOverDiagonal = sum_phase faceAverage(alpha^2 / momentumDiagonal)",{"E_SHARED_PRESSURE"});
+    system.addClosure("mixtureCompressibilityOverDt = sum(perfectGas alpha/p) / dt; pressureHistory = sum(perfectGas alpha/p)*(p-pOld)/dt",{"E_SHARED_PRESSURE"});
+    system.addClosure("effectivePhaseViscosity = alpha*(mu+mu_t); effectivePhaseConductivity = alpha*(k/Cp+eddyEnergyDiffusivity)",phaseStressAndHeat);
+    system.addClosure("materialPressureRate.phase = (p-pOld)/dt + U.phase dot gradient(p)",phaseHeat);
     addSharedPressureConstraint(system);
 }
 

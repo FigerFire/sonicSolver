@@ -119,9 +119,10 @@ void FlowOperations::bindTemporalStateViews() {
     for (const auto& demand:solve_.compiledProgram.stateViews) {
         if (demand.kind!=System::StateViewKind::OldTime
             && demand.kind!=System::StateViewKind::Stage) continue;
+        if (demand.producer) continue; // Generic producer binding owns derived Stage views.
         if (std::none_of(solve_.compiledProgram.steps.begin(),solve_.compiledProgram.steps.end(),[&](const auto& call) {
             return call.backendProvider=="flow.conservative" && call.temporalResidual && call.target.symbol==demand.symbol;
-        }) && executable_.state.at(demand.symbol).derivation==System::StateDerivation::None) continue;
+        })) continue;
         for (std::size_t patch=0;patch<state_->patches.size();++patch) {
             if (index==temporalViews_.size())
                 temporalViews_.push_back(std::make_unique<State::DistributedFieldView>());
@@ -135,11 +136,6 @@ void FlowOperations::bindTemporalStateViews() {
                 if (component<0 || component>=demand.components)
                     throw std::out_of_range("Temporal STATE view component is out of range.");
                 const auto& symbol=*symbolPointer;
-                if (symbol.derivation!=System::StateDerivation::None) {
-                    if (demand.kind!=System::StateViewKind::Stage || !explicitWorkspace_.active || explicitWorkspace_.nextStage!=demand.stage)
-                        throw std::runtime_error("Derived flow Stage view is outside its epoch.");
-                    return realizedState_.at(demand.symbol).fields.at(patch)->read(cell,component);
-                }
                 if (symbol.storageBinding==System::StorageBinding::NamedDistributed) {
                     auto* registry=services_.equationSystem ? services_.equationSystem->variables(*geometry) : &state_->transported;
                     if (!registry) throw std::runtime_error("Temporal scalar has no active registry.");
@@ -166,6 +162,7 @@ void FlowOperations::bindTemporalStateViews() {
             realizedState_.bindView(demand.symbol,demand.kind,view,demand.stage);
         }
     }
+    realizedState_.bindDerivedViews();
 }
 
 void FlowOperations::bindState(State::StateBundle& state) {

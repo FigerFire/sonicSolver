@@ -52,6 +52,14 @@ int main() {
     try {(void)build(config,request);} catch(const std::runtime_error&) {rejected=true;}
     require(rejected,"CSF energy exchange could drift independently of native mathematics.");
 
+    spec.continuousSurfaceForce=false;spec.ghostFluid=true;
+    contribution={};SF::Physics::InterfaceModels::LevelSetContribution::contribute(contribution,spec);
+    request.modelContributions={contribution};rejected=false;
+    try {(void)build(config,request);} catch(const std::runtime_error& error) {
+        rejected=std::string(error.what()).find("no compiled consumer: interfacePressureJump")!=std::string::npos;
+    }
+    require(rejected,"A declared pressure jump without a consuming operator was reported executable.");
+
     SF::Field field;field.setup(32,1,1,4,5);
     SF::Physics::Multiphase::LevelSetField scalar;scalar.setupLike(field);
     for (int cell=0;cell<field.TotalSize();++cell) {

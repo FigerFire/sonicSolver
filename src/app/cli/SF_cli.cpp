@@ -294,8 +294,7 @@ int checkCase(const std::string& path, bool detailed) {
         return 1;
     }
     if (detailed) {
-        printText(SF::System::describe(inspection.system)
-                  + SF::IBM::renderExplain(inspection.ibmExplain));
+        printText(SF::Application::describeCase(inspection));
         printText("\nCompiled plan: " + inspection.system.solvePlan.root.name);
         return 0;
     }

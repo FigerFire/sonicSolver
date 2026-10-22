@@ -57,6 +57,22 @@ std::string token(const P& value) {
 
 namespace {
 
+bool modelEnabled(const P* value,std::initializer_list<const char*> wrappers={}) {
+    if (!value || !value->is_object()) return false;
+    std::optional<bool> enabled;
+    const auto read=[&](const P& block) {
+        if(block.contains("enable"))throw std::runtime_error("Optional model uses reserved 'enabled', not 'enable'.");
+        if(!block.contains("enabled"))return;
+        if(!block.at("enabled").is_boolean())throw std::runtime_error("Model enabled must be boolean.");
+        const bool selected=block.at("enabled").get<bool>();
+        if(enabled && *enabled!=selected)throw std::runtime_error("Conflicting explicit model enabled at outer and nested blocks.");
+        enabled=selected;
+    };
+    read(*value);
+    for(const auto* name:wrappers)if(value->contains(name) && value->at(name).is_object())read(value->at(name));
+    return enabled.value_or(true);
+}
+
 void collectKeyMatches(const P* node, const std::string& key,
                        std::vector<std::pair<const P*, int>>& out) {
     if (node == nullptr || !node->is_object()) return;
@@ -1657,9 +1673,8 @@ void CaseAdapter::decodeTurbulenceSection() {
     const P* text = &sections_.turbulence;
     FDM::TurbulenceConfig& turbulence = caseConfig_.solver.turbulence;
 
-    std::string value = jsonValueAfterKey(text, "enabled");
-    if (value.empty()) value = jsonValueAfterKey(text, "enable");
-    turbulence.enabled = !value.empty() && valueBoolValue(value, false);
+    std::string value;
+    turbulence.enabled = modelEnabled(text);
     if (!turbulence.enabled) {
         turbulence.family = FDM::TurbulenceFamily::DNS;
         turbulence.model = FDM::TurbulenceModelKind::DNS;
@@ -1678,13 +1693,8 @@ void CaseAdapter::decodeTurbulenceSection() {
     if (!value.empty()) {
         familyText = valueUnquote(value);
         family = upperToken(familyText);
-        if (family == "LAMINAR") {
-            fatalCaseConfig(
-                "models/turbulence.yaml enabled=true conflicts with "
-                "simulationType " + familyText
-                + ". Use enabled=false or select RAS/LES/DNS.");
-        }
-        if (family == "DNS") {
+        if (family == "LAMINAR" || family == "DNS") {
+            turbulence.enabled = false;
             turbulence.family = FDM::TurbulenceFamily::DNS;
             turbulence.model = FDM::TurbulenceModelKind::DNS;
             return;
@@ -1997,75 +2007,64 @@ void CaseAdapter::decodeILWSection() {
 }
 
 void CaseAdapter::decodeSourceSettings() {
-    FDM::SourceConfig& sources = caseConfig_.solver.sources;
-    sources.gravity.clear();
-    sources.rotating.clear();
-    sources.wallHeat.assign(wallHeatBoundarySettings_.begin(),
-                            wallHeatBoundarySettings_.end());
-
-    // source 选择只由 case-local sourceScheme_ 推导，不依赖 parser 全局状态。
-    const bool gravityRequested =
-        sourceSchemeMentions(sourceScheme_, "gravity");
-    const bool mrfRequested =
-        sourceSchemeMentions(sourceScheme_, "mrf")
-        || sourceSchemeMentions(sourceScheme_, "rotating");
-    const bool wallHeatRequested =
-        sourceSchemeMentions(sourceScheme_, "wallHeat")
-        || sourceSchemeMentions(sourceScheme_, "wallHeatSource");
-
-    if (gravityRequested && sections_.hasGravity) {
-        broadcast("Loading gravity source: ", "models/gravity.yaml");
-        decodeGravitySection();
-    }
-
-    if (mrfRequested && sections_.hasMrf) {
-        broadcast("Loading MRF source: ", "models/MRF.yaml");
-        decodeMRFSection();
-    }
-
-    if (wallHeatRequested) {
-        if (sections_.hasWallHeat) {
-            broadcast("Loading wall heat source: ", "models/wallHeat.yaml");
-            decodeWallHeatSection();
-        }
-        // wallHeat 边界项由 field 解码阶段收集，因此在 field 之后才判断。
-        if (wallHeatBoundarySettings_.empty()
-            && multiPhaseConfig_.phaseChange.wallBoiling.empty()
-            && sourceSchemeMentions(sourceScheme_, "wallHeat")) {
-            broadcast("WallHeat warning: ",
-                      "sourceScheme requests WallHeat but no wallHeat "
-                      "model, temperature boundary, or phaseChange "
-                      "wallBoiling entry was found.");
-        }
-    }
+    auto& sources=caseConfig_.solver.sources;
+    sources.gravity.clear();sources.rotating.clear();
+    sources.wallHeat=wallHeatBoundarySettings_;
+    // Numerical source names do not provide missing model parameters or override model activity.
+    const auto requested=sourceScheme_;
+    (void)FDM::parseSourceKinds(requested);
+    if(sourceSchemeMentions(requested,"gravity") && !sections_.hasGravity)
+        throw std::runtime_error("Selected gravity source lacks a registered gravity model.");
+    if((sourceSchemeMentions(requested,"mrf") || sourceSchemeMentions(requested,"rotating")) && !sections_.hasMrf)
+        throw std::runtime_error("Selected MRF source lacks a registered MRF model.");
+    if(sections_.hasGravity)decodeGravitySection();
+    if(sections_.hasMrf)decodeMRFSection();
+    if(sections_.hasWallHeat)decodeWallHeatSection();
+    if(sourceSchemeMentions(requested,"wallHeat") && !sections_.hasWallHeat
+        && sources.wallHeat.empty() && multiPhaseConfig_.phaseChange.wallBoiling.empty())
+        throw std::runtime_error("Selected wallHeat source lacks a registered model or active wall boundary.");
+    sourceScheme_.clear();
+    if(!sources.gravity.empty())appendSourceSchemeToken(sourceScheme_,"Gravity");
+    if(!sources.rotating.empty())appendSourceSchemeToken(sourceScheme_,"MRF");
+    if(!sources.wallHeat.empty())appendSourceSchemeToken(sourceScheme_,"WallHeat");
 }
 
 void CaseAdapter::decodeGravitySection() {
     if (!sections_.hasGravity) return;
     const std::string context = "models/gravity.yaml";
     const P* text = &sections_.gravity;
+    if(!modelEnabled(text,{"gravity"}))return;
 
     {
         const P* block = jsonBlockAfterKey(text, "gravity");
         if (!block) block = text;
-        std::string value = jsonValueAfterKey(block, "value");
-        if (value.empty()) value = jsonValueAfterKey(block, "g");
+        const auto acceleration=[&](const P* parameters) {
+            if(parameters->contains("value") && parameters->contains("g"))
+                throw std::runtime_error("Conflicting explicit gravity value/g selections.");
+            if(parameters->contains("value"))return token(parameters->at("value"));
+            if(parameters->contains("g"))return token(parameters->at("g"));
+            return std::string();
+        };
+        std::string value=acceleration(block);
         Vector3 g;
-        if (valueVectorValue(value, &g)) {
+        if (!value.empty()) {
+            if(!valueVectorValue(value,&g) || !std::isfinite(g[0]) || !std::isfinite(g[1]) || !std::isfinite(g[2]))
+                throw std::runtime_error("Invalid gravity acceleration vector.");
             ZoneVectorSetting setting;
             setting.zone = "all";
             setting.value = g;
             caseConfig_.solver.sources.gravity.push_back(setting);
         }
         for (const auto& [zone, zoneBlock] : jsonChildBlocks(block)) {
-            value = jsonValueAfterKey(zoneBlock, "value");
-            if (value.empty()) value = jsonValueAfterKey(zoneBlock, "g");
-            if (!valueVectorValue(value, &g)) continue;
+            value=acceleration(zoneBlock);
+            if(!valueVectorValue(value,&g) || !std::isfinite(g[0]) || !std::isfinite(g[1]) || !std::isfinite(g[2]))
+                throw std::runtime_error("Invalid gravity acceleration for zone: "+zone);
             ZoneVectorSetting setting;
             setting.zone = zone;
             setting.value = g;
             caseConfig_.solver.sources.gravity.push_back(setting);
         }
+        if(caseConfig_.solver.sources.gravity.empty())throw std::runtime_error("Enabled gravity model requires a finite value/g vector or zone contributions.");
         return;
     }
 }
@@ -2074,6 +2073,7 @@ void CaseAdapter::decodeMRFSection() {
     if (!sections_.hasMrf) return;
     const std::string context = "models/MRF.yaml";
     const P* text = &sections_.mrf;
+    if(!modelEnabled(text,{"MRF","rotate"}))return;
 
     {
         auto parseRotateBlock = [&](const P* block,
@@ -2107,6 +2107,7 @@ void CaseAdapter::decodeMRFSection() {
         for (const auto& [zone, zoneBlock] : jsonChildBlocks(zones)) {
             parseRotateBlock(zoneBlock, zone);
         }
+        if(caseConfig_.solver.sources.rotating.empty())throw std::runtime_error("Enabled MRF model requires MRF/rotate or zones parameters.");
         return;
     }
 }
@@ -2115,6 +2116,7 @@ void CaseAdapter::decodeWallHeatSection() {
     if (!sections_.hasWallHeat) return;
     const std::string context = "models/wallHeat.yaml";
     const P* text = &sections_.wallHeat;
+    if(!modelEnabled(text,{"wallHeatSource","wallHeat"}))return;
 
     const P* block = jsonBlockAfterKey(text, "wallHeatSource");
     if (!block) block = jsonBlockAfterKey(text, "wallHeat");
@@ -3221,10 +3223,7 @@ void CaseAdapter::decodeNativeSections() {
     decodeThermoDynamicsSection();
     decodeIBMSection();
     decodeILWSection();
-    decodeGravitySection();
-    decodeMRFSection();
-    // wallHeat 对象存在即表示该源已配置；边界 wallHeatFlux 也会打开它。
-    if (sections_.hasWallHeat) appendSourceSchemeToken(sourceScheme_, "WallHeat");
+    // Source models are decoded once, after registered field boundary contributions.
     // wallHeat boundary settings 由 field 解码阶段收集，必须延后处理。
 
     decodeNumericsSection();

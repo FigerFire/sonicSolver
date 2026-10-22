@@ -1,3 +1,4 @@
+#include "test/typedSymbols.h"
 /// @file test_formulationArchitecture.cpp
 /// @brief 方程组成 / formulation / coupling preset / state realization 的架构契约。
 ///
@@ -86,12 +87,12 @@ SF::System::BuildRequest pressureConstraintRequest() {
 int main() {
     try {
         const SF::System::BuiltinStateCatalog catalog;
-        require(catalog.solution("U").derivation==SF::System::StateDerivation::None
-            && catalog.at("U").derivation==SF::System::StateDerivation::Velocity,
+        require(!catalog.solution("U").producer
+            && SF::System::producedBy(catalog.at("U"),"closure.thermodynamicVelocity"),
             "Solution U and dependency U share incompatible derivation metadata");
         require(catalog.solution("p").role==SF::System::StateRole::Algebraic
-            && catalog.solution("p").derivation==SF::System::StateDerivation::None
-            && catalog.at("p").derivation==SF::System::StateDerivation::Pressure,
+            && !catalog.solution("p").producer
+            && SF::System::producedBy(catalog.at("p"),"closure.thermodynamic.p"),
             "Pressure selection is hardwired to a multiplier or EOS view");
         // 1. 两种 incompressible 来源必须落到同一个约束/动量结构上。
         SF::System::BuildRequest manual = incompressibleCompositionRequest();
@@ -246,7 +247,7 @@ int main() {
             auto changed=roleIndependent;
             auto mass=changed.registry.at("continuity");
             mass.rhs=SF::System::FormulaExpr::op("source",
-                {SF::System::FormulaExpr::symbol("unauthorizedSource")},
+                {SF::System::FormulaExpr::symbol("unauthorizedSource",mass.lhs.signature())},
                 "mass.unauthorizedSource");
             changed.registry.replace(std::move(mass));
             (void)SF::System::NumericalCompiler::compile(
@@ -356,8 +357,8 @@ int main() {
         const auto& presetMomentum=conservativeSystem.executableSystem.registry.at("momentum");
         using Expr=SF::System::FormulaExpr;
         const SF::System::Equation manualMomentum{"momentum",
-            Expr::add(Expr::op("ddt",{Expr::symbol("rhoU")}),
-                Expr::op("div",{Expr::symbol("momentumFlux")})),Expr::constantValue(0),{}};
+            Expr::add(Expr::op("ddt",{SF::Test::symbol("rhoU")}),
+                Expr::op("div",{SF::Test::symbol("momentumFlux")})),Expr::constantValue(0),{}};
         require(SF::System::formulaText(presetMomentum)==SF::System::formulaText(manualMomentum),
             "preset and manually registered mathematical definitions differ");
 
@@ -407,7 +408,7 @@ int main() {
         baseMomentum.step={"momentum",{"U"}};
         simpleProgram.root.children.push_back(baseMomentum);
         std::vector<SF::System::NumericalBinding> simpleNumerics;
-        SF::System::applyPressureExecution(simpleProgram,simple);
+        SF::System::applyPressureExecution(simpleProgram,simple,SF::System::pressureCouplingInputs({"momentum",{"U"}},SF::System::PressurePredictorKind::Velocity));
         require(!simpleProgram.root.children.empty()
 ,
                 "fixed-point schedule did not contribute structured HOW");

@@ -93,6 +93,21 @@ def main() -> None:
     settings = turbulent / 'models/turbulence.yaml'
     settings.write_text(settings.read_text().replace('enabled: false',
                                                     'enabled: true'))
+    # Register the transported inputs so this negative reaches the pressure/RAS
+    # implementation capability, rather than failing earlier on absent STATE data.
+    registry = turbulent / 'fields/fields.yaml'
+    registry.write_text(registry.read_text() + '\n' + ''.join(
+        f'{name}:\n  type: scalar\n  domain: fluid\n  location: point\n'
+        f'  dimensions: {dimensions}\n  storage: primary\n  output: false\n'
+        for name, dimensions in [('k', '[0, 2, -2, 0, 0, 0, 0]'),
+                                 ('omega', '[0, 0, -1, 0, 0, 0, 0]')]))
+    initial = turbulent / 'fields/internalField.yaml'
+    initial.write_text(initial.read_text() + '\nk:\n  uniform: 0.01\nomega:\n  uniform: 1.0\n')
+    boundary = turbulent / 'fields/boundaries.yaml'
+    boundary.write_text(boundary.read_text() + '\n' + ''.join(
+        f'{name}:\n  left: zeroGradient\n  right: zeroGradient\n'
+        '  top: zeroGradient\n  bottom: zeroGradient\n  front: empty\n  back: empty\n'
+        for name in ('k', 'omega')))
     report = explain(solver, turbulent)
     if 'RUNTIME STATUS\n  unsupported' not in report or not all(
             item in report for item in ('closure.turbulence',

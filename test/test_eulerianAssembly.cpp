@@ -1,3 +1,4 @@
+#include "test/typedSymbols.h"
 #include "solver/system/SF_systemBuilder.h"
 #include "solver/system/SF_methodObjects.h"
 #include "solver/system/SF_eulerianAssembly.h"
@@ -11,7 +12,7 @@ using namespace SF::System;
 namespace {
 void require(bool value,const char* message) { if (!value) throw std::runtime_error(message); }
 ResolvedSimulationSystem fixture(int count) {
-    SF::FDM::SolverConfig config;config.numerics.maxDeltaT=0.001;
+    SF::FDM::SolverConfig config;config.numerics.timeRecipe=SF::FDM::builtInTimeRecipe(SF::FDM::TimeRecipeId::ForwardEuler);config.numerics.maxDeltaT=0.001;
     config.pressure.coupling.preset=SF::FDM::PressureCouplingPreset::PIMPLE;
     BuildRequest request;request.templateOrigin=PhysicsTemplateKind::EulerianEulerian;
     request.phaseNames={"liquid","gas"};if (count==3) request.phaseNames.push_back("third");
@@ -33,16 +34,17 @@ std::string signature(const CompiledExecutionProgram& program) {
 }
 void editExpr(FormulaExpr& expr,const std::function<bool(FormulaExpr&)>& edit) {
     if (edit(expr)) return;
-    for (auto& child:expr.arguments) editExpr(child,edit);
+    auto children=expr.arguments();for(auto& child:children)editExpr(child,edit);
+    if(!children.empty())expr=expr.withArguments(std::move(children));
 }
 std::vector<std::string> categories(const Equation& equation) {
     std::vector<std::string> result;
     const auto inventory=[&](const auto& self,const FormulaExpr& e)->void {
-        if (e.kind==FormulaExpr::Kind::Operator) {
-            result.push_back(e.name);
+        if (e.kind()==FormulaExpr::Kind::Operator) {
+            result.push_back(e.name());
             return;
         }
-        for (const auto& child:e.arguments) self(self,child);
+        for (const auto& child:e.arguments()) self(self,child);
     };
     inventory(inventory,equation.lhs);result.push_back("=");inventory(inventory,equation.rhs);
     return result;
@@ -78,31 +80,33 @@ int main() {
         try {validateEulerianAssemblyBindings(absent,names,1);} catch (const std::runtime_error&) {wrongRuntimeRejected=true;}
         require(wrongRuntimeRejected,"Runtime rediscovered an implementation without its compiled contract.");
         auto changed=resolved.executableSystem;changed.state=StateRegistry{};
-        StateSymbol unrelated;unrelated.id="unrelated";unrelated.storageKey="unrelated";changed.state.add(unrelated);
+        StateSymbol unrelated;unrelated.id="unrelated";unrelated.storageKey="unrelated";changed.state.add(SF::Test::state(unrelated));
         const auto& symbols=resolved.executableSystem.state.symbols();
         for (auto it=symbols.rbegin();it!=symbols.rend();++it) changed.state.add(*it);
         auto compile=[&](const auto& equations) {return compileExecutionProgram(equations,resolved.solvePlan.sourceProgram,resolved.numericalSelection.bindings,builtinProviders());};
         require(signature(compile(changed))==signature(program),"Registry insertion changed frozen phase slots.");
         const auto mutation=[&](const std::string& id,const std::function<void(Equation&)>& edit,bool sameCategories) {
             auto equations=resolved.executableSystem;auto formula=equations.registry.at(id);
-            const auto before=categories(formula);edit(formula);
+            const auto before=categories(formula);
+            if(id=="correctPhaseFlux.liquid") {bool rejected=false;try{edit(formula);}catch(const std::runtime_error&){rejected=true;}require(rejected,"Invalid flux-product arity bypassed typed construction");return;}
+            edit(formula);
             if (sameCategories) require(before==categories(formula),"Mutation unexpectedly changed flat term categories.");
             equations.registry.replace(formula);bool rejected=false;
             try { (void)compile(equations); } catch (const std::runtime_error& e) {rejected=std::string(e.what()).find("mathematical contract")!=std::string::npos;}
             require(rejected,"Malformed AST inherited a supported Eulerian implementation.");
         };
         mutation("momentum.liquid",[](auto& eq) {
-            editExpr(eq.lhs,[](auto& e) {if (e.kind!=E::Kind::Multiply) return false;e=E::op("gradient",{E::multiply(E::symbol("alpha.liquid"),E::symbol("p"))});return true;});
+            editExpr(eq.lhs,[](auto& e) {if (e.kind()!=E::Kind::Multiply) return false;e=E::op("gradient",{E::multiply(SF::Test::symbol("alpha.liquid"),SF::Test::symbol("p"))});return true;});
         },true);
-        mutation("momentum.liquid",[](auto& eq) {eq.rhs.arguments[0]=E::negate(eq.rhs.arguments[0]);},true);
-        mutation("E_ENTHALPY.liquid",[](auto& eq) {auto source=eq.rhs.arguments[1].arguments[0];eq.rhs.arguments[1]=std::move(source);},true);
-        mutation("E_SHARED_PRESSURE",[](auto& eq) {eq.lhs.arguments[0].arguments[0]=E::symbol("wrongCompressibility");},true);
-        mutation("correctPhase.liquid",[](auto& eq) {editExpr(eq.rhs,[](auto& e) {if (e.kind!=E::Kind::Divide) return false;e.arguments[0]=E::symbol("wrongAlpha");return true;});},true);
-        mutation("correctPhaseFlux.liquid",[](auto& eq) {eq.rhs.arguments.pop_back();},true);
-        mutation("correctSharedP",[](auto& eq) {eq.rhs.arguments[1].arguments[0]=E::symbol("wrongRelaxation");},true);
+        mutation("momentum.liquid",[](auto& eq) {eq.rhs=SF::Test::replaceAt(eq.rhs,{0},E::negate(eq.rhs.arguments()[0]));},true);
+        mutation("E_ENTHALPY.liquid",[](auto& eq) {auto source=eq.rhs.arguments()[1].arguments()[0];eq.rhs=SF::Test::replaceAt(eq.rhs,{1},std::move(source));},true);
+        mutation("E_SHARED_PRESSURE",[](auto& eq) {eq.lhs=SF::Test::replaceAt(eq.lhs,{0,0},E::symbol("wrongCompressibility",eq.lhs.arguments()[0].arguments()[0].signature()));},true);
+        mutation("correctPhase.liquid",[](auto& eq) {editExpr(eq.rhs,[](auto& e) {if (e.kind()!=E::Kind::Divide) return false;e=SF::Test::replaceAt(e,{0},E::symbol("wrongAlpha",e.arguments()[0].signature()));return true;});},true);
+        mutation("correctPhaseFlux.liquid",[](auto& eq) {auto args=eq.rhs.arguments();args.pop_back();eq.rhs=eq.rhs.withArguments(std::move(args));},true);
+        mutation("correctSharedP",[](auto& eq) {eq.rhs=SF::Test::replaceAt(eq.rhs,{1,0},SF::Test::symbol("wrongRelaxation"));},true);
         auto extensions=resolved.executableSystem;
         const auto append=[&](const std::string& id,const std::string& source) {
-            auto formula=extensions.registry.at(id);formula.rhs=E::add(formula.rhs,E::op("source",{E::symbol(source)}));extensions.registry.replace(formula);
+            auto formula=extensions.registry.at(id);formula.rhs=E::add(formula.rhs,E::op("source",{SF::Test::symbol(source)}));extensions.registry.replace(formula);
         };
         append("momentum.liquid","gravity");append("momentum.liquid","MRF");append("E_ENTHALPY.liquid","wallHeat");
         auto supported=compile(extensions);

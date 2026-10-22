@@ -66,7 +66,6 @@ int run(const RunRequest& request) {
     }
 
     ResultWriter resultWriter(caseConfig.output);
-    ModelLoader::configureOutput(resultWriter, caseConfig);
 
     int runtimeArgc = request.argc;
     char** runtimeArgv = request.argv;
@@ -86,10 +85,11 @@ int run(const RunRequest& request) {
         return -1;
     }
 
+    ModelLoader::configureOutput(resultWriter,caseConfig,&inspection->system.executableSystem.state);
+
     SF::broadcast("Compiled plan     : ",
                   inspection->system.solvePlan.root.name);
-    SF::broadcast("", System::describe(inspection->system)
-                    + IBM::renderExplain(inspection->ibmExplain));
+    SF::broadcast("", describeCase(*inspection));
 
     if (!validateProgram(inspection->system)) {
         return -1;

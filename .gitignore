@@ -529,3 +529,63 @@ test/nativeEquationClosure/*
 test/nativeEquationClosure/cases/**/result/
 test/nativeEquationClosure/cases/**/reference/
 **/._*
+
+# C1 builtin composition closure sources; generated cases, binaries and evidence stay local.
+!test/builtinComposition/
+test/builtinComposition/*
+!test/builtinComposition/test_composition.cpp
+!test/builtinComposition/run_suite.py
+**/._*
+
+# A1 keeps deterministic test sources; generated cases/evidence remain local.
+!/test/mathWhatA1/
+/test/mathWhatA1/*
+!/test/mathWhatA1/test_math.cpp
+!/test/mathWhatA1/test_typed.cpp
+!/test/mathWhatA1/test_binding.cpp
+
+!/test/typedSymbols.h
+
+!/test/mathWhatA1/quick.py
+!/test/mathWhatA1/compare.py
+!/test/mathWhatA1/run_units.py
+!/test/mathWhatA1/check_native.py
+!/test/mathWhatA1/native_scalar.py
+
+# A2 source/tests only; numerical evidence stays local.
+!/test/mathWhatA2/
+/test/mathWhatA2/*
+!/test/mathWhatA2/test_scalar.cpp
+!/test/mathWhatA2/quick.py
+!/test/mathWhatA2/run_units.py
+!/test/mathWhatA2/compare.py
+!/test/mathWhatA2/native.py
+
+# A3 keeps runnable sources; generated baselines, logs and outputs stay local.
+!/test/derivedStateA3/
+/test/derivedStateA3/*
+!/test/derivedStateA3/test_views.cpp
+!/test/derivedStateA3/quick.py
+!/test/derivedStateA3/compare.py
+!/test/derivedStateA3/run_tests.py
+
+# A4 regression sources only; cases, baselines and numerical evidence stay local.
+!/test/couplingA4/
+/test/couplingA4/*
+!/test/couplingA4/test_coupling.cpp
+!/test/couplingA4/regression.py
+!/test/couplingA4/protect.py
+!/test/couplingA4/run_tests.py
+!/test/couplingA4/verify.py
+
+# Core closure sources only; local cases, binaries, traces and evidence stay ignored.
+!/test/coreSinglePath/
+/test/coreSinglePath/*
+!/test/coreSinglePath/test_closure.cpp
+!/test/coreSinglePath/regression.py
+!/test/coreSinglePath/protect.py
+!/test/coreSinglePath/run_tests.py
+!/test/coreSinglePath/verify.py
+!/test/coreSinglePath/verify_ibm.py
+!/test/coreSinglePath/ibm.py
+!/test/coreSinglePath/mpi.py

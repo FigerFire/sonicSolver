@@ -4,6 +4,7 @@
 #include "SF_immersedMathematics.h"
 #include "SF_immersedSystem.h"
 #include <utility>
+#include "core/state/SF_distributedField.h"
 
 namespace SF::IBM::SystemContribution {
 using namespace SF::System;
@@ -20,10 +21,23 @@ void contribute(System::SystemContribution& system,
         if (immersed.wallClosure==FDM::ImmersedWallClosure::StationaryNoSlipAdiabatic) {
             system.boundaryClosures.back().boundCapabilities={{"meanflow.boundary.immersed.viscous","momentum","rhoU","immersed.ghost"}};
             StateSymbol distance;distance.id="immersed.wallDistance";distance.name="stationary immersed wall distance";
-            distance.role=StateRole::Derived;distance.derivation=StateDerivation::WallDistance;
+            distance.role=StateRole::Derived;distance.evaluation=StateEvaluation::Lazy;
+            auto producer=std::make_shared<StateProducer>();producer->id="geometry.immersedWallDistance";
+            static const Math::OperatorRule wallDistance{"Field.geometry.wallDistance",[](const auto& a){
+                if(!a.empty())throw std::runtime_error("Wall distance projects the bound geometry owner");
+                return Mathematics::signature("immersed.wallDistance");
+            }};
+            producer->expression=FormulaExpr::op(wallDistance,{});
+            producer->bind=[](Field& field,const auto&,State::DistributedFieldView& view)->std::function<void()> {
+                view.read=[&field](int cell,int) {
+                    int i=0,j=0,k=0;field.getIJK(cell,i,j,k);return field.wallDistance(i,j,k);
+                };
+                return {};
+            };
+            distance.producer=std::move(producer);
             distance.storageKey="geometry.wallDistance";distance.initializationRequired=distance.boundaryRequired=distance.restartEligible=false;
             distance.origin={OriginKind::Model,"immersed.ghost"};
-            system.addState(std::move(distance));
+            distance.signature=Mathematics::signature(distance.id);system.addState(std::move(distance));
         }
         return;
     }
@@ -38,7 +52,7 @@ void contribute(System::SystemContribution& system,
         if (id=="ibm.laggedForceDensity") value.availableVersion=StateVersion::Lagged;
         value.initializationRequired=false;value.boundaryRequired=false;
         value.restartEligible=false;value.outputEligible=false;
-        system.addState(std::move(value));
+        value.signature=Mathematics::signature(value.id);system.addState(std::move(value));
     };
     state("ibm.forceDensity",3,VariableLocation::EulerianCell,OwnershipKind::EulerianGlobalDof,
         StorageBinding::SpecializedExecutor,"ibm.forceDensity",StateRole::Derived);
@@ -84,6 +98,6 @@ void contribute(System::SystemContribution& system,
     system.addExecution(std::move(group));
     if (multiplier) system.addConstraint({"immersed.velocity","immersed velocity relation",
         immersed.enforcement==FDM::IBMEnforcement::ExplicitIBM
-            ?"lagged multiplier response for the next physical step; not exact current-step no-slip":"J U = U_b / rigid affine constraint",lambda});
+            ?"lagged multiplier response for the next physical step; not exact current-step no-slip":"J U = U_b / rigid affine constraint",lambda,{},members});
 }
 } // namespace SF::IBM::SystemContribution

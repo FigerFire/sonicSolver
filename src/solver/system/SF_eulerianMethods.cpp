@@ -17,17 +17,17 @@ bool sourceExtensions(const E& expression,const E& base,const std::string& metho
         std::vector<EulerianSourceExtension>& extensions) {
     Equation a{"check",expression,E::constantValue(0),{}},b{"check",base,E::constantValue(0),{}};
     if (canonicalFormula(a)==canonicalFormula(b)) return true;
-    if (expression.kind!=E::Kind::Add || expression.arguments.size()!=2) return false;
-    const auto& term=expression.arguments[1];
-    if (term.kind!=E::Kind::Operator || term.name!="source" || term.arguments.size()!=1) return false;
-    const auto& symbol=term.arguments[0];
-    if (symbol.kind!=E::Kind::Symbol || !(method=="EulerianPhaseMomentum" && (symbol.name=="gravity" || symbol.name=="MRF")
-        || method=="EulerianPhaseEnthalpy" && symbol.name=="wallHeat")) return false;
-    const auto extension=symbol.name=="gravity" ? EulerianSourceExtension::Gravity
-        : symbol.name=="MRF" ? EulerianSourceExtension::MRF : EulerianSourceExtension::WallHeat;
+    if (expression.kind()!=E::Kind::Add || expression.arguments().size()!=2) return false;
+    const auto& term=expression.arguments()[1];
+    if (term.kind()!=E::Kind::Operator || term.operation()!=Math::Op::Source || term.arguments().size()!=1) return false;
+    const auto& symbol=term.arguments()[0];
+    if (symbol.kind()!=E::Kind::Symbol || !(method=="EulerianPhaseMomentum" && (symbol.name()=="gravity" || symbol.name()=="MRF")
+        || method=="EulerianPhaseEnthalpy" && symbol.name()=="wallHeat")) return false;
+    const auto extension=symbol.name()=="gravity" ? EulerianSourceExtension::Gravity
+        : symbol.name()=="MRF" ? EulerianSourceExtension::MRF : EulerianSourceExtension::WallHeat;
     if (std::find(extensions.begin(),extensions.end(),extension)!=extensions.end()) return false;
     extensions.push_back(extension);
-    return sourceExtensions(expression.arguments[0],base,method,extensions);
+    return sourceExtensions(expression.arguments()[0],base,method,extensions);
 }
 class EulerianMethod final:public IProvider {
 public:
@@ -41,6 +41,7 @@ public:
         const bool pressure=id_=="EulerianSharedPressureCorrection",correction=id_=="EulerianPhaseCorrection",flux=id_=="EulerianPhaseFluxCorrection";
         CompiledEquationCall result;result.source=step;result.target.symbol=step.target.symbol;result.target.kind=step.target.kind;
         result.target.viewOwner=StateViewOwner::NumericalProvider;result.equationMethod=id_;
+        result.temporalCapabilities={FDM::TimeRecipeId::ForwardEuler};
         result.calls={{step.equation,targetText(step.target)}};
         std::vector<const StateSymbol*> phases;
         for (const auto& symbol:system.state.symbols())
@@ -84,7 +85,7 @@ public:
         }
         const auto& shared=system.state.at("p");
         if (shared.storageKey!="pressure" || shared.components!=1 || shared.storageBinding!=StorageBinding::ProviderDistributed
-            || shared.role!=StateRole::Algebraic || shared.derivation!=StateDerivation::None)
+            || shared.role!=StateRole::Algebraic || shared.readOnly())
             throw std::runtime_error("Eulerian shared pressure must alias the unique PhaseSystem pressure.");
         const auto& actual=system.registry.at(step.equation);
         CompiledEulerianAssemblyContract contract;

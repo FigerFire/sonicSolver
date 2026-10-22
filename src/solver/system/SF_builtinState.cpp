@@ -1,6 +1,45 @@
 #include "SF_builtinState.h"
+#include "core/state/SF_distributedField.h"
 
 namespace SF::System {
+namespace {
+// All projections borrow the Field-owned EOS cache. Binding never closes EOS;
+// the original Q invalidation/version contract governs cache hits and misses.
+std::shared_ptr<const StateProducer> cacheProjection(const StateSymbol& symbol,
+        Math::Signature (*result)(const std::vector<Math::Signature>&),
+        std::function<double(const Physics::FluidStateModel::ThermodynamicState&)> project) {
+    auto producer=std::make_shared<StateProducer>();
+    producer->id="closure.thermodynamic."+symbol.id;
+    std::vector<FormulaExpr> arguments;
+    for (const auto& dependency:symbol.dependencies) {
+        if (dependency=="rho") arguments.push_back(builtinState(BuiltinState::Density).expression());
+        else if (dependency=="rhoU") arguments.push_back(builtinState(BuiltinState::Momentum).expression());
+        else if (dependency=="rhoE") arguments.push_back(builtinState(BuiltinState::TotalEnergy).expression());
+        else throw std::runtime_error("Unsupported thermodynamic cache operand: "+dependency);
+    }
+    const auto operation="Field.thermodynamicState."+symbol.id;
+    const Math::OperatorRule rule{operation.c_str(),result};
+    producer->expression=FormulaExpr::op(rule,std::move(arguments));
+    producer->versions={StateViewKind::Physical,StateViewKind::Stage};
+    producer->bind=[project=std::move(project)](Field& field,const auto&,State::DistributedFieldView& view)->std::function<void()> {
+        view.read=[&field,project](int cell,int) {
+            int i=0,j=0,k=0;field.getIJK(cell,i,j,k);
+            return project(field.thermodynamicState(i,j,k));
+        };
+        return {};
+    };
+    return producer;
+}
+void requireConservativeCacheArguments(const std::vector<Math::Signature>& args) {
+    if(args.size()!=3)throw std::runtime_error("Thermodynamic projection requires density, momentum and energy");
+    const BuiltinState variables[]={BuiltinState::Density,BuiltinState::Momentum,BuiltinState::TotalEnergy};
+    for(unsigned i=0;i<3;++i)Math::requireCompatible(args[i],builtinState(variables[i]).signature,"thermodynamic cache input");
+}
+void requireOwnerCacheArguments(const std::vector<Math::Signature>& args) {
+    if(!args.empty())throw std::runtime_error("Field cache projection has no independent STATE operands");
+}
+}
+
 StateSymbol builtinState(BuiltinState variable) {
     StateSymbol symbol;
     symbol.origin={OriginKind::BuiltinPreset,"builtin state catalog"};
@@ -20,13 +59,13 @@ StateSymbol builtinState(BuiltinState variable) {
         symbol.componentOffset=4;symbol.storageKey="conservative";break;
     case BuiltinState::Velocity:
         symbol.id="U";symbol.name="velocity";symbol.components=3;
-        symbol.derivation=StateDerivation::Velocity;break;
+        break;
     case BuiltinState::Pressure:
-        symbol.id="p";symbol.name="pressure";symbol.derivation=StateDerivation::Pressure;break;
+        symbol.id="p";symbol.name="pressure";break;
     case BuiltinState::Temperature:
-        symbol.id="T";symbol.name="temperature";symbol.derivation=StateDerivation::Temperature;break;
+        symbol.id="T";symbol.name="temperature";break;
     case BuiltinState::Enthalpy:
-        symbol.id="h";symbol.name="specific enthalpy";symbol.derivation=StateDerivation::Enthalpy;break;
+        symbol.id="h";symbol.name="specific enthalpy";break;
     case BuiltinState::FaceFlux:
         symbol.id="phi";symbol.name="canonical volume face flux";
         symbol.location=VariableLocation::EulerianFace;
@@ -38,18 +77,70 @@ StateSymbol builtinState(BuiltinState variable) {
     case BuiltinState::SpecificDissipation:
         symbol.id="omega";symbol.name="specific dissipation";symbol.storageKey="omega";break;
     case BuiltinState::DynamicViscosity:
-        symbol.id="mu";symbol.name="dynamic viscosity";symbol.derivation=StateDerivation::DynamicViscosity;break;
+        symbol.id="mu";symbol.name="dynamic viscosity";break;
     case BuiltinState::KinematicViscosity:
-        symbol.id="nu";symbol.name="kinematic viscosity";symbol.derivation=StateDerivation::KinematicViscosity;break;
+        symbol.id="nu";symbol.name="kinematic viscosity";break;
     case BuiltinState::ThermalConductivity:
-        symbol.id="conductivity";symbol.name="thermal conductivity";symbol.derivation=StateDerivation::ThermalConductivity;break;
+        symbol.id="conductivity";symbol.name="thermal conductivity";break;
     }
-    if (symbol.derivation==StateDerivation::Velocity) {
+    switch(variable) {
+    case BuiltinState::Density:symbol.signature=Math::signature(0,{1,-3,0,0,0,0,0});break;
+    case BuiltinState::Momentum:symbol.signature=Math::signature(1,{1,-2,-1,0,0,0,0});break;
+    case BuiltinState::TotalEnergy:case BuiltinState::Pressure:symbol.signature=Math::signature(0,{1,-1,-2,0,0,0,0});break;
+    case BuiltinState::Velocity:symbol.signature=Math::signature(1,{0,1,-1,0,0,0,0});break;
+    case BuiltinState::Temperature:symbol.signature=Math::signature(0,{0,0,0,1,0,0,0});break;
+    case BuiltinState::Enthalpy:case BuiltinState::TurbulentEnergy:symbol.signature=Math::signature(0,{0,2,-2,0,0,0,0});break;
+    case BuiltinState::SpecificDissipation:symbol.signature=Math::signature(0,{0,0,-1,0,0,0,0});break;
+    case BuiltinState::DynamicViscosity:symbol.signature=Math::signature(0,{1,-1,-1,0,0,0,0});break;
+    case BuiltinState::KinematicViscosity:symbol.signature=Math::signature(0,{0,2,-1,0,0,0,0});break;
+    case BuiltinState::ThermalConductivity:symbol.signature=Math::signature(0,{1,1,-3,-1,0,0,0});break;
+    case BuiltinState::FaceFlux:symbol.signature=Math::signature(0,{0,3,-1,0,0,0,0});break;
+    case BuiltinState::VolumeFraction:symbol.signature=Math::signature(0,{});break;
+    }
+    if (variable==BuiltinState::Velocity) {
         symbol.evaluation=StateEvaluation::Lazy;symbol.dependencies={"rho","rhoU"};
+        auto producer=std::make_shared<StateProducer>();producer->id=velocityProducer;
+        producer->expression=FormulaExpr::divide(FormulaExpr::symbol("rhoU",Math::signature(1,{1,-2,-1,0,0,0,0})),
+            FormulaExpr::symbol("rho",Math::signature(0,{1,-3,0,0,0,0,0})));
+        producer->bind=[](Field& field,const auto&,State::DistributedFieldView& view)->std::function<void()> {
+            // Preserve the original EOS cache, including its validation and miss timing.
+            view.read=[&field](int cell,int component) {
+                int i=0,j=0,k=0;field.getIJK(cell,i,j,k);
+                return field.thermodynamicState(i,j,k).velocity.at((std::size_t)component);
+            };
+            return {};
+        };
+        symbol.producer=std::move(producer);
     }
-    if (symbol.derivation==StateDerivation::Pressure || symbol.derivation==StateDerivation::Temperature
-        || symbol.derivation==StateDerivation::Enthalpy) {
+    if (variable==BuiltinState::Pressure || variable==BuiltinState::Temperature || variable==BuiltinState::Enthalpy) {
         symbol.evaluation=StateEvaluation::Lazy;symbol.dependencies={"rho","rhoU","rhoE"};
+    }
+    // Transport properties also borrow this cache, including for primitive-state
+    // providers that have no independent conservative STATE registration.
+    // Their zero-argument projection names the bound Field owner, not fake Q symbols.
+    switch(variable) {
+    case BuiltinState::Pressure:
+        symbol.producer=cacheProjection(symbol,[](const auto& a){requireConservativeCacheArguments(a);return Math::signature(0,{1,-1,-2,0,0,0,0});},
+            [](const auto& v){return v.pressure;});break;
+    case BuiltinState::Temperature:
+        symbol.producer=cacheProjection(symbol,[](const auto& a){requireConservativeCacheArguments(a);return Math::signature(0,{0,0,0,1,0,0,0});},
+            [](const auto& v){return v.temperature;});break;
+    case BuiltinState::Enthalpy:
+        symbol.producer=cacheProjection(symbol,[](const auto& a){requireConservativeCacheArguments(a);return Math::signature(0,{0,2,-2,0,0,0,0});},
+            [](const auto& v){return (v.internalEnergyDensity+v.pressure)/v.density;});break;
+    case BuiltinState::DynamicViscosity:
+        symbol.evaluation=StateEvaluation::Lazy;
+        symbol.producer=cacheProjection(symbol,[](const auto& a){requireOwnerCacheArguments(a);return Math::signature(0,{1,-1,-1,0,0,0,0});},
+            [](const auto& v){return v.dynamicViscosity;});break;
+    case BuiltinState::KinematicViscosity:
+        symbol.evaluation=StateEvaluation::Lazy;
+        symbol.producer=cacheProjection(symbol,[](const auto& a){requireOwnerCacheArguments(a);return Math::signature(0,{0,2,-1,0,0,0,0});},
+            [](const auto& v){return v.dynamicViscosity/v.density;});break;
+    case BuiltinState::ThermalConductivity:
+        symbol.evaluation=StateEvaluation::Lazy;
+        symbol.producer=cacheProjection(symbol,[](const auto& a){requireOwnerCacheArguments(a);return Math::signature(0,{1,1,-3,-1,0,0,0});},
+            [](const auto& v){return v.thermalConductivity;});break;
+    default:break;
     }
     symbol.shape=symbol.components==1 ? ValueShape::Scalar : ValueShape::Vector;
     if (!symbol.storageKey.empty()) symbol.storageBinding=StorageBinding::NamedDistributed;
@@ -64,6 +155,16 @@ BuiltinStateCatalog::BuiltinStateCatalog() {
             BuiltinState::SpecificDissipation,BuiltinState::DynamicViscosity,
             BuiltinState::KinematicViscosity,BuiltinState::ThermalConductivity}) {
         symbols_.push_back(builtinState(variable));
+    }
+    for(const auto& item:std::vector<std::pair<std::string,Math::Signature>>{
+            {"massFlux",Math::signature(1,{1,-2,-1,0,0,0,0})},
+            {"momentumFlux",Math::signature(2,{1,-1,-2,0,0,0,0})},
+            {"energyFlux",Math::signature(1,{1,0,-3,0,0,0,0})}}) {
+        StateSymbol symbol;symbol.id=symbol.name=item.first;symbol.signature=item.second;
+        symbol.components=item.second.rank==2?9:3;symbol.shape=item.second.rank==2?ValueShape::Tensor:ValueShape::Vector;
+        symbol.role=StateRole::Derived;symbol.runtimeStorageRequired=false;
+        symbol.initializationRequired=symbol.boundaryRequired=symbol.outputEligible=symbol.restartEligible=false;
+        symbols_.push_back(std::move(symbol));
     }
 }
 
@@ -84,12 +185,26 @@ const StateSymbol& BuiltinStateCatalog::at(std::string_view id) const {
 void BuiltinStateCatalog::require(StateRegistry& active,std::string_view id) const {
     if (!active.contains(id)) {
         auto symbol=at(id);
-        if (symbol.evaluation==StateEvaluation::Lazy && !active.contains("rho")) {
+        if (std::find(symbol.dependencies.begin(),symbol.dependencies.end(),"rho")!=symbol.dependencies.end()
+            && !active.contains("rho")) {
             std::vector<std::string> densityComponents;
             for (const auto& item:active.symbols()) if (item.id.rfind("partialDensity.",0)==0) densityComponents.push_back(item.id);
             if (!densityComponents.empty()) {
                 symbol.dependencies.erase(std::remove(symbol.dependencies.begin(),symbol.dependencies.end(),"rho"),symbol.dependencies.end());
                 symbol.dependencies.insert(symbol.dependencies.end(),densityComponents.begin(),densityComponents.end());
+                if (symbol.producer) {
+                    auto density=active.expression(densityComponents.front());
+                    for (std::size_t i=1;i<densityComponents.size();++i) density=density+active.expression(densityComponents[i]);
+                    auto producer=std::make_shared<StateProducer>(*symbol.producer);
+                    const auto substitute=[&](const auto& self,const FormulaExpr& expression)->FormulaExpr {
+                        if (expression.kind()==FormulaExpr::Kind::Symbol && expression.name()=="rho") return density;
+                        if (expression.arguments().empty()) return expression;
+                        std::vector<FormulaExpr> args;
+                        for (const auto& a:expression.arguments()) args.push_back(self(self,a));
+                        return expression.withArguments(std::move(args));
+                    };
+                    producer->expression=substitute(substitute,producer->expression);symbol.producer=std::move(producer);
+                }
             }
         }
         active.add(std::move(symbol));
@@ -98,7 +213,10 @@ void BuiltinStateCatalog::require(StateRegistry& active,std::string_view id) con
 
 StateSymbol BuiltinStateCatalog::solution(std::string_view id) const {
     auto symbol=at(id);
-    symbol.derivation=StateDerivation::None;
+    if(symbol.storageKey.empty() && !symbol.readOnly()
+        && !symbol.outputEligible && !symbol.restartEligible)
+        throw std::runtime_error("Logical mathematical quantity has no writable STATE storage: "+std::string(id));
+    symbol.producer.reset();
     symbol.evaluation=StateEvaluation::Direct;symbol.dependencies.clear();
     symbol.initializationRequired=true;
     symbol.boundaryRequired=true;

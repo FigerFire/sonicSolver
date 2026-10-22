@@ -6,6 +6,7 @@
 
 #include "core/system/SF_transformationTypes.h"
 #include "core/system/SF_solveProgram.h"
+#include "SF_pressureCoupling.h"
 
 #include <memory>
 #include <string>
@@ -68,7 +69,7 @@ public:
 };
 
 /// @brief Builtin pressure-constraint transformer；applicability 只检查数学 contract。
-std::unique_ptr<IEquationSystemTransformer> makePressureConstraintTransformer(std::string momentumTarget);
+std::unique_ptr<IEquationSystemTransformer> makePressureConstraintTransformer(PressureCouplingInputs inputs,bool fixedTime);
 
 /// @brief Eulerian shared-pressure constraint 使用相同 registry/pipeline。
 std::unique_ptr<IEquationSystemTransformer> makeSharedPressureTransformer();

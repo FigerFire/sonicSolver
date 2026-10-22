@@ -110,11 +110,11 @@ CompiledExecutionProgram compileExecutionProgram(
             throw std::runtime_error("Conflicting highest-priority numerical bindings for occurrence: "+step->occurrence);
         if (!found)
             throw std::runtime_error("Implementation capability missing: no provider for equation occurrence "+step->equation);
-        system.registry.at(step->equation);
+        const auto& mathematical=system.registry.at(step->equation);
         if (step->target.kind!=TargetKind::Workspace) state.at(step->target.symbol);
         const auto& selectedProvider=registry.at(found->method);
         CompiledEquationCall compiled;
-        try {compiled=selectedProvider.compile(system,*step,*found);}
+        try {state.validateSymbols(mathematical.lhs);state.validateSymbols(mathematical.rhs);compiled=selectedProvider.compile(system,*step,*found);}
         catch(const std::exception& error) {
             throw std::runtime_error(system.registry.at(step->equation).origin.source+": occurrence="+step->occurrence+" equation="+step->equation+" target="+step->target.symbol+" provider="+found->method+": "+error.what());
         }
@@ -210,6 +210,14 @@ CompiledExecutionProgram compileExecutionProgram(
             if (at[j].kind!=ExecutionKind::EquationCall || at[j].step.occurrence!=result.steps[i+j].source.occurrence)
                 throw std::runtime_error("Provider fusion requires adjacent HOW siblings.");
         i+=n-1;
+    }
+    for (auto& call:result.steps) for (auto& read:call.viewReads) {
+        const auto bound=std::find_if(result.stateViews.begin(),result.stateViews.end(),[&](const auto& view) {
+            return view.symbol==read.symbol && view.kind==read.kind && view.stage==read.stage;
+        });
+        if (bound==result.stateViews.end() || bound->owner!=StateViewOwner::NumericalProvider)
+            throw std::runtime_error("Missing provider-owned input view: "+call.source.occurrence+" / "+read.symbol+" / "+toString(read.kind));
+        read=*bound;
     }
     bindCoefficientContracts(state,result);
     result.loweredRoot=compileMethodProgram(result,&registry);
@@ -414,6 +422,7 @@ CompiledExecutionProgram compileExecutionProgram(
     }
     validateDataFlow(state,result);
     if (time) realizeTemporalViews(state,result,time->stageCount());
+    compileDerivedViews(state,result.stateViews);
     return result;
 }
 

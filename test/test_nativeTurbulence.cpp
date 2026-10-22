@@ -1,3 +1,4 @@
+#include "test/typedSymbols.h"
 #include "solver/algorithm/transport/SF_transportBinding.h"
 #include "models/turbulence/SF_turbulenceSystemContribution.h"
 #include "models/turbulence/SF_turbulence.h"
@@ -16,7 +17,9 @@ namespace {
 void require(bool value,const char* message) { if (!value) throw std::runtime_error(message); }
 ExecutableEquationSystem equations(const SystemContribution& contribution) {
     ExecutableEquationSystem system;
-    for (auto variable:{BuiltinState::Density,BuiltinState::Momentum,BuiltinState::TotalEnergy,BuiltinState::Velocity}) system.state.add(builtinState(variable));
+    const BuiltinStateCatalog catalog;
+    for (const auto* variable:{"rho","rhoU","rhoE"}) system.state.add(catalog.solution(variable));
+    system.state.add(catalog.at("U"));
     for (const auto& state:contribution.states) system.state.add(state);
     for (const auto& equation:contribution.registeredEquations) system.registry.add(equation);
     return system;
@@ -32,10 +35,10 @@ int main() {
         require(system.state.at("mu_t").role==StateRole::Derived && !system.state.isSolution("k"),
             "Model state was confused with user primary selection.");
         for (const auto& equation:system.registry.entries()) {
-            require(equation.lhs.name=="ddt","Frozen RAS transient math changed.");
+            require(equation.lhs.name()=="ddt","Frozen RAS transient math changed.");
             const auto hasDiv=[](const auto& self,const FormulaExpr& expr)->bool {
-                if (expr.kind==FormulaExpr::Kind::Operator && expr.name=="div") return true;
-                for (const auto& child:expr.arguments) if (self(self,child)) return true;
+                if (expr.kind()==FormulaExpr::Kind::Operator && expr.name()=="div") return true;
+                for (const auto& child:expr.arguments()) if (self(self,child)) return true;
                 return false;
             };
             require(!hasDiv(hasDiv,equation.rhs),"WHAT falsely claims convection in frozen RAS kernel.");
@@ -66,7 +69,7 @@ int main() {
         auto separated=program;ExecutionScope barrier;barrier.kind=ExecutionKind::Sequence;
         separated.root.children[1].order=3;barrier.order=2;separated.root.children.insert(separated.root.children.begin()+1,barrier);
         fails(separated,system,contribution.numerics);
-        auto incompatible=system;StateSymbol extra=system.state.at(second);extra.id=second=="omega" ? "epsilon" : "omega";incompatible.state.add(extra);
+        auto incompatible=system;StateSymbol extra=system.state.at(second);extra.id=second=="omega" ? "epsilon" : "omega";incompatible.state.add(SF::Test::state(extra));
         fails(program,incompatible,contribution.numerics);
         auto changed=system;auto formula=system.registry.at("k");formula.rhs=FormulaExpr::constantValue(0);changed.registry.replace(formula);
         fails(program,changed,contribution.numerics);
@@ -134,6 +137,7 @@ int main() {
     SF::Turbulence::Manager manager(config);require(manager.initialize(field),"Manager initialization failed.");
     SF::SolverAlgorithm::initializeTransport(field,manager);
     SF::State::StateBundle bundle;bundle.patches={&field};manager.registerDistributed(bundle.distributed,0,field);
+    bundle.distributed.add(SF::State::conservativeView("conservative",0,field));
     SystemContribution contribution;SF::Turbulence::contribute(contribution,{"kEpsilon",{},false});
     const auto system=equations(contribution);ExecutionProgram program;program.root.children=contribution.execution;
     const auto compiled=compileExecutionProgram(system,program,contribution.numerics,builtinProviders());

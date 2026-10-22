@@ -28,7 +28,7 @@ constexpr std::array<SourceTarget,3> targets{{
 
 void contribute(
         System::SystemContribution& system,
-        const FDM::SourceConfig& config) {
+        const FDM::SourceConfig& config,Math::Signature momentumRhs) {
     for (FDM::SourceKind kind : config.enabled) {
         const auto item = std::find_if(
             targets.begin(),targets.end(),
@@ -40,8 +40,8 @@ void contribute(
         system.recordContribution(
             std::string("model.")+item->symbol,
             std::string(item->symbol)+" equation source contribution");
-        auto source=System::FormulaExpr::op("source",
-            {System::FormulaExpr::symbol(item->symbol)},item->symbol);
+        auto source=System::FormulaExpr::op(Math::Op::Source,
+            {System::FormulaExpr::symbol(item->symbol,item->energy ? Math::signature(0,{1,-1,-3,0,0,0,0}) : momentumRhs)},item->symbol);
         system.extendMathematics(item->energy
             ? std::vector<std::string>{"energy","enthalpy","E_ENTHALPY"}
             : std::vector<std::string>{"momentum"},std::move(source));

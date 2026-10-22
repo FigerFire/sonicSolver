@@ -1,6 +1,7 @@
 #include "SF_output.h"
 #include "core/field/SF_field.h"
 #include <map>
+#include <algorithm>
 #include <stdexcept>
 namespace SF::Application::ModelLoader {
 namespace {
@@ -24,11 +25,13 @@ std::vector<Array> fluidFields(const Field& field,double gamma) {
     return {density,velocity,pressure};
 }
 }
-void configureOutput(ResultWriter& writer,const CaseConfig& config) {
+void configureOutput(ResultWriter& writer,const CaseConfig& config,const System::StateRegistry* activeState) {
+    std::vector<std::string> active;
+    if(activeState)for(const auto& symbol:activeState->symbols())active.push_back(symbol.id);
     const auto description=config.modelDescription;
     const double gamma=config.solver.numerics.idealGasGamma;
     const auto thermophysical=config.solver.thermophysical;
-    writer.setFieldProvider([description,gamma,thermophysical](const Field& field,const std::vector<Array>& extra) {
+    writer.setFieldProvider([description,gamma,thermophysical,active,filterInactive=activeState!=nullptr](const Field& field,const std::vector<Array>& extra) {
         if (thermophysical && thermophysical->native && thermophysical->selection.equationOfState=="perfectGas" && !field.hasStateModel())
             throw std::runtime_error(thermophysical->source+": native fluid output requires attached thermodynamic model.");
         auto arrays=fluidFields(field,gamma);
@@ -39,6 +42,9 @@ void configureOutput(ResultWriter& writer,const CaseConfig& config) {
         const std::map<std::string,std::string> aliases{{"rho","Density"},{"U","Velocity"},{"p","Pressure"},
             {"T","Temperature"},{"k","TurbulenceK"},{"epsilon","TurbulenceEpsilon"},{"omega","TurbulenceOmega"}};
         for(const auto& f:description->fields) {
+            if(filterInactive && !f.outputDeclared && std::none_of(active.begin(),active.end(),[&](const auto& id) {
+                    return id==f.symbol || id.rfind(f.symbol+".",0)==0;
+                }))continue;
             auto it=available.find(f.name);
             const auto alias=aliases.find(f.name);
             if(!f.output) { it=available.end(); }

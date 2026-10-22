@@ -42,6 +42,8 @@ struct DistributedFieldView {
     HaloSyncStage stages = HaloSyncStage::None;
     std::function<double(int, int)> read;
     std::function<void(int, int, double)> write;
+    /// @brief 只检查可读性/发布，不运行刷新、数值计算或通信。
+    std::function<void()> requireReadable;
 
     /// @brief 检查视图尺寸和访问器是否完整。
     void validate() const {
@@ -221,10 +223,10 @@ public:
     bool empty() const { return fields_.empty(); }
     size_t size() const { return fields_.size(); }
 
-    void markModified(const std::string& name) {
+    void markModified(const std::string& name,int block=-1) {
         bool found = false;
         for (auto& item : fields_) {
-            if (item.view.name == name) {
+            if (item.view.name == name && (block<0 || item.view.blockId==block)) {
                 ++item.generation;
                 item.availableDepth = 0;
                 found = true;
@@ -234,6 +236,13 @@ public:
             throw std::runtime_error(
                 "Cannot mark unregistered distributed field '" + name + "'.");
         }
+    }
+
+    /// @brief 读取现有版本用于物化视图失效核验；不增加时钟或触发通信。
+    const unsigned long long& generation(const std::string& name,int block) const {
+        for (const auto& item:fields_) if (item.view.name==name && item.view.blockId==block)
+            return item.generation;
+        throw std::runtime_error("Missing revision backing for STATE view: "+name+" block="+std::to_string(block));
     }
 
     std::vector<DistributedFieldView*> select(

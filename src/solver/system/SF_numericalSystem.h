@@ -66,7 +66,8 @@ struct CompiledSpatialBinding {
     std::string output;
     std::string equationMethod;
     std::string occurrence;
-    std::string operatorName;
+    Math::Op operation;
+    std::string operatorName() const {return Math::name(operation);}
     std::string primary;
     std::string secondary;
     enum class Side { Left, Right } side = Side::Left;
@@ -81,7 +82,7 @@ struct CompiledSpatialBinding {
 
     CompiledSpatialBinding(std::string formula, std::string executionEquation,
               std::string target, std::string method, std::string path,
-              std::string mathOperator, std::string symbol,
+              Math::Op mathOperator, std::string symbol,
               std::string coefficient, Side termSide,
               std::optional<FDM::TermRecipe> boundRecipe,
               std::string providerId, std::string owner,
@@ -92,7 +93,7 @@ struct CompiledSpatialBinding {
         : formulaId(std::move(formula)),
           executionEquationId(std::move(executionEquation)),
           output(std::move(target)),equationMethod(std::move(method)),
-          occurrence(std::move(path)),operatorName(std::move(mathOperator)),
+          occurrence(std::move(path)),operation(mathOperator),
           primary(std::move(symbol)),secondary(std::move(coefficient)),
           side(termSide),
           recipe(std::move(boundRecipe)),provider(std::move(providerId)),

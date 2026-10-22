@@ -21,6 +21,77 @@ bool matches(const ExecutionScope& node,const std::string& selector) {
 }
 struct Revision { int value=0,halo=0; std::string writer="initial state"; };
 }
+std::vector<const CompiledEquationCall*> equationConsumers(
+        const ExecutableEquationSystem& system,const CompiledExecutionProgram& program,
+        std::string_view equation) {
+    const auto references=[](const CompiledEquationCall& call,std::string_view id) {
+        return call.source.equation==id
+            || std::find(call.sourceMathInputs.begin(),call.sourceMathInputs.end(),id)!=call.sourceMathInputs.end()
+            || std::any_of(call.calls.begin(),call.calls.end(),[&](const auto& ref) {return ref.equation==id;});
+    };
+    const bool direct=std::any_of(program.steps.begin(),program.steps.end(),[&](const auto& call){return references(call,equation);});
+    std::vector<const CompiledEquationCall*> result;
+    for (const auto& call:program.steps) {
+        bool uses=references(call,equation);
+        if (!direct) for (const auto& constraint:system.constraints)
+            if (std::find(constraint.equations.begin(),constraint.equations.end(),equation)!=constraint.equations.end())
+                for (const auto& member:constraint.equations) uses=uses || references(call,member);
+        if (uses) result.push_back(&call);
+    }
+    return result;
+}
+std::vector<const SolvePlanNode*> equationOperations(
+        const ExecutableEquationSystem& system,const CompiledSolvePlan& plan,std::string_view equation) {
+    const auto consumers=equationConsumers(system,plan.compiledProgram,equation);
+    std::vector<const SolvePlanNode*> result;
+    const auto visit=[&](const auto& self,const SolvePlanNode& node)->void {
+        if (!node.operation.empty()) {
+            bool consumes=false;
+            for (const auto* call:consumers) {
+                consumes=consumes || node.occurrence==call->source.occurrence;
+                for (const auto& math:node.equationCalls)
+                    consumes=consumes || math.equation==call->source.equation
+                        || std::any_of(call->calls.begin(),call->calls.end(),[&](const auto& ref){return ref.equation==math.equation;});
+            }
+            if (consumes) result.push_back(&node);
+        }
+        for (const auto& child:node.children) self(self,child);
+    };
+    visit(visit,plan.root);
+    return result;
+}
+
+void validateMathematicalCoverage(const ExecutableEquationSystem& system,
+        const CompiledSolvePlan& plan,bool runnable) {
+    for (const auto& call:plan.compiledProgram.steps) {
+        (void)system.registry.at(call.source.equation);
+        for (const auto& ref:call.calls) (void)system.registry.at(ref.equation);
+        for (const auto& id:call.sourceMathInputs) (void)system.registry.at(id);
+    }
+    for (const auto& constraint:system.constraints) {
+        if (constraint.equations.empty() && runnable)
+            throw std::runtime_error("Constraint has no declared mathematical realization: "+constraint.id);
+        for (const auto& id:constraint.equations) (void)system.registry.at(id);
+    }
+    for (const auto& closure:system.closures) {
+        if (runnable && closure.equations.empty() && closure.states.empty())
+            throw std::runtime_error("Closure has no mathematical/STATE reference: "+closure.description);
+        for (const auto& id:closure.equations) (void)system.registry.at(id);
+        for (const auto& id:closure.states) (void)system.state.at(id);
+    }
+    if (runnable) for (const auto& equation:system.registry.entries())
+        if (equationConsumers(system,plan.compiledProgram,equation.id).empty())
+            throw std::runtime_error("Active equation has no compiled consumer: "+equation.id);
+    if (runnable) for (const auto& equation:system.registry.entries())
+        if (equationOperations(system,plan,equation.id).empty())
+            throw std::runtime_error("Active equation has no compiled operation: "+equation.id);
+    const auto visit=[&](const auto& self,const SolvePlanNode& node)->void {
+        for (const auto& call:node.equationCalls) (void)system.registry.at(call.equation);
+        for (const auto& child:node.children) self(self,child);
+    };
+    visit(visit,plan.root);
+}
+
 void composeDefaultPlacement(const ExecutionProgram& program,ExecutionScope& root) {
     const auto compose=[&](const auto& self,ExecutionScope& scope,bool top)->void {
         const auto index=[&](const std::string& selector) {
@@ -288,7 +359,7 @@ void validateDataFlow(const StateRegistry& state,const CompiledExecutionProgram&
         if (a==b) return true;
         if (!state.contains(a) || !state.contains(b)) return false;
         const auto& x=state.at(a);const auto& y=state.at(b);
-        if (x.derivation!=StateDerivation::None || y.derivation!=StateDerivation::None
+        if (x.readOnly() || y.readOnly()
             || x.storageKey.empty() || x.storageKey!=y.storageKey
             || x.storageBinding!=y.storageBinding
             || x.location!=y.location) return false;
@@ -298,7 +369,7 @@ void validateDataFlow(const StateRegistry& state,const CompiledExecutionProgram&
     std::map<std::string,std::map<std::string,int>> published;
     std::map<std::string,std::string> invalidLazy;
     std::set<std::string> snapshots;
-    std::set<std::string> persistent;
+    std::set<std::string> persistent,invalidated;
     std::map<std::string,int> frozen;
     std::vector<std::string> loops;
     for (const auto& symbol:state.symbols()) {
@@ -331,6 +402,10 @@ void validateDataFlow(const StateRegistry& state,const CompiledExecutionProgram&
         }
     };
     const auto execute=[&](const auto& self,const ExecutionScope& node,bool stage)->void {
+        if (node.kind==ExecutionKind::Commit) {
+            for (const auto& call:program.steps) for (const auto& resource:call.commitRequires)
+                if (!snapshots.count(resource)) throw std::runtime_error("Commit requires unpublished resource: "+resource);
+        }
         if (node.kind==ExecutionKind::EquationCall) {
             const auto at=std::find_if(program.steps.begin(),program.steps.end(),[&](const auto& call){return call.source.occurrence==node.step.occurrence;});
             if (at==program.steps.end()) throw std::runtime_error("Missing compiled occurrence: "+node.step.occurrence);
@@ -383,10 +458,21 @@ void validateDataFlow(const StateRegistry& state,const CompiledExecutionProgram&
                     } else check(check,use.symbol,node.step.occurrence,use.halo);
                 }
             }
+            for (std::size_t i=0;i<members;++i) for (const auto& resource:(at+i)->workspaceInvalidates) {
+                snapshots.erase(resource);persistent.erase(resource);invalidated.insert(resource);
+                // An explicit replacement ends this frozen resource's lifetime.
+                // Ordinary writes without invalidation still fail frozen checks.
+                for (auto binding=frozen.begin();binding!=frozen.end();) {
+                    const auto suffix=":"+resource;
+                    if (binding->first.size()>=suffix.size() && binding->first.compare(binding->first.size()-suffix.size(),suffix.size(),suffix)==0)
+                        binding=frozen.erase(binding);
+                    else ++binding;
+                }
+            }
             for (const auto& effect:effects) {
                 if (!state.contains(effect.symbol)) {
                     if (!effect.publish) throw std::runtime_error("Unknown STATE write: "+effect.symbol);
-                    snapshots.insert(effect.symbol);revisions[effect.symbol].value=++epoch;continue;
+                    snapshots.insert(effect.symbol);invalidated.erase(effect.symbol);revisions[effect.symbol].value=++epoch;continue;
                 }
                 const auto depends=[&](const auto& walk,const std::string& id)->bool {
                     if (overlaps(id,effect.symbol)) return true;
@@ -408,11 +494,12 @@ void validateDataFlow(const StateRegistry& state,const CompiledExecutionProgram&
             for (std::size_t i=0;i<members;++i) {
                 const auto& member=*(at+i);
                 for (const auto& workspace:member.workspaceProvides) {
-                    snapshots.insert(workspace);
+                    snapshots.insert(workspace);invalidated.erase(workspace);
                     if (std::none_of(effects.begin(),effects.end(),[&](const auto& effect){return effect.symbol==workspace;}))
                         revisions[workspace].value=++epoch;
                 }
-                persistent.insert(member.stepWorkspaces.begin(),member.stepWorkspaces.end());
+                for (const auto& workspace:member.stepWorkspaces)
+                    if (snapshots.count(workspace)) persistent.insert(workspace);
             }
             return;
         }
@@ -429,10 +516,10 @@ void validateDataFlow(const StateRegistry& state,const CompiledExecutionProgram&
         }
         if (iterative) loops.pop_back();
         // Workspaces produced inside a control scope do not escape into siblings.
-        if (node.kind==ExecutionKind::Loop || node.kind==ExecutionKind::StageLoop) {snapshots=savedSnapshots;snapshots.insert(persistent.begin(),persistent.end());frozen=savedFrozen;}
+        if (node.kind==ExecutionKind::Loop || node.kind==ExecutionKind::StageLoop) {snapshots=savedSnapshots;snapshots.insert(persistent.begin(),persistent.end());for (const auto& resource:invalidated) snapshots.erase(resource);frozen=savedFrozen;}
     };
     for (int physicalStep=0;physicalStep<2;++physicalStep) {
-        snapshots.clear();persistent.clear();frozen.clear();
+        snapshots.clear();persistent.clear();frozen.clear();invalidated.clear();
         // Lagged versions are immutable step-entry inputs, including legally zero initialized force.
         for (const auto& call:program.steps) for (const auto& use:call.stateUses)
             if (use.version==StateVersion::Lagged && state.contains(use.symbol)

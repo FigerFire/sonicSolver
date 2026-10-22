@@ -6,26 +6,18 @@
 #include <stdexcept>
 namespace SF::System {
 void composeContributions(ResolvedSimulationSystem& result,const BuildRequest& request,
-        ExecutionProgram& program,std::vector<NumericalBinding>& numerics) {
-    // Module applicability follows contributed mathematics/default occurrences.
-    // StateRealization only binds storage and never chooses this source topology.
-    const auto predictor=std::find_if(program.root.children.begin(),program.root.children.end(),[](const auto& node) {
-        return node.kind==ExecutionKind::EquationCall && node.step.equation=="momentum"
-            && (node.step.target.symbol=="U" || node.step.target.symbol=="rhoU");
-    });
-    const bool native=request.coupling && isCouplingActive(result.coupling)
-        && hasConstraint(result.rawSystem,"C_INCOMPRESSIBILITY")
-        && predictor!=program.root.children.end();
+        ExecutionProgram& program,std::vector<NumericalBinding>& numerics,const PressureCouplingInputs* inputs) {
+    const bool native=request.coupling && isCouplingActive(result.coupling) && inputs;
     if (native) {
-        const auto target=predictor->step.target.symbol;
-        applyPressureExecution(program,*request.coupling,target);
-        if (target=="rhoU") {
-            numerics.erase(std::remove_if(numerics.begin(),numerics.end(),[](const auto& binding) {
-                return binding.method=="ConservativeResidual" && binding.occurrence.empty()
-                    && (binding.equation=="continuity" || binding.equation=="momentum" || binding.equation=="energy");
-            }),numerics.end());
-        }
-        const auto pressure=pressureNumerics(*request.coupling,target);
+        applyPressureExecution(program,*request.coupling,*inputs);
+        numerics.erase(std::remove_if(numerics.begin(),numerics.end(),[&](const auto& binding) {
+            if (binding.method!="ConservativeResidual") return false;
+            const auto refers=[&](const EquationCall& call) {
+                return binding.equation==call.equation && binding.occurrence==call.occurrence;
+            };
+            return refers(inputs->predictor) || std::any_of(inputs->fusedBalances.begin(),inputs->fusedBalances.end(),refers);
+        }),numerics.end());
+        const auto pressure=pressureNumerics(*request.coupling,*inputs);
         numerics.insert(numerics.end(),pressure.begin(),pressure.end());
     }
     if (hasConstraint(result.rawSystem,"C_SHARED_PRESSURE")) {
@@ -33,7 +25,7 @@ void composeContributions(ResolvedSimulationSystem& result,const BuildRequest& r
             throw std::runtime_error("Eulerian shared pressure requires an explicit supported native HOW coupling preset.");
         applyEulerianExecution(program,numerics,*request.coupling);
     } else if (request.coupling && isCouplingActive(result.coupling) && !native) {
-        throw std::runtime_error("Single-fluid pressure requires a native default predictor occurrence; no legacy fallback is available.");
+        throw std::runtime_error("Single-fluid pressure requires explicit pressure method inputs; no legacy fallback is available.");
     }
 }
 } // namespace SF::System

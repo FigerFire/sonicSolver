@@ -155,7 +155,7 @@ void assembleAllPatches(
             numericalSystem,FDM::TermRole::Diffusion);
     std::vector<System::ConservativeSourceKernel> boundSources;
     for (const auto& term:numericalSystem.operators) {
-        if (term.operatorName!="source") continue;
+        if (term.operation!=Math::Op::Source) continue;
         if (!term.conservativeSource)
             throw std::runtime_error(
                 "Conservative source term '"+term.primary

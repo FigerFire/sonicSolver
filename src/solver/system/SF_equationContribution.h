@@ -5,6 +5,7 @@
 
 #include "SF_resolvedSimulationSystem.h"
 #include "core/system/SF_systemContribution.h"
+#include "SF_pressureCoupling.h"
 
 #include <memory>
 #include <vector>
@@ -26,7 +27,7 @@ public:
     std::vector<std::string> requiredStates;
     void addEquation(Equation equation);
     void addConstraint(ConstraintDescriptor constraint);
-    void addClosure(std::string closure);
+    void addClosure(std::string closure,std::vector<std::string> equations={},std::vector<std::string> states={});
     void addDependency(std::string dependency);
     void requestTransformation(TransformationDescriptor descriptor);
     /// @brief 该 transformation 是否已被 composition 请求（用于避免重复请求）。
@@ -36,6 +37,7 @@ public:
 
     void addExecution(ExecutionScope value) { execution.push_back(std::move(value)); }
     void bindNumerics(NumericalBinding value) { numerics.push_back(std::move(value)); }
+    std::optional<PressureCouplingInputs> pressureInputs;
     std::vector<PlacementRequirement> placement;
     std::vector<ExecutionScope> execution;
     std::vector<NumericalBinding> numerics;

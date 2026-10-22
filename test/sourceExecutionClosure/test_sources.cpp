@@ -102,7 +102,7 @@ void exercise(const std::string& model, bool enabled, double temperature, int ou
         WallHeatSetting wall;wall.patch="bottom";wall.heatFlux=7000;wall.wallTemperature=390;wall.coupleEnergy=true;
         sources.add(PS::makePhaseWallHeatSource({wall}));
     }
-    FDM::SolverConfig solver;solver.numerics.maxDeltaT=1e-4;
+    FDM::SolverConfig solver;solver.numerics.timeRecipe=FDM::builtInTimeRecipe(FDM::TimeRecipeId::ForwardEuler);solver.numerics.maxDeltaT=1e-4;
     solver.pressure.coupling.preset=FDM::PressureCouplingPreset::PIMPLE;
     solver.pressure.coupling.outerCorrectors=outers;solver.pressure.coupling.pressureCorrectors=2;
     solver.pressure.coupling.nonOrthogonalCorrectors=1;

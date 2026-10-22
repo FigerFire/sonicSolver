@@ -15,8 +15,8 @@ namespace {
 
 class PressureConstraintTransformer final : public IEquationSystemTransformer {
 public:
-    explicit PressureConstraintTransformer(std::string momentumTarget)
-        : momentumTarget_(std::move(momentumTarget)), descriptor_{"pressureConstraint","pressure constraint",100,false,
+    explicit PressureConstraintTransformer(PressureCouplingInputs inputs,bool fixedTime)
+        : inputs_(std::move(inputs)), fixedTime_(fixedTime), descriptor_{"pressureConstraint","pressure constraint",100,false,
                       {OriginKind::BuiltinPreset,"pressure coupling"}} {}
 
     const TransformationDescriptor& descriptor() const override {
@@ -24,11 +24,11 @@ public:
     }
 
     TransformationMatch match(const RawEquationSystem& raw) const override {
-        if (!hasConstraint(raw,"C_INCOMPRESSIBILITY")) {
+        if (!hasConstraint(raw,inputs_.constraint)) {
             return {TransformationState::RegisteredButNotApplicable,
                     "required incompressibility constraint not present"};
         }
-        if (!hasEquation(raw,"momentum") || !hasUnknown(raw,"p")) {
+        if (!hasEquation(raw,inputs_.predictor.equation) || !hasUnknown(raw,"p")) {
             return {TransformationState::RegisteredButInvalid,
                     "requires Momentum equation and pressure multiplier p"};
         }
@@ -40,6 +40,8 @@ public:
             const RawEquationSystem& raw,
             ExecutableEquationSystemBuilder& executable,
             TransformationRecord& record) const override {
+        std::vector<std::string> priorEquations;
+        for (const auto& equation:executable.system().registry.entries()) priorEquations.push_back(equation.id);
         const auto velocity = std::find_if(
             raw.state.symbols().begin(),raw.state.symbols().end(),
             [](const StateSymbol& unknown) { return unknown.id == "U"; });
@@ -47,13 +49,21 @@ public:
             throw std::runtime_error(
                 "Pressure constraint requires a declared mathematical U unknown.");
         }
-        const bool primitiveTarget=momentumTarget_=="U";
-        if (!primitiveTarget && momentumTarget_!="rhoU")
+        const bool primitiveTarget=inputs_.representation==PressurePredictorKind::Velocity;
+        if (inputs_.predictorTarget.symbol!=(primitiveTarget ? "U" : "rhoU"))
             throw std::runtime_error("Pressure transformation requires an explicit momentum solution target.");
+        const auto relation=[&](const EquationCall& call,Equation equation) {
+            if (call.equation.empty()) throw std::runtime_error("Pressure transformation requires an explicit relation reference.");
+            equation.id=call.equation;executable.addEquation(std::move(equation));
+        };
         if (!primitiveTarget) {
-            for (auto equation:conservativePressureRelations()) {
-                record.generatedEquations.push_back(equation.id);
-                executable.addEquation(std::move(equation));
+            const auto equations=conservativePressureRelations();
+            const std::vector<EquationCall> references{inputs_.correction,inputs_.velocityUpdate,inputs_.pressureUpdate,
+                inputs_.fluxUpdate,inputs_.publication,inputs_.relaxation,inputs_.fluxConsistency,inputs_.convergence};
+            for (std::size_t i=0;i<equations.size();++i) {
+                auto equation=equations[i];
+                if (!fixedTime_ && (equation.id=="relaxIterate" || equation.id=="restoreFlux" || equation.id=="checkConvergence")) continue;
+                relation(references[i],std::move(equation));
             }
         }
         if (primitiveTarget) {
@@ -62,35 +72,35 @@ public:
             // These formulas describe the operations implemented by the
             // current pressure provider. rAU, HbyA, and faceResponse are
             // derived numerical workspace, not physical state authorities.
-            executable.addEquation({"pSimple",
-                Expr::negate(Expr::op("div",{
-                    Expr::multiply(Expr::symbol("faceResponse"),
-                        Expr::op("grad",{Expr::symbol("pPrime")}))},
+            relation(inputs_.correction,{"pSimple",
+                Expr::negate(Expr::op(Math::Op::Div,{
+                    Expr::multiply(PressureMathematics::symbol("faceResponse"),
+                        Expr::op(Math::Op::Grad,{PressureMathematics::symbol("pPrime")}))},
                     "pressureLaplacian")),
-                Expr::negate(Expr::op("div",{Expr::symbol("correctedFlux")},
+                Expr::negate(PressureMathematics::op("faceVolumeDivergence",{PressureMathematics::symbol("correctedFlux")},
                                      "continuityDefect")),origin});
-            executable.addEquation({"correctP",Expr::symbol("p"),
-                Expr::add(Expr::symbol("p"),Expr::symbol("pPrime")),origin});
-            executable.addEquation({"correctU",Expr::symbol("U"),
-                Expr::subtract(Expr::symbol("U"),
-                    Expr::multiply(Expr::symbol("rAU"),
-                        Expr::op("grad",{Expr::symbol("pPrime")},
+            relation(inputs_.pressureUpdate,{"correctP",PressureMathematics::symbol("p"),
+                Expr::add(PressureMathematics::symbol("p"),PressureMathematics::symbol("pPrime")),origin});
+            relation(inputs_.velocityUpdate,{"correctU",PressureMathematics::symbol("U"),
+                Expr::subtract(PressureMathematics::symbol("U"),
+                    Expr::multiply(PressureMathematics::symbol("rAU"),
+                        Expr::op(Math::Op::Grad,{PressureMathematics::symbol("pPrime")},
                                  "correction.pressureGradient"))),origin});
-            executable.addEquation({"correctFluxp",Expr::symbol("phi"),
-                Expr::subtract(Expr::symbol("phi"),
-                    Expr::op("pressureFlux",{
-                        Expr::symbol("faceResponse"),Expr::symbol("pPrime")},
+            relation(inputs_.fluxUpdate,{"correctFluxp",PressureMathematics::symbol("phi"),
+                Expr::subtract(PressureMathematics::symbol("phi"),
+                    PressureMathematics::op("pressureFlux",{
+                        PressureMathematics::symbol("faceResponse"),PressureMathematics::symbol("pPrime")},
                         "correction.faceFlux")),origin});
         }
-        if (primitiveTarget) {
+        if (primitiveTarget && fixedTime_) {
             using Expr=FormulaExpr;
             const Provenance origin{OriginKind::Generated,"pressure coupling relations"};
-            executable.addEquation({"relaxIterate",Expr::symbol("iterate"),
-                Expr::op("relax",{Expr::symbol("iterate"),Expr::symbol("laggedIterate")}),origin});
-            executable.addEquation({"restoreFlux",Expr::symbol("phi"),
-                Expr::op("consistentFlux",{Expr::symbol("U"),Expr::symbol("p")}),origin});
-            executable.addEquation({"checkConvergence",Expr::symbol("converged"),
-                Expr::op("residualConvergence",{Expr::symbol("iterate"),Expr::symbol("laggedIterate")}),origin});
+            relation(inputs_.relaxation,{"relaxIterate",PressureMathematics::symbol("iterate"),
+                PressureMathematics::op("relax",{PressureMathematics::symbol("iterate"),PressureMathematics::symbol("laggedIterate")}),origin});
+            relation(inputs_.fluxConsistency,{"restoreFlux",PressureMathematics::symbol("phi"),
+                PressureMathematics::op("consistentFlux",{PressureMathematics::symbol("U"),PressureMathematics::symbol("p")}),origin});
+            relation(inputs_.convergence,{"checkConvergence",PressureMathematics::symbol("converged"),
+                PressureMathematics::op("residualConvergence",{PressureMathematics::symbol("iterate"),PressureMathematics::symbol("laggedIterate")}),origin});
         }
         executable.addOperator({
             "OP_PRESSURE_UPDATE","pressure update",{"pPrime"},{"p"},
@@ -103,13 +113,16 @@ public:
             "OP_FLUX_CORRECTION","flux correction",{"pPrime"},
             {primitiveTarget ? "faceFlux" : "fluxValidity"},
             {OriginKind::Generated,"pressureConstraint"}});
-        if (primitiveTarget) record.generatedEquations.push_back("pSimple");
+        for (const auto& equation:executable.system().registry.entries())
+            if (std::find(priorEquations.begin(),priorEquations.end(),equation.id)==priorEquations.end())
+                record.generatedEquations.push_back(equation.id);
         record.generatedOperators.insert(record.generatedOperators.end(),{
             "OP_PRESSURE_UPDATE","OP_VELOCITY_CORRECTION","OP_FLUX_CORRECTION"});
     }
 
 private:
-    std::string momentumTarget_;
+    PressureCouplingInputs inputs_;
+    bool fixedTime_;
     TransformationDescriptor descriptor_;
 };
 
@@ -147,7 +160,6 @@ public:
             TransformationRecord& record) const override {
         for (auto equation:eulerianPressureRelations()) {
             equation.origin={OriginKind::Generated,"sharedPressureConstraint"};
-            equation.authored=true;
             executable.addEquation(equation);
             record.generatedEquations.push_back(equation.id);
         }
@@ -191,10 +203,12 @@ void ExecutableEquationSystemBuilder::addState(StateSymbol unknown) {
 }
 
 void ExecutableEquationSystemBuilder::replaceEquation(Equation formula) {
+    system_.state.validateSymbols(formula.lhs);system_.state.validateSymbols(formula.rhs);
     system_.registry.replace(std::move(formula));
 }
 
 void ExecutableEquationSystemBuilder::addEquation(Equation formula) {
+    system_.state.validateSymbols(formula.lhs);system_.state.validateSymbols(formula.rhs);
     system_.registry.add(std::move(formula));
 }
 
@@ -313,8 +327,8 @@ ExecutableEquationSystem TransformationPipeline::apply(
     return executable.finish();
 }
 
-std::unique_ptr<IEquationSystemTransformer> makePressureConstraintTransformer(std::string momentumTarget) {
-    return std::make_unique<PressureConstraintTransformer>(std::move(momentumTarget));
+std::unique_ptr<IEquationSystemTransformer> makePressureConstraintTransformer(PressureCouplingInputs inputs,bool fixedTime) {
+    return std::make_unique<PressureConstraintTransformer>(std::move(inputs),fixedTime);
 }
 
 std::unique_ptr<IEquationSystemTransformer> makeSharedPressureTransformer() {

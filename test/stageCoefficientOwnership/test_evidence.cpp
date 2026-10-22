@@ -1,3 +1,4 @@
+#include "test/typedSymbols.h"
 #include "solver/algorithm/transport/SF_transportBinding.h"
 #include "../sharedFluxTransport/fluid_fixture.h"
 #include "solver/algorithm/SF_flowOperations.h"
@@ -29,7 +30,7 @@ std::vector<double> sst(FDM::TimeRecipeId id,bool active,bool diffusion=true,dou
     config.numerics.timeRecipe=FDM::builtInTimeRecipe(id);config.numerics.viscousEnabled=diffusion;config.numerics.dynamicViscosity=mu;
     auto r=fluidRequest(false,false);r.singleFluidPreset=System::SingleFluidPresetSpec{diffusion};
     if(active){System::SystemContribution c;Turbulence::contribute(c,{"kOmegaSST",{},false,{},true});r.modelContributions.push_back(c);}
-    if(manufactured)for(auto& equation:r.modelContributions.front().registeredEquations){using E=System::FormulaExpr;equation.rhs=E::op("diffusion",{E::multiply(E::symbol("rho"),E::constantValue(0)),E::symbol(equation.id)});}
+    if(manufactured)for(auto& equation:r.modelContributions.front().registeredEquations){using E=System::FormulaExpr;equation.rhs=E::op("diffusion",{E::multiply(SF::Test::symbol("rho"),E::constantValue(0,Math::signature(0,{0,2,-1,0,0,0,0}))),SF::Test::symbol(equation.id)});}
     auto system=System::build(config,r);System::validate(system);
     require(std::find(system.runtime.report.requiredOperations.begin(),system.runtime.report.requiredOperations.end(),System::OpIds::TurbulenceAdvance)==system.runtime.report.requiredOperations.end(),"Native SST retained old advance authority");
     Field mesh;mesh.setup(n,1,1,g,5);auto model=Physics::FluidStateModel::makeSingleFluidPerfectGas(1.4,287.05,mu,.72);mesh.setStateModel(model);

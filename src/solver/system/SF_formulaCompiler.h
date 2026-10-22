@@ -1,7 +1,7 @@
 #pragma once
 
 /// @file SF_formulaCompiler.h
-/// @brief Compile HOW FormulaCalls using numerical-provider capabilities.
+/// @brief Typed structural extraction and numerical value-provider binding.
 
 #include "core/system/SF_formula.h"
 #include "core/system/SF_solveProgram.h"
@@ -15,18 +15,35 @@
 namespace SF::System {
 
 
-namespace Legacy {
-/// @brief Isolated legacy FormulaCompiler request mode. Production methods
-/// derive realization from their concrete method identity.
-enum class FormulaMode { Assign, Explicit, Implicit };
+/// @brief Immutable structural index over the authored AST, not another equation authority.
+struct FormulaNode {
+    const FormulaExpr* expression=nullptr;
+    std::string path;
+    unsigned targetDegree=0; // 0: independent; 1: affine candidate; 2: nonlinear/unknown.
+};
+struct FormulaStructure {
+    std::vector<FormulaNode> nodes;
+    std::vector<std::string> symbols;
+    std::vector<Math::Op> operations;
+    unsigned targetDegree=0;
+};
+FormulaStructure inspectFormula(const FormulaExpr& expression,std::string_view target={});
+/// @brief Extract only a single positive additive ddt(target); no mass inversion or term reordering.
+FormulaExpr explicitFormulaRhs(const Equation& equation,std::string_view target);
 
-struct FormulaCall {
-    std::string equation;
-    std::string target;
-    FormulaMode mode = FormulaMode::Assign;
+/// @brief A numerical provider compiles one mathematical operator occurrence.
+/// Discretization mathematics lives here, never in FormulaCompiler.
+struct FormulaOperatorProvider {
+    std::string id;
+    Math::Op mathematicalOperator=Math::Op::Diffusion;
+    std::function<bool(const FormulaExpr&)> matches;
+    std::function<FormulaValueKernel(const FormulaExpr&)> compileValue;
+    std::function<FormulaLinearKernel(const FormulaExpr&,const std::string&)>
+        compileLinear;
+    std::string extensionName;
+    Math::Signature (*extensionRule)(const std::vector<Math::Signature>&)=nullptr;
 };
 
-} // namespace Legacy
 
 class FormulaOperatorCatalog {
 public:
@@ -38,32 +55,18 @@ private:
     std::vector<FormulaOperatorProvider> providers_;
 };
 
-/// @brief Frozen execution binding. Solve selection is supplied by the caller;
-/// this object only produces a GlobalDofSystem and publishes its solution.
-struct CompiledFormulaCall {
-    Legacy::FormulaCall call;
-    std::string backend;
-    std::vector<std::string> numericalProviders;
-    std::function<void(FormulaValues&)> assign;
-    /// @brief Explicit PDE derivative for the selected target. Stage/update
-    /// coefficients remain owned by CompiledTimeRecipe.
-    FormulaValueKernel evaluateRhs;
-    std::function<LinearAlgebra::GlobalDofSystem(const FormulaValues&)> assemble;
-    void writeSolution(FormulaValues& values,
-                       const LinearAlgebra::SolveResult& result) const;
-};
-
 /// Shared structural value lowering; no legacy execution request or solve mode.
 FormulaValueKernel compileFormulaValue(const Equation& equation,const FormulaExpr& expression,
     const FormulaOperatorCatalog& providers,std::vector<std::string>& used,
-    const std::vector<std::string>& boundSymbols={});
-
-class FormulaCompiler {
-public:
-    static CompiledFormulaCall compile(
-        const EquationRegistry& formulas,const Legacy::FormulaCall& call,
-        const FormulaOperatorCatalog& providers,
-        const std::vector<FormulaOperatorBinding>& bindings);
-};
+    const std::vector<std::string>& boundSymbols={},
+    const StateRegistry* state=nullptr,std::vector<std::string>* trace=nullptr);
 
 } // namespace SF::System
+
+namespace SF::Discretization {
+struct FormulaCartesianGrid;
+// AST binding is compiler-side. Kernels and geometry stay in discretization.
+System::FormulaOperatorProvider central2ScalarDiffusion(double diffusivity);
+System::FormulaOperatorProvider conservativeScalarCentral2(double D,int coefficientSlot=-1,bool primitive=false);
+System::FormulaOperatorProvider central2FormulaDiffusion(FormulaCartesianGrid grid);
+}

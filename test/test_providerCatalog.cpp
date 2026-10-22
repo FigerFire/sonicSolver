@@ -1,3 +1,4 @@
+#include "test/typedSymbols.h"
 #include "solver/system/SF_providerCatalog.h"
 #include "solver/system/SF_termProviderCatalog.h"
 #include "models/physics/SF_sourceContribution.h"
@@ -44,9 +45,9 @@ int main() {
             "catalog inferred a provider without a WHICH binding");
 
     using Expr=FormulaExpr;
-    const Equation momentum{"E_USER_FORCE",Expr::symbol("U"),
-                           Expr::symbol("gravity"),{}};
-    const auto gravity=Expr::op("source",{Expr::symbol("gravity")},
+    const Equation momentum{"E_USER_FORCE",Expr::zeroLike(SF::Test::symbol("gravity")),
+                           Expr::op("source",{SF::Test::symbol("gravity")}),{}};
+    const auto gravity=Expr::op("source",{SF::Test::symbol("gravity")},
                                 "momentum.gravity");
     const TermMatchContext termContext{
         momentum,gravity,"momentum.gravity","U","PressureMomentum",nullptr};
@@ -82,7 +83,7 @@ int main() {
             && compiledGravity.primitiveSource(
                 geometry,0,0,0,SF::Vector3()).x==0.01,
             "gravity binding retained raw config or lost compiled acceleration");
-    const auto mrfTerm=Expr::op("source",{Expr::symbol("MRF")},
+    const auto mrfTerm=Expr::op("source",{SF::Test::symbol("MRF")},
                                 "momentum.mrf");
     const auto compiledMRF=lifetimeCatalog.resolve(
         {momentum,mrfTerm,"momentum.mrf","U","PressureMomentum",nullptr});
@@ -116,9 +117,9 @@ int main() {
     require(residual.source(0,0,0,SF::RU)==-4.0,
             "compiled MRF conservative kernel changed Coriolis source");
     auto wallHeat=SF::Physics::WallHeat::termProvider({});
-    const Equation energy{"energy",Expr::symbol("rhoE"),
-                         Expr::symbol("wallHeat"),{}};
-    const auto heatTerm=Expr::op("source",{Expr::symbol("wallHeat")},
+    const Equation energy{"energy",Expr::op(SF::Math::Op::Ddt,{SF::Test::symbol("rhoE")}),
+                         Expr::op("source",{SF::Test::symbol("wallHeat")}),{}};
+    const auto heatTerm=Expr::op("source",{SF::Test::symbol("wallHeat")},
                                  "energy.wallHeat");
     require(wallHeat.match({energy,heatTerm,"energy.wallHeat","rhoE",
                             "ConservativeResidual",nullptr})
@@ -129,13 +130,13 @@ int main() {
                                    "p","PressureMomentum",nullptr}).status
                 ==BindingStatus::Unsupported,
             "primitive source bound the wrong HOW Output");
-    const auto unknown=Expr::op("source",{Expr::symbol("customForce")},
+    const auto unknown=Expr::op("source",{SF::Test::symbol("customForce")},
                                 "momentum.customForce");
     require(sourceCatalog.resolve(
                 {momentum,unknown,"momentum.customForce","U",
                  "PressureMomentum",nullptr}).status==BindingStatus::Unsupported,
             "unknown source must not fall back to a built-in source provider");
-    const auto convection=Expr::op("div",{Expr::symbol("momentumFlux")},
+    const auto convection=Expr::op("div",{SF::Test::symbol("momentumFlux")},
                                    "momentum.convection");
     const auto wrongRecipe=SF::FDM::TermRecipe::diffusionRecipe(
         SF::FDM::TermRecipeId::Central4Explicit,
@@ -146,7 +147,7 @@ int main() {
             "unsupported convection recipe must not bind a diffusion provider");
     const auto conservativeRecipe=SF::FDM::builtInConvectionRecipe(
         SF::FDM::ConvectionScheme::WENO7,SF::FDM::FluxSplitter::Rusanov);
-    const auto wrongFlux=Expr::op("div",{Expr::symbol("unimplementedFlux")});
+    const auto wrongFlux=Expr::op("div",{SF::Test::symbol("unimplementedFlux")});
     require(TermProviderCatalog::builtIn().resolve(
                 {momentum,wrongFlux,"momentum.convection","rhoU",
                  "ConservativePressureMomentum",&conservativeRecipe}).status==BindingStatus::Unsupported,

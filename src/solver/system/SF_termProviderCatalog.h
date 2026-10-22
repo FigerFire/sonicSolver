@@ -12,6 +12,12 @@
 namespace SF::System {
 
 struct FormulaOperatorBinding {
+    FormulaOperatorBinding()=default;
+    FormulaOperatorBinding(std::string equation,std::string address,std::string implementation)
+        :formula(std::move(equation)),occurrence(std::move(address)),provider(std::move(implementation)) {
+        if(formula.empty() && !occurrence.empty())operation=Math::resolveOperator(occurrence);
+    }
+    std::optional<Math::Op> operation;
     /// Empty formula with an operator name selects the global default;
     /// empty occurrence selects a formula-level default. Both set selects
     /// one stable operator occurrence. More specific bindings win.
@@ -35,6 +41,8 @@ struct TermProviderDescriptor {
     std::string owner = "solver.discretization";
     std::function<ConservativeSourceKernel()> compileConservativeSource;
     std::function<StageConservativeSource(const TermMatchContext&)> compileStageSource;
+    /// @brief 数值实现支持的数学身份；matcher继续校验布局/系数/具体结构。
+    std::vector<Math::Op> operations;
 };
 
 struct ResolvedTermProvider {

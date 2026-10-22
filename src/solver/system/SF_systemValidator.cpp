@@ -3,6 +3,7 @@
 
 #include "SF_systemValidator.h"
 #include "SF_solvePlan.h"
+#include "SF_executionContract.h"
 
 #include <set>
 #include <stdexcept>
@@ -106,6 +107,7 @@ void validate(const ResolvedSimulationSystem& system) {
     validatePlanNode(system.solvePlan.root);
     const auto& executable = system.executableSystem;
     validateCompiledEquations(executable);
+    validateMathematicalCoverage(executable,system.solvePlan,system.runtime.report.status==RuntimeStatus::Runnable);
     std::set<std::string> providers;
     for (const auto& provider : system.runtime.providerRequirements) {
         if (provider.id.empty() || provider.responsibility.empty()
@@ -206,40 +208,6 @@ void validate(const ResolvedSimulationSystem& system) {
             || !constraints.insert(constraint.id).second) {
             throw std::runtime_error(
                 "Resolved system has an invalid multiplier constraint.");
-        }
-    }
-    std::set<std::string> blocks;
-    for (const auto& block : system.solvePlan.blocks) {
-        if (block.id.empty() || block.strategy.empty()
-            || !blocks.insert(block.id).second) {
-            throw std::runtime_error(
-                "Resolved system has an invalid/duplicate solve block.");
-        }
-        if (block.strategyKind == FDM::SolveStrategyKind::AlgebraicUpdate) {
-            throw std::runtime_error(
-                "Solve block '"+block.id
-                +"' has no executable typed solve strategy.");
-        }
-        for (const auto& equation : block.equations) {
-            if (equations.find(equation) == equations.end()) {
-                throw std::runtime_error(
-                    "Solve block '"+block.id
-                    +"' references undeclared equation '"+equation+"'.");
-            }
-        }
-        for (const auto& constraint : block.constraints) {
-            if (constraints.find(constraint) == constraints.end()) {
-                throw std::runtime_error(
-                    "Solve block '"+block.id
-                    +"' references undeclared constraint '"+constraint+"'.");
-            }
-        }
-        for (const auto& unknown : block.unknowns) {
-            if (unknowns.find(unknown) == unknowns.end()) {
-                throw std::runtime_error(
-                    "Solve block '"+block.id
-                    +"' references undeclared unknown '"+unknown+"'.");
-            }
         }
     }
     for (const auto& call:system.solvePlan.compiledProgram.steps) {

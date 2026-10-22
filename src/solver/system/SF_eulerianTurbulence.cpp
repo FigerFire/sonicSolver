@@ -1,3 +1,4 @@
+#include "models/turbulence/SF_transportMathematics.h"
 #include "SF_eulerianTurbulence.h"
 #include "core/system/SF_operationIds.h"
 #include <algorithm>
@@ -9,9 +10,9 @@ namespace {
 Equation supportedClosureMathematics(const std::string& model,
         const std::string& phase) {
     using E=FormulaExpr;
-    return {"mu_t."+phase,E::symbol("mu_t."+phase),
-        E::symbol(model+".eddyDynamicViscosity."+phase),
-        {OriginKind::Model,model},true};
+    return {"mu_t."+phase,Turbulence::mathematicalSymbol("mu_t."+phase),
+        Turbulence::mathematicalSymbol(model+".eddyDynamicViscosity."+phase),
+        {OriginKind::Model,model}};
 }
 Equation supportedTransportMathematics(const std::string& second,
         const std::string& phase,const std::string& variable) {
@@ -20,7 +21,7 @@ Equation supportedTransportMathematics(const std::string& second,
         throw std::runtime_error("Unsupported Eulerian RAS mathematical contract.");
     const bool epsilon=second=="epsilon";
     const std::string model=epsilon ? "kEpsilon" : "kOmegaSST";
-    const auto s=[&](const std::string& name) { return E::symbol(name+"."+phase); };
+    const auto s=[&](const std::string& name) { return Turbulence::mathematicalSymbol(name+"."+phase); };
     const auto c=[&](const std::string& name) { return s(model+"."+name); };
     const auto mul=[](E a,E b) { return E::multiply(std::move(a),std::move(b)); };
     const auto div=[](E a,E b) { return E::divide(std::move(a),std::move(b)); };
@@ -39,11 +40,11 @@ Equation supportedTransportMathematics(const std::string& second,
         sink=mul(c(variable=="k" ? "betaStar" : "beta"),mul(s("phaseMass"),s("omega")));
         source=variable=="k" ? production : E::add(mul(div(mul(c("gamma"),s("rho")),s("mu_t")),production),c("crossSource"));
     }
-    const auto transient=E::op("ddt",{mul(s("phaseMass"),s(variable))});
-    const auto convection=E::op("div",{mul(s("massFaceFlux"),s(variable))});
+    const auto transient=E::op(Math::Op::Ddt,{mul(s("phaseMass"),s(variable))});
+    const auto convection=Turbulence::faceMassDivergence(mul(s("massFaceFlux"),s(variable)));
     return {variable+"."+phase,E::add(E::add(transient,convection),mul(std::move(sink),s(variable))),
-        E::add(E::op("diffusion",{std::move(diffusivity),s(variable)}),std::move(source)),
-        {OriginKind::Model,model},true};
+        E::add(E::op(Math::Op::Diffusion,{std::move(diffusivity),s(variable)}),std::move(source)),
+        {OriginKind::Model,model}};
 }
 SolvePlanNode op(const char* id,const char* owner) {
     SolvePlanNode node;node.kind=PlanNodeKind::Update;node.id=id;node.operation=id;node.provider=owner;
@@ -78,7 +79,7 @@ public:
             const auto& state=system.state.at(binding.inputs[i]);
             const auto& phase=state.nameSpace;
             const auto& closure=system.registry.at("mu_t."+phase);
-            if (closure.rhs.kind!=FormulaExpr::Kind::Symbol)
+            if (closure.rhs.kind()!=FormulaExpr::Kind::Symbol)
                 throw std::runtime_error("Unsupported Eulerian turbulence closure AST.");
             std::string selected;
             for (const auto* candidate:{"kEpsilon","kOmegaSST","Smagorinsky"})
@@ -120,7 +121,8 @@ public:
         if (step.target.kind!=TargetKind::Physical || step.target.symbol!=step.equation
             || std::none_of(members.begin(),members.end(),[&](const auto& item) {return item.equation==step.equation;}))
             throw std::runtime_error("Eulerian turbulence requires each grouped equation's own physical target.");
-        CompiledEquationCall result;result.source=step;result.target.symbol=step.target.symbol;
+        CompiledEquationCall result;
+        result.temporalCapabilities={FDM::TimeRecipeId::ForwardEuler};result.source=step;result.target.symbol=step.target.symbol;
         result.target.kind=step.target.kind;result.target.viewOwner=StateViewOwner::NumericalProvider;
         result.equationMethod=std::string(id());result.calls={{step.equation,step.target.symbol}};
         result.fusionKey=std::string(id())+"/"+model;result.fusionMembers=members;

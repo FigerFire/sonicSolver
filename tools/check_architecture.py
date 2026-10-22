@@ -121,6 +121,25 @@ def main() -> int:
             duplicate_errors.append(f"expanded duplicate basename {name}: {paths}")
 
     authority_errors = []
+    # A1: common mathematical rules are independent, and numerical kernels never parse WHAT.
+    for source in (source_root / "methods/math").rglob("*"):
+        if source.is_file() and source.suffix in SOURCE_SUFFIXES and not source.name.startswith("._"):
+            for include in re.findall(r'^\s*#\s*include\s*[<"]([^>"]+)', source.read_text(), re.MULTILINE):
+                if include.startswith(("core/", "solver/", "models/", "infrastructure/", "mesh/")) or include in ("mpi.h",):
+                    authority_errors.append("Math depends on domain/execution layer: " + relative(root, source))
+    formula = (source_root / "core/system/SF_formula.h").read_text()
+    public_ast = formula.split("class FormulaExpr {", 1)[1].split("private:", 1)[0]
+    if "Math::Signature" not in public_ast or "const std::vector<FormulaExpr>& arguments() const" not in public_ast:
+        authority_errors.append("WHAT lacks immutable typed AST access")
+    if re.search(r'static FormulaExpr symbol\(std::string name\s*\)', formula):
+        authority_errors.append("WHAT restored an undeclared mathematical symbol factory")
+    for source in (source_root / "solver/discretization").rglob("*"):
+        if source.is_file() and source.suffix in SOURCE_SUFFIXES and not source.name.startswith("._"):
+            text = source.read_text()
+            if re.search(r'#\s*include\s*"(?:core/system/SF_formula|solver/system/SF_formulaCompiler)', text) or "FormulaExpr" in text:
+                authority_errors.append("Numerical kernel depends on WHAT AST: " + relative(root, source))
+    if "Math::Op mathematicalOperator" not in (source_root / "solver/system/SF_formulaCompiler.h").read_text():
+        authority_errors.append("Numerical operator binding lost stable Math identity")
     unused_allowed=set(allowed)-{key for key,_ in known_debt}
     if unused_allowed:
         authority_errors.append("stale dependency allowlist entries: "+repr(sorted(unused_allowed)))
@@ -201,6 +220,16 @@ def main() -> int:
                 f"SF_formula.h: Formula WHAT owns execution concept {token}")
     formula_compiler = (root / "src/solver/system/SF_formulaCompiler.cpp").read_text(
         errors="replace")
+    retired_formula = re.compile(r"\b(?:FormulaMode|CompiledFormulaCall)\b|Legacy::FormulaCall|FormulaCompiler::compile")
+    for source in files:
+        if retired_formula.search(re.sub(r"/\*.*?\*/|//[^\n]*", "", source.read_text(), flags=re.S)):
+            authority_errors.append("Retired FormulaCall execution API restored: "+relative(root,source))
+    if "explicitFormulaRhs" not in formula_compiler or "inspectFormula" not in formula_compiler:
+        authority_errors.append("Shared typed structural extraction/residual contract missing")
+    scalar_source=(root/"src/solver/system/SF_scalarMethod.cpp").read_text()
+    if "finite constant times Stage scalar required" in scalar_source:
+        authority_errors.append("Scalar provider restored a local algebra AST whitelist")
+
     if re.search(r'\b(?:if|switch)\s*\([^)]*(?:PISO|SIMPLE|kEpsilon|Momentum)',
                  formula_compiler):
         authority_errors.append(
@@ -258,6 +287,27 @@ def main() -> int:
     if not state_realizer.is_file() or "workspaceRequirements" not in state_realizer.read_text():
         authority_errors.append(
             "Resolved unknown/workspace requirements are not realized before run")
+    derived_runtime = state_realizer.read_text()
+    for path in (root / "src").rglob("*"):
+        if path.suffix not in {".h", ".cpp", ".hpp"} or path.name.startswith("._"):
+            continue
+        text = path.read_text(errors="replace")
+        if "StateDerivation" in text or "legacySource" in text or "formula.authored" in text or "equation.authored" in text:
+            authority_errors.append("Retired mathematical/derived-state compatibility path: " + str(path.relative_to(root)))
+        if "SF_domainMathematics.h" in text:
+            authority_errors.append("Domain mathematics must be declared by its module: " + str(path.relative_to(root)))
+    if (root / "src/core/system/SF_domainMathematics.h").exists():
+        authority_errors.append("Core contains the retired central domain mathematics catalog")
+    if "bindDerivedViews" not in derived_runtime or "updateView" not in derived_runtime:
+        authority_errors.append("Derived STATE has no explicit binding/update boundary")
+    pressure_composition = (root / "src/solver/system/SF_pressureCoupling.cpp").read_text()
+    pressure_inputs = (root / "src/solver/system/SF_executionComposition.cpp").read_text()
+    for retired in ('node.step.equation=="momentum"', 'node.id=="momentum.default"'):
+        if retired in pressure_composition or retired in pressure_inputs:
+            authority_errors.append("Pressure contribution searches a default equation/occurrence name: " + retired)
+    pressure_contract = (root / "src/solver/system/SF_executionContract.cpp").read_text()
+    if "workspaceInvalidates" not in pressure_contract or "commitRequires" not in pressure_contract:
+        authority_errors.append("HOW lost explicit resource invalidation/publication validation")
     pressure_stepper = (
         root / "src/solver/algorithm/eulerian/SF_eulerianStepper.cpp"
     ).read_text()
@@ -316,10 +366,22 @@ def main() -> int:
     for source in system_root.rglob("*"):
         if source.is_file() and source.suffix in SOURCE_SUFFIXES \
                 and not source.name.startswith("._"):
-            if re.search(r'^\s*#\s*include\s*[<\"]models/',
-                         source.read_text(errors="replace"), re.MULTILINE):
-                authority_errors.append(
-                    relative(root, source) + ": solver/system includes a concrete model")
+            # Provider matchers may consume module-owned mathematical declarations,
+            # never concrete model state, kernels or execution implementations.
+            declarations = {
+                "models/ibm/SF_immersedMathematics.h",
+                "models/turbulence/SF_transportMathematics.h",
+                "models/physics/interfaceModel/levelSet/SF_levelSetSystemContribution.h",
+            }
+            for header in re.findall(r'^\s*#\s*include\s*[<\"](models/[^>\"]+)',
+                                     source.read_text(errors="replace"), re.MULTILINE):
+                if header not in declarations:
+                    authority_errors.append(
+                        relative(root, source) + ": solver/system includes a concrete model: " + header)
+            for header in declarations:
+                if re.search(r'^\s*#\s*include.*(?:SF_field\.h|mpi\.h|solver/|infrastructure/)',
+                             (root / "src" / header).read_text(), re.MULTILINE):
+                    authority_errors.append("Mathematical declaration imports runtime implementation: " + header)
     model_catalog = (system_root / "SF_termProviderCatalog.cpp").read_text()
     for forbidden in ['gravity', 'mrf', 'wallHeat', 'turbulence']:
         if re.search(r'\b' + re.escape(forbidden) + r'\b',
@@ -710,7 +772,23 @@ def main() -> int:
             authority_errors.append(
                 "Time::Explicit still owns a global stage loop")
 
+    # Native control expands ordinary values; it must not acquire execution authority.
+    composition_control=(root / "src/app/application/model/SF_model.cpp").read_text()
+    if any(token in composition_control for token in ("PlanExecutor", "executeEquations(", "MPI_", "correct(", "advance(")):
+        authority_errors.append("builtin selection composition acquired runtime/numerical authority")
+    if "expandPresets(model)" not in composition_control or "selectionOrigins" not in composition_control:
+        authority_errors.append("builtin composition lost ordinary typed expansion/provenance")
+
     # Flat mathematical DSL has no production consumer after native retirement.
+    solve_program = (root / "src/core/system/SF_solveProgram.h").read_text()
+    if "SolveBlock" in solve_program or "TIME_RECIPE" in solve_plan_source:
+        authority_errors.append("retired duplicate solve/time summary authority restored")
+    for name in ("SF_numericalCompiler.cpp", "SF_systemValidator.cpp"):
+        if "validateMathematicalCoverage(" not in (root / "src/solver/system" / name).read_text():
+            authority_errors.append("active mathematics coverage is not validated: " + name)
+    for name in ("SF_eulerianMethods.cpp", "SF_eulerianTurbulence.cpp"):
+        if "temporalCapabilities={FDM::TimeRecipeId::ForwardEuler}" not in (root / "src/solver/system" / name).read_text():
+            authority_errors.append("Eulerian fixed-time provider lost its explicit recipe capability: " + name)
     for retired_path in ("src/core/system/SF_expression.h", "src/solver/equation/SF_expression.cpp"):
         if (root / retired_path).exists():
             authority_errors.append("Retired flat equation DSL restored: " + retired_path)

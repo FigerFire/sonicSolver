@@ -47,8 +47,7 @@ bool pressureOperatorRequirementsSatisfied(
     if (density==equations.state.symbols().end()
         || !std::isfinite(*density->constantValue)
         || *density->constantValue<=0.0) return false;
-    if (!equations.registry.contains("momentum")
-        || std::count_if(equations.constraints.begin(),equations.constraints.end(),
+    if (std::count_if(equations.constraints.begin(),equations.constraints.end(),
             [](const ConstraintDescriptor& constraint) { return constraint.id=="C_INCOMPRESSIBILITY"; })!=1
         || equations.constraints.size()!=1) return false;
     const auto sourceBinding=std::find_if(numerics.operators.begin(),
@@ -62,40 +61,40 @@ bool pressureOperatorRequirementsSatisfied(
     catch (const std::runtime_error&) { return false; }
     int transient=0,divergence=0,diffusion=0;
     const auto checkLeft=[&](const auto& self,const FormulaExpr& node)->bool {
-        if (node.kind==FormulaExpr::Kind::Add)
-            return self(self,node.arguments[0]) && self(self,node.arguments[1]);
-        if (node.kind!=FormulaExpr::Kind::Operator) return false;
-        if (node.name=="ddt" && node.arguments.size()==1
-            && node.arguments[0].kind==FormulaExpr::Kind::Symbol
-            && node.arguments[0].name=="U") { ++transient; return true; }
-        if (node.name=="div" && node.arguments.size()==1
-            && node.arguments[0].kind==FormulaExpr::Kind::Symbol
-            && node.arguments[0].name=="momentumFlux") {
+        if (node.kind()==FormulaExpr::Kind::Add)
+            return self(self,node.arguments()[0]) && self(self,node.arguments()[1]);
+        if (node.kind()!=FormulaExpr::Kind::Operator) return false;
+        if (node.operation()==Math::Op::Ddt && node.arguments().size()==1
+            && node.arguments()[0].kind()==FormulaExpr::Kind::Symbol
+            && node.arguments()[0].name()=="U") { ++transient; return true; }
+        if (node.operation()==Math::Op::Div && node.arguments().size()==1
+            && node.arguments()[0].kind()==FormulaExpr::Kind::Symbol
+            && node.arguments()[0].name()=="momentumFlux") {
             ++divergence; return true;
         }
-        if (node.name=="diffusion" && node.arguments.size()==2
-            && node.arguments[0].kind==FormulaExpr::Kind::Symbol
-            && node.arguments[0].name=="nu"
-            && node.arguments[1].kind==FormulaExpr::Kind::Symbol
-            && node.arguments[1].name=="U") { ++diffusion; return true; }
+        if (node.operation()==Math::Op::Diffusion && node.arguments().size()==2
+            && node.arguments()[0].kind()==FormulaExpr::Kind::Symbol
+            && node.arguments()[0].name()=="nu"
+            && node.arguments()[1].kind()==FormulaExpr::Kind::Symbol
+            && node.arguments()[1].name()=="U") { ++diffusion; return true; }
         return false;
     };
     if (!checkLeft(checkLeft,formula->lhs)
         || transient!=1 || divergence!=1 || diffusion>1) return false;
     const auto checkRight=[&](const auto& self,const FormulaExpr& node)->bool {
-        if (node.kind==FormulaExpr::Kind::Add)
-            return self(self,node.arguments[0]) && self(self,node.arguments[1]);
-        if (node.kind==FormulaExpr::Kind::Constant) return node.constant==0.0;
-        const auto symbol=node.kind==FormulaExpr::Kind::Symbol ? node.name
-            : node.kind==FormulaExpr::Kind::Operator
-                && node.name=="source" && node.arguments.size()==1
-                && node.arguments[0].kind==FormulaExpr::Kind::Symbol
-                ? node.arguments[0].name : std::string{};
+        if (node.kind()==FormulaExpr::Kind::Add)
+            return self(self,node.arguments()[0]) && self(self,node.arguments()[1]);
+        if (node.kind()==FormulaExpr::Kind::Constant) return node.constant()==0.0;
+        const auto symbol=node.kind()==FormulaExpr::Kind::Symbol ? node.name()
+            : node.kind()==FormulaExpr::Kind::Operator
+                && node.operation()==Math::Op::Source && node.arguments().size()==1
+                && node.arguments()[0].kind()==FormulaExpr::Kind::Symbol
+                ? node.arguments()[0].name() : std::string{};
         if (symbol.empty()) return false;
         return std::any_of(numerics.operators.begin(),numerics.operators.end(),
             [&](const CompiledSpatialBinding& binding) {
                 return binding.formulaId==formula->id && binding.output=="U"
-                    && binding.operatorName=="source"
+                    && binding.operation==Math::Op::Source
                     && binding.side==CompiledSpatialBinding::Side::Right
                     && binding.primary==symbol && binding.primitiveSource;
             });
@@ -104,16 +103,16 @@ bool pressureOperatorRequirementsSatisfied(
     bool convection=false;
     for (const CompiledSpatialBinding& term:numerics.operators) {
         if (term.formulaId!=formula->id || term.output!="U") continue;
-        if (term.operatorName=="div") {
+        if (term.operation==Math::Op::Div) {
             if (term.primary!="momentumFlux" || !term.recipe
                 || term.recipe->id()!=FDM::TermRecipeId::PrimitiveUpwind1)
                 return false;
             convection=true;
-        } else if (term.operatorName=="diffusion") {
+        } else if (term.operation==Math::Op::Diffusion) {
             if (term.primary!="U" || term.secondary!="nu" || !term.recipe
                 || term.recipe->id()!=FDM::TermRecipeId::Central2Explicit)
                 return false;
-        } else if (term.operatorName=="source") {
+        } else if (term.operation==Math::Op::Source) {
             if (term.side!=CompiledSpatialBinding::Side::Right
                 || !term.primitiveSource) return false;
         }
@@ -191,7 +190,7 @@ std::string validateNativeProvider(const std::string& selected,
         for (const auto& layout:std::vector<std::pair<std::string,int>>{{"U",3},{"p",1},{"phi",1}}) {
             if (!equations.state.contains(layout.first)) return "selected pressure provider requires STATE "+layout.first;
             const auto& symbol=equations.state.at(layout.first);
-            if (symbol.components!=layout.second || symbol.derivation!=StateDerivation::None || symbol.constantValue)
+            if (symbol.components!=layout.second || symbol.readOnly() || symbol.constantValue)
                 return "selected pressure provider has incompatible STATE contract: "+layout.first;
         }
     } else if (selected=="flow.conservative" && std::any_of(plan.compiledProgram.steps.begin(),plan.compiledProgram.steps.end(),
@@ -212,8 +211,8 @@ std::string validateNativeProvider(const std::string& selected,
                 return "conservative pressure has incompatible physical storage: "+layout.first;
         }
         if (!equations.state.contains("U") || !equations.state.contains("p")
-            || equations.state.at("U").derivation!=StateDerivation::Velocity
-            || equations.state.at("p").derivation!=StateDerivation::Pressure)
+            || !producedBy(equations.state.at("U"),"closure.thermodynamicVelocity")
+            || !producedBy(equations.state.at("p"),"closure.thermodynamic.p"))
             return "conservative pressure requires velocity and pressure views of the EOS-backed physical state";
     } else if (selected=="flow.conservative" && plan.compiledProgram.hasTemporalRoot) {
         const auto stageContract=validateCompiledConservativeStage(equations,plan);
@@ -251,7 +250,7 @@ std::string validateCompiledConservativeStage(const ExecutableEquationSystem& eq
     };
     const auto* stage=findStage(findStage,plan.root);
     if (!stage || stage->equationCalls.empty())
-        return "Fused explicit stage has no compiled FormulaCalls.";
+        return "Fused explicit stage has no compiled EquationCalls.";
     const auto& compiled=plan.compiledProgram;
     if (!compiled.hasTemporalRoot)
         return "Fused conservative backend requires a TemporalMethod fragment.";

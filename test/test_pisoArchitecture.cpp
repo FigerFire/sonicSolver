@@ -1,3 +1,4 @@
+#include "test/typedSymbols.h"
 #include "solver/system/SF_systemBuilder.h"
 #include "solver/system/SF_systemValidator.h"
 #include "solver/system/SF_solvePlan.h"
@@ -47,17 +48,17 @@ struct TestBodyForceModel {
         System::SystemContribution value;
         value.recordContribution("model.testBodyForce","test body force");
         value.extendMathematics({"momentum"},System::FormulaExpr::op("source",
-            {System::FormulaExpr::symbol("customForce")},"customForce"));
+            {System::FormulaExpr::symbol("customForce",Math::signature(1,{0,1,-2,0,0,0,0}))},"customForce"));
         return value;
     }
 
     System::SourceTermProviderDescriptor provider() const {
         return {"source.customForce.primitive",
             [](const System::TermMatchContext& context) {
-                return context.expression.kind==System::FormulaExpr::Kind::Operator
-                    && context.expression.name=="source"
-                    && context.expression.arguments.size()==1
-                    && context.expression.arguments.front().name=="customForce"
+                return context.expression.kind()==System::FormulaExpr::Kind::Operator
+                    && context.expression.name()=="source"
+                    && context.expression.arguments().size()==1
+                    && context.expression.arguments().front().name()=="customForce"
                     && context.output=="U";
             },{},[value=strength] {
                 return System::PrimitiveMomentumSource{
@@ -114,7 +115,7 @@ std::string rawSignature(const System::RawEquationSystem& raw) {
         out << "C:" << constraint.id << ':' << constraint.equation << ':'
             << constraint.multiplierUnknown << '\n';
     }
-    for (const auto& closure : raw.closures) out << "K:" << closure << '\n';
+    for (const auto& closure : raw.closures) out << "K:" << closure.description << '\n';
     return out.str();
 }
 
@@ -143,6 +144,16 @@ int main() {
     System::BuildRequest request = requestFor(pisoConfig());
     const auto system = System::build(pisoConfig(),request);
     System::validate(system);
+    for (const auto* inactive : {"relaxIterate", "restoreFlux", "checkConvergence"})
+        require(!System::hasEquation(system.executableSystem,inactive),
+                "PISO registered an inactive fixed-point relation");
+    for (const auto* generated : {"pSimple", "correctU", "correctFluxp"}) {
+        bool found=false;
+        for (const auto& transformation : system.transformations)
+            found=found || std::find(transformation.generatedEquations.begin(),
+                transformation.generatedEquations.end(),generated)!=transformation.generatedEquations.end();
+        require(found,std::string("Generated equation lost transformation provenance: ")+generated);
+    }
     auto invalidPiso=*request.coupling;
     invalidPiso.outerCorrectors=2;
     const auto invalidPisoMatch=System::matchPressureCoupling(
@@ -172,7 +183,7 @@ int main() {
     require(!System::hasUnknown(system,"pPrime") && !System::hasUnknown(system,"phi"),
             "conservative pressure invented a base correction/face-flux authority");
     require(system.executableSystem.state.at("rhoU").storageKey=="conservative"
-                && system.executableSystem.state.at("U").derivation==System::StateDerivation::Velocity,
+                && System::producedBy(system.executableSystem.state.at("U"),"closure.thermodynamicVelocity"),
             "conservative momentum was mislabeled as primitive velocity");
     require(system.executableSystem.compiledEquations.empty(),
             "single-fluid pressure retained legacy schedule/equation authority");
@@ -404,7 +415,7 @@ int main() {
     // A different relation cannot be accepted by a fixed existing kernel.
     auto changedMath=system.executableSystem;
     auto changed=changedMath.registry.at("correctP");
-    changed.rhs=System::FormulaExpr::constantValue(1.0);
+    changed.rhs=System::FormulaExpr::constantValue(1.0,changed.rhs.signature());
     changedMath.registry.replace(changed);
     System::ExecutionProgram authoredHow;
     authoredHow.root=system.solvePlan.compiledProgram.root;

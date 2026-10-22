@@ -1,3 +1,5 @@
+#include "solver/system/SF_systemPrinter.h"
+#include <sstream>
 /// @file SF_inspection.cpp
 /// @brief 构造稳定的 case inspection snapshot。
 
@@ -198,7 +200,9 @@ CaseInspection inspectCase(const CaseConfig& config) {
     {
         System::SystemContribution contribution;
         Physics::SourceContribution::contribute(
-            contribution,config.solver.sources);
+            contribution,config.solver.sources,
+            std::find(config.composition.solutionVariables.begin(),config.composition.solutionVariables.end(),"U")!=config.composition.solutionVariables.end()
+                ? Math::signature(1,{0,1,-2,0,0,0,0}) : Math::signature(1,{1,-2,-2,0,0,0,0}));
         systemRequest.modelContributions.insert(
             systemRequest.modelContributions.begin(),std::move(contribution));
     }
@@ -231,6 +235,19 @@ CaseInspection inspectCase(const CaseConfig& config) {
     result.ibmExplain = IBM::explainSnapshot(immersedDescriptor);
     result.system = System::build(config.solver, systemRequest);
     System::validate(result.system);
+    // Direct named provider storage declares its native initialization/BC backing.
+    // Reconstructed phase primaries and specialized ports keep their owning binder contracts.
+    if(config.modelDescription)for(const auto& symbol:result.system.executableSystem.state.symbols()) {
+        if(symbol.storageBinding!=System::StorageBinding::ProviderDistributed
+            || symbol.storageKey!=symbol.id || symbol.role!=System::StateRole::Transported)continue;
+        const auto& fields=config.modelDescription->fields;
+        const auto field=std::find_if(fields.begin(),fields.end(),[&](const auto& value){return value.symbol==symbol.id;});
+        if(field==fields.end())throw std::runtime_error("Required native STATE lacks registered field: "+symbol.id);
+        if(symbol.initializationRequired && field->initial.is_null())
+            throw std::runtime_error("Required native STATE initialization missing: "+symbol.id+" ("+symbol.origin.source+")");
+        if(symbol.boundaryRequired && field->boundaries.empty())
+            throw std::runtime_error("Required native STATE boundary missing: "+symbol.id+" ("+symbol.origin.source+")");
+    }
     result.mesh = Runtime::makeMeshRuntimeConfig(
         config,config.solver,result.system.numericalSystem.requiredHaloWidth);
     result.mesh.initializeConservativeState=System::requiresProvider(result.system,"flow.conservative")
@@ -252,6 +269,20 @@ CaseInspection inspectCase(const CaseConfig& config) {
 
 CaseInspection inspectCase(const std::string& path) {
     return inspectCase(ModelLoader::read(path));
+}
+
+std::string describeCase(const CaseInspection& inspection) {
+    std::ostringstream out;out << "BUILT-IN COMPOSITION / SELECTION ORIGINS\n"
+        << "  optional model: absent=disabled; present=enabled unless enabled:false; laminar adds no turbulence transport.\n";
+    if(inspection.config.modelDescription)for(const auto& [target,source]:inspection.config.modelDescription->selectionOrigins)
+        out << "  " << target << " <- " << source << "\n";
+    const auto& config=inspection.config.solver;
+    out << "  actual turbulence: " << (config.turbulence.enabled ? "active" : "inactive (laminar/no turbulence transport)")
+        << "; model=" << turbulenceName(config.turbulence.model) << "\n";
+    out << "  actual source contributors: gravity=" << config.sources.gravity.size()
+        << " MRF=" << config.sources.rotating.size() << " wallHeat=" << config.sources.wallHeat.size() << "\n";
+    out << "  inactive model parameters/field files may remain authored; compiled consumers determine resources.\n";
+    return out.str()+System::describe(inspection.system)+IBM::renderExplain(inspection.ibmExplain);
 }
 
 } // namespace SF::Application

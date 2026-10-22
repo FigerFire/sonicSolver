@@ -1,5 +1,228 @@
 # SonicSolver：双数学入口、统一方程驱动的 CFD 求解器架构
 
+## Math / Typed WHAT 的职责更新（2026-10-21）
+
+本节更新核心设计与实施顺序，优先于较早的“独立数学分析层”和先推进内置控制的规划。2026-10-21 的 Phase A1 已在生产构造、注册和选定数值绑定路径接入统一 Math；不据此声明通用离散编译器或所有数学表达式已有执行能力。实现、逐例设置与验证边界见 [A1 报告](../docs/math-what-numerics-a1.md)。
+
+**Math 定义数学，WHAT 组织方程，Numerics 实现数值算法，WHICH 选择实现；STATE 提供符号与状态契约，HOW 定义求解过程。** Math 是公共基础库，不是第五个 authority。
+
+| 部分 | 职责 | 不承担 |
+|---|---|---|
+| Math | 数学算子身份、签名传播、量纲、张量规则、纯向量/张量代数 | 网格、离散格式选择、Field lifecycle |
+| WHAT | 引用 Math 构造 Typed AST、Equation、Constraint；保留身份、引用、occurrence、来源 | 第二套类型规则、数值求值 |
+| STATE | 注册符号签名、位置、存储/视图与版本契约 | 算子类型规则、方程排序 |
+| Numerics | 离散算子、融合算法及计算 kernel；声明支持的签名和资源 | 重定义数学规则、替用户选择方法 |
+| WHICH | 显式选择 Numerics 实现及绑定 | 重写离散算法、静默替换选择 |
+| Compiler | 解析符号、调用 Math 校验入口、规范化和能力匹配、lowering | 独立 MathAnalyzer、推断用户未选的算法 |
+| HOW / Runtime | HOW 的调用/耦合/时间声明经编译后由 runtime 执行 | runtime 再决定数学或数值方法 |
+
+### 数学签名与注册
+
+签名核心为 `Signature = (rank, Dimensions)`；七维量纲顺序固定为 **质量、长度、时间、温度、物质的量、电流、发光强度**，元素是指数。另保留必要的指标尺寸、分量布局、对称性信息；rank 相同不是充分的类型兼容条件。STATE 的空间位置、ownership 与版本独立于量纲，仍参与编译/binding 校验。
+
+例如 T 为 rank 0、[0,0,0,1,0,0,0]；U 为 rank 1、[0,1,-1,0,0,0,0]；rho 为 rank 0、[1,-3,0,0,0,0,0]；p 为 rank 0、[1,-1,-2,0,0,0,0]。
+
+注册/解析边界必须取得已知签名；未知量纲与明确无量纲严格区分。常数也有量纲，不把带单位系数或零值默认为可匹配任意量纲。未知签名不能进入已验证 Typed AST；前置引用先解析再构造，不在每个 timestep 重新推导。签名只存于符号/表达式元数据，不为每个 cell 增加元数据。
+
+### Math 唯一定义传播规则
+
+以下规则描述合法输入的输出，仍须检查指标尺寸与结构：
+
+| 运算 | rank | 量纲 |
+|---|---|---|
+| A ± B | 输入兼容，输出保持 | 输入必须相同 |
+| scalar × A / A ÷ scalar | 保持 A | 指数相加 / 相减 |
+| outer(A,B) | r+s | 指数相加 |
+| 单指标收缩 dot(A,B) | r+s−2 | 指数相加 |
+| cross(a,b) | 支持的三维向量输入输出 rank 1 | 指数相加 |
+| grad(A) | r+1 | 除以长度 |
+| div(A) | r−1，输入 r≥1 且收缩合法 | 除以长度 |
+| laplacian(A) | r | 除以长度平方 |
+| ddt(A) | r | 除以时间 |
+| 当前固定空间方向偏导 Partial | r | 除以长度 |
+
+普通乘法、点积、外积、双点积/多指标收缩必须有明确不同的数学语义，不用一个 Multiply 猜测。`diffusion(D,A)` 应根据其实际定义传播，例如标量 D 的 `div(D grad(A))` 输出量纲为 [D][A]/L²；不能当作无系数 Laplacian。
+
+方程两侧与同一加减表达式的各项最终签名必须兼容；乘积中的每个操作数不要求同阶。同样，连续向量通量的 div 与已投影/积分的离散 face flux balance 不强套一个签名，离散投影、测度和位置变化要明确表达。
+
+内置算子枚举不是封闭数学全集。扩展算子通过明确身份、签名规则及所需约束接入 Math；相应 Numerics 可以尚未实现，此时数学成立但不可执行。不要用匿名不透明回调绕过签名检查。
+
+### 构造期校验与数值绑定
+
+`Expr` 运算构造调用 Math 的签名规则；Equation 构造调用同一兼容检查。WHAT 不另写 MathAnalyzer，provider 不重新实现通用量纲/张量检查。Compiler 可在反序列化、数学改写和入口防御校验时复用这些规则，不维护另一套扫描算法或把未校验 AST 标成 typed。
+
+例：`ddt(rho*U) + div(rho*outer(U,U)) = -grad(p)` 各项最终均为 rank 1、[1,-2,-2,0,0,0,0]。这只证明数学类型兼容，不证明存在可运行离散。
+
+WHICH 按算子 occurrence 与用户选择绑定实现：例如 momentum.pressureGradient → Central2。**不是全局要求 rank=1**；rank=1 仅在所选实现接受向量输入/输出的相应位置成立。完整匹配还包括算子、输入/输出结构、位置、layout、时间、边界与并行能力。允许融合 provider 覆盖多个方程/算子，不强制逐算子拆 kernel。
+
+数学错误为 Invalid；数学合法但无兼容实现/资源为 Unsupported；数学、数值、STATE、HOW 和资源均满足后才为 Executable。Runtime 继续处理除零、非有限值、迭代失败等动态问题，不能由静态签名替代。
+
+`dot(Vector3,Vector3)` 等纯代数可在 Math 直接求值；`grad(Field,Mesh)` 属于 Numerics。表达式 dot 构造 AST，数值 dot 计算分量，二者共享语义但不强迫数值热路径经过 AST。
+
+### A1 的实际落点与边界
+
+- `methods/math/SF_signature.h`：`Dimensions`、`Signature`、`Math::Op`、`resultSignature()`；只依赖标准库。量纲指数统一按绝对容差 1e-12 比较。
+- 现有 `core/system/SF_formula` 是唯一 AST；私有结构和 const getters 禁止直接更改操作数。`withArguments()` 经原工厂重新推导类型；Equation 构造及注册/替换校验两侧。canonical key 包含签名，不包含 provenance。
+- `FormulaSymbols` 和 STATE 的 `expression()` 提供已声明类型。普通非零数字常量明确无量纲；带单位常数必须声明。只有语法上的 literal zero 在加减/方程两侧获得对方的具体类型，随后固定为 typed zero；显式声明了量纲的零不具有此特例。
+- 物理符号和扩展关系归属实际模块：IBM 的 `SF_immersedMathematics.h`、湍流的 `SF_transportMathematics.h`、level-set 的 `SF_levelSetSystemContribution.h`。具体 numerical provider 可读取这些数学声明并独立核对支持范围；通用 compiler 不创建模型，不按模型名调度。公共 core 不再维护 domain 清单；纯 Math 不认识 rho、k、IBM 等物理名字。
+- 连续 `div` 要求 rank≥1；积分面率使用明确的 `faceVolumeDivergence`、`faceMassDivergence` 等既有离散关系。异质 iterate、几何测度采用类型 product，不能冒充无量纲 scalar；当前 product 最多四个非嵌套成员，函数签名最多三个输入。这是现有数学契约的受限元数据，尚非通用类型语言。
+- `NumericalCompiler` / `TermProviderCatalog` 和 `FormulaOperatorCatalog` 复用 Math identity + occurrence + 原 provider matcher。AST pattern binding 留在 compiler；`solver/discretization` 的 Central2/feedback kernels 不 include WHAT。原融合 flow、pressure、turbulence、IBM kernels 保留。
+- native 显式数学字段须声明 `dimensions`；省略不再解释为无量纲。保留现有有限语法与单目录注册身份，不自动升级历史输入。已声明数学合法不保证存在 provider。
+- STATE 的 Q、clock、storage、view/halo 生命周期及 HOW topology 没有迁移。本轮没有新增通用 implicit/Jacobian、非线性源项 kernel、任意多 provider stage 或模块组合能力。
+
+### A2：结构提取、能力匹配与显式非线性 scalar（2026-10-21）
+
+本轮实际实现见 [A2 报告](../docs/math-what-a2.md)。Typed WHAT → `inspectFormula()` 的不可编辑 AST 索引/依赖/target-relative degree → 所选 provider 的能力检查 → `compileFormulaValue()` → 原 StageGroup/PlanExecutor。Math 继续是唯一签名规则来源。
+
+`explicitFormulaRhs()` 仅提取一个加性、正号、单位系数的 `ddt(target)`；保留其他加减/负号树的求值次序，重建仍用 Math 工厂。它不会把代数关系、约束、`ddt(rho*c)` 或质量矩阵自动转换为显式 ODE，不做线性化或算子恒等变换。现有 conservative/shared/SST provider 保留真实融合形式。
+
+ScalarDiffusionCentral2 对现有串行单 patch scalar 支持原 Central2 加局部 Add/Subtract/Negate/Multiply/Divide/Pow；反应 `-k*c*c` 与 `-k*pow(c,2)` 已经实际执行和独立验证。新增合法局部组合无需增加 ScalarMethod 的 AST 模板分支。所选方法仍要求一个受支持的 target diffusion、常数正 D、明确 Stage 存储与原 BC/halo/recipe。数学合法的其他算子、非线性 implicit 或新布局继续准确拒绝，不换算法。
+
+扩展数学身份在每个 EquationRegistry/OperatorCatalog 的编译范围内检查 name/hash/rule 一致性，无进程全局可变 registry。STATE 同名引用在公共编译入口核验签名。现有 core domain 声明未扩充；模块扩展可声明规则和注册现有 catalog 的 numerical implementation，无需修改 Math 枚举、中央物理清单或 PlanExecutor。
+
+Explain 的 normalization、每节点实现和 target-relative 非线性说明来自实际 compiled scalar contract；原数学、occurrence、来源、STATE Stage 版本及融合成员覆盖继续保留。Legacy FormulaCall/FormulaMode/CompiledFormulaCall/FormulaCompiler::compile 已删除；有效矩阵/值核验证迁到现役 provider/GlobalDofSystem，`compileFormulaValue` 与数值内核保留。
+
+这不等于通用非线性隐式求解、通用资源装配、Subcycle 或任意模块组合已经实现。后续 STATE/HOW/资源任务保持独立。
+
+### A3：可扩展派生 STATE 与资源视图（2026-10-21）
+
+`StateSymbol::producer` 引用不可变 `StateProducer`：模块声明数学关系/签名、依赖、支持的 view kinds 与现有计算的 binder。它不是第二个 STATE registry。`compileDerivedViews()` 校验声明/依赖环/签名/版本/输出 slice 并冻结 manifest；只绑定同一请求版本的依赖，不推导新的 HOW 顺序。缺实现或版本、布局不支持时明确拒绝。
+
+Velocity 在 A3 已退出原中央物理 switch；2026-10-22 的核心单路径收口进一步删除整个 `StateDerivation` 机制。builtin contribution 绑定原 `Field::thermodynamicState().velocity`；其原 `(cell,version)` EOS memoization、writer invalidation 与 cache miss 时机保留。普通 view 查询不增加刷新或同步；本轮没有把全部 EOS lazy closure 改成 eager Update。U 为 primary 时仍直接引用原 velocity storage，不从 conserved state 强行派生。homogeneous 的 U 声明在 composition 引用实际 partial-density sum，执行仍调用原 closure。
+
+物化生产者经 `StateRealization::bindDerivedViews()` 绑定原输入/输出数组，经显式 HOW Update callback 调用 `updateView()`。读前核验已有 distributed generation、依赖可读性、输出是否被覆盖、原 Stage epoch 和要求的 halo publication；读取不更新、不通信。revision 句柄在启动阶段冻结；版本快照是有效性 metadata，既有数组、registry 与 owner 不变，没有第二个数值 cache 或时钟。所有 distributed 注册必须先完成，绑定后保持原有句柄稳定的生命周期约束。
+
+测试专用 `q=2a+b` 经同一 contribution/typed registry/compiler/provider/PlanExecutor 运行 Current update，并用原 StageLoop/Stage reader 验证 Stage 和 Current 分离；没有新增 q 分支或 enum。该测试不代表任意物化闭合已经具有 RK stage treatment。Working(U) 继续是原 compiler-owned snapshot，不把 snapshot 伪装成重新派生另一个时间层。
+
+非 Field 的 `ResourceViewRequirement/ResourceView` 是小型 typed borrowed handle，检查 id/type/owner/access、真实 owner lifetime 和 binder 提供的 availability/layout 条件。具体方法可通过原 providerContract 携带需求；Residual 测试直接引用原 PatchWorkspace 对象，不构造假 StateSymbol、不复制数组。不宣称 application 所有资源已自动装配，也不提供动态插件 ABI。
+
+A3 的原始范围和证据见 [A3 报告](../docs/derived-state-resource-views-a3.md)。当前 p/T/h/μ/ν/导热率和 immersed wallDistance 已迁到同一 producer 入口，见下方核心单路径收口；原 EOS/cache 和具体资源 owner 保留。该迁移不等于通用 MPI view 生命周期已经证明。A4 的限定耦合贡献与 HOW 生命周期见下节；Subcycle、通用 Newton/monolithic 与整体资源装配仍后置。
+
+### 核心单路径收口（2026-10-22）
+
+Equation 的 provenance 仅描述来源，不改变数学。`Equation::authored` 和裸 RHS symbol 自动包装 Source 的解释已删除。融合残差 provider 只接受明确的 `Source(...)`；原普通 scalar/赋值中的代数 RHS 保留自己的 AST 语义，不一律改成 source。真实的 signed/coefficient、EOS、时间、布局和边界能力校验继续存在。
+
+所有已登记的派生 STATE 经 `StateSymbol::producer` → `compileDerivedViews` → `StateRealization` 绑定。p/T/h/μ/ν/导热率的 producer 只投影原 `Field::thermodynamicState()`，wallDistance 只读取原 Field geometry。无额外数组、物理 clock、EOS binding 或 cache；绑定不触发 closure。p/T/h 声明 density/momentum/energy 依赖；transport 投影显式命名 Field-owned thermodynamic cache，不为 primitive-pressure case 注册不存在的 rhoU/rhoE。cache 的全 Q 失效仍由原 Field writer/version 负责，不能把这一 owner-bound closure 宣称为任意可替换 STATE 输入的通用热物性实现。
+
+Physical packed 输入需要 componentOffset；数值 provider 已切片的 Stage 输入不再二次偏移。Stage 投影只在原 stage epoch 可读。Working/Correction/Workspace 不自动继承 Physical producer：compiler snapshot、PressureOperators/Corrector 的修正数组继续由原 owner 持有。U/p/T 作为独立主变量时移除 producer，绑定原 writable storage。读取不插入 Update、halo 或 MPI。
+
+架构守卫禁止恢复旧来源解释和派生枚举；solver/system 仍禁止 include concrete model implementation，仅允许上述三个模块数学声明头，并检查其不引入 Field/MPI/solver/backend 实现头。provider 的独立 AST/capability 校验不因数学声明归属调整而删除。
+
+本轮不是 A5。application 的 flow/Eulerian/scalar 具体资源装配保留，后续须以真实消费者逐条替换并同轮删除旧入口。既有 serial/MPI pressure shape 差 `1.0851072147488594e-6` 仍超过 `1e-6` 原阈值，不改容差、不因同配置前后相等而称跨配置一致性通过。实施与本轮验证见 [核心单路径报告](../docs/core-single-path-closure.md)。
+
+### A4：耦合贡献与 HOW 生命周期（2026-10-22）
+
+`PressureCouplingInputs` 是 composition 的方法输入，复用 EquationCall、Target 与既有 constraint 引用；不持有状态、矩阵或 clock。默认方案声明这些引用，显式组装可覆盖它们。Transformation、HOW 与 WHICH 消费同一个已选输入。control 层只选择 typed preset/counts；方法展开保留原 Sequence/Loop/EquationCall/Commit，不创建全局 Coupling driver。
+
+Pressure methods 的 `viewReads` 显式声明 Correction(p) 和适用的 Working(p)，compiler 冻结到同一 NumericalProvider-owned CompiledStateView。读取不创建新数组、不执行刷新。rAU/faceResponse 在原 predictor 产生，correction sequence 读冻结资源；下一 predictor 或 correctedFlux 更新通过 `workspaceInvalidates` 明确结束上一资源版本，不能把旧 correction 带到下一次消费。`commitRequires` 要求显式 correction/publication/flux-consistency 已完成。普通 loop-local workspace 不自动逃逸；已失效资源不能由 scope 恢复或 stepWorkspaces 名单重新复活。
+
+原 PressureOperators 的 baseVelocity_ 仍是 fixed-time U_n snapshot，iterationVelocity_ 是 outer 起点快照；没有新增 clock 或第二份物理 Q。VelocityCorrect 在原位置发布 U，PressureUpdate 更新 p，FluxCorrect/原 correction tail 发布通量或 EOS energy；lazy EOS cache 继续由原 writer 失效。上述校验覆盖声明过的 source HOW、版本与资源，不宣称所有 kernel 读写都有通用运行时证明。OldTime snapshot 的通用借用接口和整体 binder 装配保留到后续。
+
+同配置短时串行/两进程压力结果、首个矩阵/RHS与 trace 保持。串行/MPI 压力形状差仍有迁移前即存在的约 1.085e-6（原阈值 1e-6），没有扩大容差。改名、错误版本、缺 publication、lazy invalidation、scope 负例及独立双方程 Loop 见 [A4 报告](../docs/coupling-contributions-how-lifecycle-a4.md)。没有实现 Subcycle、通用 Newton/BlockSolve、新 SIMPLE/PISO/PIMPLE 数学或 A5。
+
+
+### 更新后的顺序与文件约束
+
+A1：Math 签名 + Typed WHAT + 至少一个现役 Numerics/WHICH 绑定闭环。
+A2：数学规范化、结构/依赖提取与 Numerical capability matching；这不等于重新建立类型分析器。
+随后：派生 STATE 扩展 → HOW 高层求解语义 → 通用资源装配；再完善结构化 Explain、内置控制、外部公式及远期变分入口。
+
+现有 Explain 和支持路径持续保护，不因顺序调整移除。Math/WHAT 的概念边界不要求按概念各建文件；复用当前 `methods/math`、`core/system` 及数值模块，优先短名 `SF_signature`、`SF_formula`、`SF_contribution`，检查同名冲突后再命名。不增加 `SF_analysis`/MathAnalyzer 平行类型体系，不为图示创建新顶层目录。本节为设计更新，不授权自动重命名现有文件。
+
+## 历史实施优先级（2026-10-20）
+
+本节保留 2026-10-20 的规划；最新顺序以首页 2026-10-21 Math / Typed WHAT 章节为准。不是新增能力完成声明。**四轴耦合契约 → 完整执行解释 → 内置模型/预制方案控制 → 外部自定义方程**。变分入口仍为远期规划。旧章节、旧路线中的物理模块扩展顺序不覆盖本节；数值支持范围仍以源码与逐例验收为准。
+
+当前旧 Equation DSL、影子方程容器、旧 execution policy/fragment 已退役；705 个 C/C++ 文件、96,886 物理行的统计见 [退役报告](../docs/legacy-code-retirement-report.md)。已有有限 native scalar 输入继续维护，但近期不扩大外部公式语言。详细计划与冻结门槛见 [四轴优先工作计划](../docs/four-axis-first-work-plan.md)；可执行任务说明见 [长任务提示词](../docs/four-axis-first-long-task-prompt.md)。
+
+### 分层与控制方向
+
+```text
+GUI / CLI
+    ↓
+IO → typed user settings
+    ↓
+内置选择与组装 ← 模型、算法、预制方案库
+    ↓
+WHAT + STATE + HOW + WHICH
+    ↓
+Compiler / capability validation
+    ↓
+Compiled Program ───→ Explain
+    ↓
+Runtime resource binding → PlanExecutor → kernels / backend
+
+后续用户公式/变分前端 → 同一贡献入口 → 同一四轴与执行链
+```
+
+GUI 只编辑设置、展示解释和结果；IO 只负责配置身份、schema 和 typed decoding。内置选择与组装将用户选择展开为已有 SystemContribution、执行作用域及数值绑定，不拥有 timestep、迭代、MPI 或第二份 state。库内的模型、算法、预制方案可以由不同代码实现，不要求新增一个统一“大控制器”类。
+
+运行时只绑定和执行冻结结果，不根据模型名字重新选择数学或算法。Explain 关联同一 authored/resolved/compiled 对象及 provenance，不另维护展示用方程库。配置选择、展开来源、实际执行方法和未参与执行的设置必须区分。
+
+### 四轴核心契约的冻结目标
+
+| 轴 | 唯一职责 | 需要明确的边界 |
+|---|---|---|
+| WHAT | 方程、项、代数关系、约束及其数学引用 | 不持有 storage、全局循环或隐式模型调度 |
+| STATE | 符号身份、主变量/派生量角色、形状、位置、存储/闭合契约 | 不决定方程顺序；保守形式与存储变量分开；workspace 不成为第二份 physical authority |
+| HOW | equation occurrence、target、顺序、迭代、stage placement、读版本与提交关系 | 不重定义数学；耦合与时间推进独立；不静默重排用户流程 |
+| WHICH | 方程/算子的具体实现、recipe、能力和实现需求 | 不从 formulation 或模型名称推断另一轴选择；不支持就明确拒绝 |
+
+Compiler 验证引用、读写版本、系数生产/消费、资源 ownership、作用域和 provider 能力，并降低为现有 compiled program。耦合未知量的依赖环允许由显式耦合方法处理；派生闭合环、无定义读取、重复 authority 仍应拒绝。一般非线性/隐式系统需要实际装配与求解实现，不因存在 Loop/BlockSolve 类型就宣称支持。
+
+冻结的是经过代表性实现验证的语义、ownership、最小接口和错误行为，不冻结全部 provider 清单、内存 ABI 或所有数学能力。后续新增模型原则上只贡献数学、资源需求及实现/注册；若确需新增核心语义，应记录缺口、兼容影响和新验收后显式修订，不以万能 payload 绕过契约。
+
+### 内置模块与预制方案
+
+模型选择与完整数值方案分开：k–ε 增加 k/ε 方程、状态需求和湍流闭合，不能因此隐式选择 PIMPLE 或 RK4；laminar 不增加湍流输运方程。MRF 贡献项；Ghost/ILW 贡献边界闭合；DLM/KKT 贡献约束及乘子；SIMPLE/PISO/PIMPLE 提供明确的耦合流程及所需派生关系。它们共享接入机制，但数学作用不同。
+
+完整预制方案可以显式组合四轴选择。默认值必须携带来源，显式用户选择优先；两个同级显式贡献冲突应报错，不按加载顺序覆盖。模块关闭后不应留下该模块专属的活动方程、回调或资源需求；共享资源由仍在使用它的贡献决定，不能误删。
+
+### Explain 的完整性要求
+
+每个活动方程和约束均可追溯：选择来源 → WHAT → STATE → HOW occurrence → WHICH → compiled operation → resource/parallel requirements。融合 kernel 可以对应多个数学成员，不强制拆融合；没有对应的数学成员或操作需说明其边界、同步、诊断等职责。
+
+时间解释来自实际 compiled temporal treatment。2026-10-20 已删除只用于摘要的 SolveBlock/TIME_RECIPE：configured recipe/tableau 与实际 temporal root、provider 固定时间处理分别显示。Eulerian 的现有 segregated update 只接受 forwardEuler 意图，不执行通用 RK stages；显式 RK4 输入现在 fail-fast。固定时间 corrector/outer loop 不提交第二份物理时间，没有为修解释更改数值方法。
+
+Explain 完整覆盖当前活动系统；Unsupported 输入应报告阻断链，不制造可执行计划。未来尚未实现的方程不属于“全部已解释/支持”。
+
+### 内部契约 v1 与解释覆盖（2026-10-20，选定能力已验收）
+
+A0/A1/B 已完成限定范围；C1 已在 laminar、单流体 SST、gravity 和两种完整方案的限定范围完成后端闭环；C2 GUI 与 D 扩展仍为计划。详细审计、逐例输入、冻结对照及未支持范围见 [内部四轴契约与 Explain 收口报告](../docs/four-axis-contract-closure-report.md) 和 [C1 报告](../docs/builtin-composition-closure-report.md)。
+
+### C1 内置选择与有来源的默认
+
+`CaseIO → ModelLoader::build → CaseAdapter → inspectCase → SystemBuilder → 原 concrete binder → PlanExecutor`
+保持唯一生产链。注册的 `compositionPreset` 只在 ModelLoader 中展开普通 Description 值；
+`singleFluidLaminar` 和 `singleFluidSST` 提供明确的四轴默认，不拥有另一条执行路径。
+单独选择 turbulence 不强绑时间、EOS 或 coupling；完整方案的默认与模型本身的要求分开。
+EOS、物性、网格、初值和边界仍需实际输入，缺失时按既有能力契约拒绝。
+
+显式用户值覆盖适用默认；冲突默认只有在其目标被明确覆盖时才可消解。同级重复显式角色和
+未覆盖的歧义默认报来源及目标，不按文件顺序选赢家。原始输入 presence 决定显式性，不能从
+NumericsConfig 的 typed 缺省值反推。Description::selectionOrigins 只记来源，不保存第二份数学
+或计划，也不参与 runtime dispatch。authored HOW 仍须显式非空 WHICH，方案默认不能补救。
+
+optional turbulence/source block 缺失为 disabled，存在默认 enabled，`enabled:false` 保留输入但
+退出贡献。laminar 无额外湍流 PDE。gravity/MRF 的实际活动性由注册模型决定，不再需要
+numerics.sources 第二次启用；因此旧输入中“注册 gravity 但没写数值源开关”应明确写
+`enabled:false` 才保持旧 inactive 数学。关闭专属消费者不删除用户字段文件，共享 mu 继续由
+活动扩散消费者绑定。隐式默认输出只绑定实际 STATE；显式 output 请求没有 provider 时仍报错。
+
+编译后的 STATE required initialization/boundary 约束用于检查直接命名的 provider 输运数组；
+重建相状态及专用端口继续由原 binder 校验，不新增中央字段名分支。CLI explain 和启动解释共用
+Application::describeCase，展示来源/覆盖、实际活动性及原四轴数学覆盖链。C2 未来复用这些接口，
+本轮未实现或验收 GUI；有限 native scalar 和现有 Unsupported 能力范围不变。
+
+- 数学仍只在 `EquationRegistry/FormulaExpr`。`SystemModification` 记录 RHS extension 的 canonical identity 和贡献来源；重复 contribution、同一方程的重复 RHS contribution、缺失 target 明确拒绝。
+- `ConstraintDescriptor::equations` 与 `ClosureDescriptor::{equations,states,origin}` 只引用现有数学/STATE。闭合说明不是另一份可执行公式；常量、lazy view 不因此获得虚假 PDE 或刷新操作。PISO 不再注册未参与求解的 fixed-point 关系。
+- `equationConsumers/equationOperations` 只读查询原 compiled calls/Plan leaves，供编译器、validator、Explain 和测试共享。可运行系统的每个活动数学成员必须有实际 consumer 和操作；先使用直接引用，只有无直接 occurrence 的约束关系才沿显式 constraint realization 引用追溯。融合成员可以共享 leaves。
+- 数组、cache、epoch、OldTime/Stage/Frozen/Lagged、系数 lifetime 和 runtime binding 沿用既有实现。没有新增 STATE、workspace registry、clock 或时间循环；声明检查不冒充对所有 provider 内部读写的运行时证明。
+- 代表性验证包含双向标量解析/时间收敛、改名与第三实例、源项、stage/once-step SST、Eulerian RAS、PISO/固定时间约束与 no-slip Ghost/SST 短时保护。不能推导任意 PDE、任意模块组合、production KKT 或通用隐式/Jacobian 能力。
+
+后续修改核心语义须说明消费者、ownership/版本/时序影响，新增有独立参考的正负验收并保护现有冻结集；不建立插件 ABI 或另一个版本分派系统。外部输入、GUI 或新的 preset 只能生成同一贡献与四轴，不拥有另一执行链。
+
+
 > 2026-10-14 实现更新：生产 IO 仅 SonicFile native registry；CLI/GUI 共享创建、
 > reader/writer 和 typed inspection。Level-set RHS/pseudo workspace 与 thermal
 > numerical execution 已迁入 solver；mixture flow/thermo、advanced KKT 等仍明确 Unsupported。
@@ -147,7 +370,7 @@ AssemblyPlan 已没有数值消费者，相关类及实现在此前阶段删除�
 
 ## STATE — Base variables and realized views
 
-`core/system/SF_stateRegistry.h` 的 `StateRegistry` 与 `StateSymbol` 是变量 namespace authority。符号保存 shape/components、location、parallel ownership、primary/derived role、physical storage contract、closure derivation、initialization/BC/restart 属性。没有 equation id、target binding、order、Loop、PISO、RK recipe，也不保存 coefficient publication resource 或具体 Stage/Frozen 选择。
+`core/system/SF_stateRegistry.h` 的 `StateRegistry` 与 `StateSymbol` 是变量 namespace authority。符号保存 shape/components、location、parallel ownership、primary/derived role、physical storage contract、模块 producer 或剩余 legacy derivation、initialization/BC/restart 属性。没有 equation id、target binding、order、Loop、PISO、RK recipe，也不保存 coefficient publication resource 或具体 Stage/Frozen 选择。
 
 原生 case 必须分别选择 WHAT、solution STATE 和 HOW。`EquationCompositionConfig::stateDeclared/solutionVariables` 是输入；冻结后 `StateRegistry::solutionVariables()` 是成员身份 authority。`StateRole` 仍描述数学/存储职责，不决定是否属于 solution；不增加 `Conserved` 互斥角色。物理守恒密度及其 balance 属于 WHAT，一个主未知量可以同时表示守恒密度。
 
@@ -177,7 +400,7 @@ Solver 的 `SF_builtinState.h/.cpp` 中 `BuiltinStateCatalog` 只保存 known me
 
 `CompiledExecutionProgram.stateViews` 是 compiler 输出的 lazy manifest：HOW qualifiers 要求 Working/Correction；WHICH temporal lowering 要求 OldTime/Stage。未引用的版本没有数组。相同 base/kind 只有一份 authority；不同 provider 要求不同 backing 时明确冲突失败。
 
-`StateRealization` 绑定 StateBundle 的 physical authority。Generic DirectEvaluation/LinearEquation 的临时数组归 solver execution lifetime；pressure backend 绑定已有 predictor、pressure correction 和 canonical face arrays。RK OldTime 引用 q0，Stage 是当前 published physical state 的时间限定 view，仅在对应 stage 内可读，不创建第二套 Q。Thermodynamic U/p/T/h/transport values 使用 readonly closure views，写入 derived physical target 明确拒绝。
+`StateRealization` 绑定 StateBundle 的 physical authority。Generic DirectEvaluation/LinearEquation 的临时数组归 solver execution lifetime；pressure backend 绑定已有 predictor、pressure correction 和 canonical face arrays。RK OldTime 引用 q0，Stage 是当前 published physical state 的时间限定 view，仅在对应 stage 内可读，不创建第二套 Q。U 的模块 producer 与剩余 thermodynamic p/T/h/transport legacy derivations 使用 readonly closure views。普通赋值写入 derived physical target 明确拒绝；物化结果只由冻结的同一 producer Update 写回原输出。
 
 `StateBundle.stateModel` 是 thermodynamic/layout closure 引用，不是 equation-to-target binding；`validateThermodynamicBinding` 验证它与各 patch 一致。clock 仍只存在于 StateBundle。
 
@@ -254,9 +477,9 @@ WHICH 是 temporal method、spatial method、flux method、linear solver 与 equ
 
 ## Pressure coupling
 
-Pressure module 有三个独立通道：PressureConstraintTransformer 注册数学 relations（WHAT）；`applyPressureExecution(program, request)` 只变换 HOW；`pressureNumerics(request)` 只贡献 WHICH。HOW 函数不接收 NumericalBinding，不知道 PressureMomentum/PressureCorrection provider IDs。
+Pressure module 有三个独立通道：PressureConstraintTransformer 注册数学 relations（WHAT）；`applyPressureExecution(program, request, inputs)` 只变换 HOW；`pressureNumerics(request, inputs)` 只贡献 WHICH。HOW 函数不接收 NumericalBinding，不知道 PressureMomentum/PressureCorrection provider IDs。
 
-Base equations：`momentum`、`continuity`。SIMPLE/PISO/PIMPLE module 请求所需 pressure relation registration，并用 `applyPressureExecution` 消费 base momentum occurrence。它们不提供第二个 momentum definition，也不重建其他模块的默认 HOW。
+内置方案声明 base equations 及 `PressureCouplingInputs`；SIMPLE/PISO/PIMPLE 方法请求 pressure relations，并用显式 EquationCall/Target 引用消费 predictor、融合 balances 与替换的 Commit。方法不查找 `momentum.default` 或默认 equation ID；自定义 C++ composition 可传入不同 equation/occurrence/relation identity。当前 provider 的 U/rhoU/p layout 与数学能力限制独立校验，不等于支持任意未知量或任意压力数学。
 
 实际 PISO：
 
@@ -299,7 +522,7 @@ Base equations：`momentum`、`continuity`。SIMPLE/PISO/PIMPLE module 请求所
 
 Predictor 保留原 NS AST，由 PressureMomentum provider 调用已有 PressureOperators assemble/solve。pSimple 保留原 pressure matrix / continuity-defect 数学。velocity correction、pressure update、canonical face flux correction、relaxation、flux restore 与 convergence arithmetic 不重写。
 
-transformation provenance 显示 `default momentum -> U/rhoU @ 10` 被哪个 preset 变为 working predictor；其他模块 entries 保留其 origin/order。所有 single-fluid pressure 不再注册独立 PressureSchedule LegacyExecutionPolicy；loop/count authority 只在 HOW。Eulerian shared pressure 也由 native HOW 保存三层循环次数；旧 sharedPressurePlanFragment/policy 已删除。
+transformation provenance 显示实际 predictor equation/输入 occurrence、target 与原 contribution 来源及哪个方法执行变换；其他模块 entries 保留其 origin/order。所有 single-fluid pressure 不再注册独立 PressureSchedule LegacyExecutionPolicy；loop/count authority 只在 HOW。Eulerian shared pressure 也由 native HOW 保存三层循环次数；旧 sharedPressurePlanFragment/policy 已删除。
 
 ## Single-fluid conservative / variable-density pressure
 
@@ -342,7 +565,7 @@ HOW 是唯一 loop/count/order authority。WHICH 的局部 fragment 提供原 as
 | MRF、gravity、wall heat | extends momentum/energy AST | none | existing compiled source kernels |
 | Single-fluid SST / k-epsilon | separate native k, omega/epsilon AST；provider-owned mu_t closure | order 1/2 generic EquationCalls before flow calls | TurbulenceTransport；explicit pair fusion -> flow.turbulence |
 | Eulerian turbulence | native phase-mass weighted k/epsilon/omega AST、implicit sink 与 mu_t algebraic closure；原数组 ProviderDistributed aliases | 显式 outer closure group → flow groups → transport group，完整 phase/model fusion | EulerianTurbulenceClosure / EulerianTurbulenceTransport → flow.eulerian-turbulence，原矩阵内核 |
-| VOF / level set | alpha/phi transport and closures, current module definitions | contribution interface available | Legacy numerical backend / migration pending |
+| Level set / homogeneous / mixture | level-set 原生 advection、pseudo-time、geometry；homogeneous/mixture 原生声明 | level-set 原生 physical/pseudo-time/Commit；其余按实际能力 | level-set 原有 kernel；mixture flow/thermo 仍 Unsupported，不能将声明当执行 |
 | PISO | pSimple, correctU, correctP, correctFluxp；conservative 另有 publishPressure | consumes momentum call; inserts pressure Loop | constant / conservative relation providers |
 | SIMPLE | pressure and fixed-time relations | outer Loop with single correction | constant density: original PressureOperators；conservative fixed-time Unsupported |
 | PIMPLE | pressure and fixed-time relations | nested outer/pressure Loop | constant density: original PressureOperators；conservative fixed-time Unsupported |
@@ -353,7 +576,7 @@ HOW 是唯一 loop/count/order authority。WHICH 的局部 fragment 提供原 as
 源 HOW 不再包含 legacyEntries；模块只贡献正式 occurrences。没有生产者的
 LegacyExecutionPolicy/LegacyPlanFragment、其 lowering 及 provider 推断已退役。
 未知/缺失的编译调用、provider 或能力仍明确失败，不能回到旧执行器。
-SolveBlock 仅保留由编译 occurrences 投影的既有时间说明，不拥有调度权。
+SolveBlock/TIME_RECIPE 及其重复校验、打印已删除。时间意图、实际 temporal treatment 和 Plan root 分别来自原有冻结对象，不保存第二份摘要计划。
 
 ## Compiler and execution
 
@@ -372,7 +595,7 @@ Validate + Freeze Final Owners    compileOperationBindings -> selected-ID Provid
 Execute Frozen Decisions          PlanExecutor / owned OpRegistry / existing kernels
 ```
 
-`SystemBuilder::build` 收集 modules 的独立 contributions。`composeContributions` 做 module applicability matching 和显式 legacy adapters；native pressure 匹配已贡献的 mathematical/default occurrence，不读取 StateRealization flags。composition 完成后保存 source NumericalSelection，再调用 `NumericalCompiler::compileSystem`。
+`SystemBuilder::build` 收集 modules 的独立 contributions。`composeContributions` 做 module applicability matching；native pressure 匹配已贡献的 mathematical/default occurrence，不读取 StateRealization flags。composition 完成后保存 source NumericalSelection，再调用 `NumericalCompiler::compileSystem`。
 
 `compileExecutionProgram` 后校验每个显式 solution variable 是否由 method 的 `writes` 或 writable resource 覆盖；保守 predictor 的 fusion 同时写 rho/rhoU/rhoE，不能只看外层 rhoU target。未使用的 solution T 等明确失败。
 
@@ -448,7 +671,7 @@ STATE 继续由 EquationSystem::PhaseEquationState 的原数组持有；model co
 
 source HOW outer 明确包含 closure group → continuity → momentum → pressure/nonOrthogonal corrections → enthalpy → transport group。EulerianTurbulenceClosure/Transport 选择独立 owner flow.eulerian-turbulence、显式 N-phase/model group 与不可变 providerContract；每组融合一次原 prepare/solve。flow provider 不再通过字符串或 legacy identity 插入湍流。closure provider 的局部 prerequisites 实现 interphase → sources → prepare，continuity 不再重复前两项；outer final BC/validate 放在最后一个 authored group 后。source sibling 顺序不重排。
 
-所选 provider 的支持签名只用于严格 AST/backing/phase/model 能力校验，不注册第二份 WHAT；system 不 include concrete model。runtime 只校验冻结实现绑定与实际模型数组，不重新解析方程名。generic compiler 不识别 turbulence，explain 展示每个 occurrence 的模型、slot、group、owner 及数值方法。
+所选 provider 的支持签名只用于严格 AST/backing/phase/model 能力校验，不注册第二份 WHAT；system 不 include concrete model implementation；具体 provider 只消费模块的数学声明。runtime 只校验冻结实现绑定与实际模型数组，不重新解析方程名。generic compiler 不识别 turbulence，explain 展示每个 occurrence 的模型、slot、group、owner 及数值方法。
 
 保留完整生命周期：initial prepare/commit；dt probe 中 prepare/sourceTimeStep；每 outer 在预测器前 prepare/同步、energy 后 solve、solve 内 BC/validate/reprepare；outer final BC/同步；成功物理 step commit(m*phi)，随后 diagnostics、clock commit。这些 prepare 不可去重。
 

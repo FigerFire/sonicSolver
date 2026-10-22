@@ -1,3 +1,4 @@
+#include "test/typedSymbols.h"
 #include "solver/system/SF_methodObjects.h"
 #include "solver/run/SF_planExecutor.h"
 #include "solver/system/SF_pressureCoupling.h"
@@ -17,7 +18,8 @@ SF::System::StateSymbol stored(std::string id) {
     SF::System::StateSymbol result;
     result.id=std::move(id);
     result.storageKey="testStorage";
-    return result;
+    if(result.id=="U") { result.shape=SF::System::ValueShape::Vector; result.components=3; }
+    return SF::Test::state(result);
 }
 
 class SyntheticGroup final:public SF::System::IProvider {
@@ -53,7 +55,7 @@ void checkGenericFusion() {
         for (int i=size-1;i>=0;--i) {
             const auto state="value"+std::to_string(i),equation="relation"+std::to_string(i);
             system.state.add(stored(state));
-            system.registry.add({equation,FormulaExpr::symbol(state),FormulaExpr::constantValue(0),{}});
+            system.registry.add({equation,SF::Test::symbol(state),FormulaExpr::constantValue(0),{}});
         }
         system.state.add(stored("otherValue"));
         for (int i=0;i<size;++i) {
@@ -107,16 +109,16 @@ int main() {
     ExecutableEquationSystem system;
     system.state.add(stored("C"));
     system.registry.add({"MyScalar",
-        Expr::add(Expr::op("ddt",{Expr::symbol("C")}),
-                  Expr::op("div",{Expr::symbol("scalarFlux")})),
+        Expr::add(Expr::op("ddt",{SF::Test::symbol("C")}),
+                  Expr::op("div",{SF::Test::symbol("scalarFlux")})),
         Expr::constantValue(0.0),{}});
-    system.registry.add({"UpdateC",Expr::symbol("C"),
-                         Expr::add(Expr::symbol("C"),Expr::constantValue(1.0)),{}});
+    system.registry.add({"UpdateC",SF::Test::symbol("C"),
+                         Expr::add(SF::Test::symbol("C"),Expr::constantValue(1.0)),{}});
     system.registry.add({"DiffuseC",
         Expr::negate(Expr::op("div",{
-            Expr::multiply(Expr::symbol("nu"),
-                Expr::op("grad",{Expr::symbol("C")}))},"diffusion")),
-        Expr::symbol("S"),{}});
+            Expr::multiply(SF::Test::symbol("nu"),
+                Expr::op("grad",{SF::Test::symbol("C")}))},"diffusion")),
+        SF::Test::symbol("S"),{}});
     ExecutionProgram program{EquationCall{"MyScalar",{"C"}}};
     const std::vector<NumericalBinding> binding{
         {"MyScalar","ConservativeResidual"}};
@@ -166,16 +168,16 @@ int main() {
     ExecutableEquationSystem pressureSystem;
     for (const auto* id:{"U","p","pPrime","phi"})
         pressureSystem.state.add(stored(id));
-    pressureSystem.registry.add({"momentum",Expr::symbol("U"),
-                                 Expr::symbol("U"),{}});
+    pressureSystem.registry.add({"momentum",SF::Test::symbol("U"),
+                                 SF::Test::symbol("U"),{}});
     pressureSystem.registry.add({"pSimple",
-        Expr::op("grad",{Expr::symbol("pPrime")}),Expr::constantValue(0),{}});
-    pressureSystem.registry.add({"correctU",Expr::symbol("U"),
-                                 Expr::symbol("pPrime"),{}});
-    pressureSystem.registry.add({"correctP",Expr::symbol("p"),
-                                 Expr::symbol("pPrime"),{}});
-    pressureSystem.registry.add({"correctFluxp",Expr::symbol("phi"),
-                                 Expr::symbol("pPrime"),{}});
+        Expr::op("grad",{SF::Test::symbol("pPrime")}),Expr::constantValue(0),{}});
+    pressureSystem.registry.add({"correctU",SF::Test::symbol("U"),
+                                 Expr::subtract(SF::Test::symbol("U"),Expr::multiply(Expr::constantValue(1,SF::Math::signature(0,{-1,3,1,0,0,0,0})),Expr::op(SF::Math::Op::Grad,{SF::Test::symbol("pPrime")}))),{}});
+    pressureSystem.registry.add({"correctP",SF::Test::symbol("p"),
+                                 SF::Test::symbol("pPrime"),{}});
+    pressureSystem.registry.add({"correctFluxp",SF::Test::symbol("phi"),
+                                 SF::System::PressureMathematics::op("pressureFlux",{SF::System::PressureMathematics::symbol("faceResponse"),SF::Test::symbol("pPrime")}),{}});
     ExecutionProgram pressureProgram{{
         {"momentum",{"U"}},
         {"pSimple",{"p",TargetKind::Correction}},
@@ -402,7 +404,7 @@ int main() {
     } catch (const std::runtime_error&) { rejected=true; }
     require(rejected,"Duplicate method binding was accepted.");
     for (const auto& id:std::vector<std::string>{"relaxIterate","restoreFlux","checkConvergence"})
-        pressureSystem.registry.add({id,Expr::symbol(id),Expr::constantValue(0),{}});
+        pressureSystem.registry.add({id,SF::Test::scalar(id),Expr::constantValue(0),{}});
     pressureSystem.state.add(stored("C"));
     pressureSystem.registry.add(system.registry.at("UpdateC"));
     for (const auto preset:{SF::FDM::PressureCouplingPreset::PISO,
@@ -419,8 +421,8 @@ int main() {
         other.kind=ExecutionKind::EquationCall;other.order=70;other.step={"UpdateC",{"C"}};
         how.root.children={defaultMomentum,other};
         const auto registrySize=pressureSystem.registry.entries().size();
-        const auto which=pressureNumerics(request);
-        applyPressureExecution(how,request);
+        const auto which=pressureNumerics(request,pressureCouplingInputs(defaultMomentum.step,PressurePredictorKind::Velocity));
+        applyPressureExecution(how,request,pressureCouplingInputs(defaultMomentum.step,PressurePredictorKind::Velocity));
         require(pressureSystem.registry.entries().size()==registrySize
             && which.front().occurrence=="predictor",
             "Pressure HOW changed WHAT or occurrence numerical selection.");

@@ -1,3 +1,4 @@
+#include "test/typedSymbols.h"
 #include "models/turbulence/SF_turbulenceSystemContribution.h"
 #include "solver/system/SF_systemBuilder.h"
 #include "solver/system/SF_eulerianTurbulence.h"
@@ -22,7 +23,7 @@ int main() {
         for (const auto& selected:std::vector<std::vector<std::string>>{{"water","air"},{"air"},{"air","water"}}) {
             const bool ras=std::string(model)!="Smagorinsky";
             const auto second=std::string(model)=="kEpsilon" ? "epsilon" : "omega";
-            SF::FDM::SolverConfig config;config.numerics.maxDeltaT=.001;
+            SF::FDM::SolverConfig config;config.numerics.timeRecipe=SF::FDM::builtInTimeRecipe(SF::FDM::TimeRecipeId::ForwardEuler);config.numerics.maxDeltaT=.001;
             config.pressure.coupling.preset=SF::FDM::PressureCouplingPreset::PIMPLE;
             config.pressure.coupling.outerCorrectors=2;config.pressure.coupling.pressureCorrectors=2;
             config.pressure.coupling.nonOrthogonalCorrectors=1;
@@ -99,8 +100,12 @@ int main() {
                 bad=resolved.solvePlan.sourceProgram;std::swap(bad.root.children[0].children[4],bad.root.children[0].children[5]);
                 reject(bad,resolved.executableSystem,resolved.numericalSelection.bindings);
                 auto math=resolved.executableSystem;auto equation=math.registry.at("k."+selected[0]);
-                equation.lhs=FormulaExpr::op("ddt",{FormulaExpr::symbol("k."+selected[0])});math.registry.replace(equation);
-                reject(resolved.solvePlan.sourceProgram,math,resolved.numericalSelection.bindings);
+                bool invalidWeighting=false;
+                try {
+                    equation.lhs=FormulaExpr::op("ddt",{math.state.expression("k."+selected[0])});
+                    math.registry.replace(equation);
+                } catch(const std::runtime_error&) { invalidWeighting=true; }
+                require(invalidWeighting,"Unweighted Eulerian k equation bypassed dimensional validation.");
                 auto bindings=resolved.numericalSelection.bindings;
                 for (auto& binding:bindings) if (binding.method=="EulerianTurbulenceTransport") binding.inputs.pop_back();
                 reject(resolved.solvePlan.sourceProgram,resolved.executableSystem,bindings);
@@ -109,7 +114,7 @@ int main() {
                 reject(resolved.solvePlan.sourceProgram,resolved.executableSystem,bindings);
             }
             auto badMath=resolved.executableSystem;auto closure=badMath.registry.at("mu_t."+selected[0]);
-            closure.rhs=FormulaExpr::symbol("UnsupportedModel.eddyDynamicViscosity."+selected[0]);badMath.registry.replace(closure);
+            closure.rhs=SF::Test::symbol("UnsupportedModel.eddyDynamicViscosity."+selected[0]);badMath.registry.replace(closure);
             reject(resolved.solvePlan.sourceProgram,badMath,resolved.numericalSelection.bindings);
             auto wrongBacking=resolved.executableSystem;wrongBacking.state=StateRegistry{};
             for (auto symbol:resolved.executableSystem.state.symbols()) {

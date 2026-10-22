@@ -1,3 +1,4 @@
+#include "test/typedSymbols.h"
 #define SF_STAGE_COEFFICIENT_LIBRARY
 #include "test_evidence.cpp"
 #undef SF_STAGE_COEFFICIENT_LIBRARY
@@ -12,7 +13,7 @@ void failure(const std::function<void()>& run,const std::string& expected) {
 }
 StateRegistry symbols() {
     StateRegistry state;
-    for(const auto* id:{"a","b"}){StateSymbol s;s.id=s.name=s.storageKey=id;s.role=StateRole::Derived;state.add(s);}
+    for(const auto* id:{"a","b"}){StateSymbol s;s.id=s.name=s.storageKey=id;s.role=StateRole::Derived;state.add(SF::Test::state(s));}
     return state;
 }
 CompiledExecutionProgram declarations(StateVersion provided=StateVersion::Stage) {

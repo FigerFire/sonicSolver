@@ -1,3 +1,4 @@
+#include "SF_scalarMethod.h"
 /// @file SF_systemPrinter.cpp
 /// @brief 打印 case 最终数学身份，不参与求解和状态修改。
 
@@ -8,7 +9,7 @@
 #include "SF_couplingStatus.h"
 
 #include "SF_config.h"
-#include "SF_couplingStatus.h"
+#include "SF_executionContract.h"
 
 #include <algorithm>
 #include <string>
@@ -72,6 +73,8 @@ std::string unknownDescription(const StateSymbol& unknown) {
             output << "@" << unknown.componentOffset;
         }
     }
+    output << ", initial=" << unknown.initializationRequired << ", boundary=" << unknown.boundaryRequired
+           << ", runtime-storage=" << unknown.runtimeStorageRequired << ", origin=" << toString(unknown.origin.kind) << ":" << unknown.origin.source;
     if (unknown.constantValue) output << ", value=" << *unknown.constantValue;
     output << "]\n";
     return output.str();
@@ -103,6 +106,79 @@ std::string constraintId(const std::string& id) {
     return id;
 }
 
+void printMathematicalCoverage(std::ostringstream& out,const ResolvedSimulationSystem& system) {
+    const auto& equations=system.executableSystem;
+    const auto& program=system.solvePlan.compiledProgram;
+    out << "\nTIME / CONFIGURED INTENT AND ACTUAL EXECUTION\n  configured recipe: "
+        << FDM::toString(system.numericalSelection.recipes.time.id()) << "\n";
+    if (program.hasTemporalRoot) {
+        out << "  actual treatment: compiled recipe stages, count=" << system.numericalSystem.time.recipe.stageCount()
+            << "; common physical dt, one terminal clock commit\n";
+        for (int i=0;i<system.numericalSystem.time.recipe.stageCount();++i)
+            out << "    stage " << i << " abscissa=" << system.numericalSystem.time.recipe.stage(i).abscissa << "\n";
+    } else out << "  actual treatment: provider-owned fixed-time equation schedule; no recipe RK stages\n"
+        << "  corrector/outer/pseudo-time loops do not advance the physical clock\n";
+    out << "\nMATHEMATICAL EXECUTION COVERAGE\n";
+    for (const auto& equation:equations.registry.entries()) {
+        out << "  equation " << equation.id << " origin=" << toString(equation.origin.kind)
+            << ":" << equation.origin.source << "\n    WHAT: " << formulaText(equation) << "\n"
+            << "    mathematical signature: " << Math::text(equation.lhs.signature()) << "\n";
+        const auto consumers=equationConsumers(equations,program,equation.id);
+        if (consumers.empty()) out << "    BLOCKED: no compiled consumer\n";
+        for (const auto* call:consumers) {
+            out << "    HOW: " << call->source.occurrence << " equation=" << call->source.equation
+                << " target=" << targetText(call->source.target) << "\n    WHICH: " << call->equationMethod
+                << " provider=" << call->backendProvider << "\n";
+            if (!call->temporalMethod.empty()) out << "      actual treatment: " << call->temporalMethod << "\n";
+            for (const auto& read:call->stateUses) out << "      STATE read " << read.symbol
+                << " version=" << toString(read.version) << (read.halo ? " halo-required" : " owner/view") << "\n";
+            for (const auto& resource:call->target.resources) out << "      STATE target storage=" << resource.storage
+                << " slice=" << resource.componentOffset << "+" << resource.components << "\n";
+            for (const auto& need:call->requirements) out << "      requires " << need << "\n";
+        }
+        out << "    actual compiled leaves (shared fusion/constraint leaves may have several mathematical members):\n";
+        for (const auto* node:equationOperations(equations,system.solvePlan,equation.id))
+            out << "      " << node->operation << " provider=" << node->provider << " occurrence=" << node->occurrence << "\n";
+        for (const auto& change:system.rawSystem.modifications)
+            if (change.kind==ModificationKind::Extend && change.targetId==equation.id)
+                out << "    added term origin=" << toString(change.origin.kind) << ":" << change.origin.source
+                    << " canonical contribution=" << change.detail << "\n";
+    }
+    for (const auto& constraint:equations.constraints) {
+        out << "  constraint " << constraint.id << " origin=" << toString(constraint.origin.kind)
+            << ":" << constraint.origin.source << "\n    WHAT: " << constraint.equation
+            << "\n    STATE multiplier: " << (constraint.multiplierUnknown.empty()?"none":constraint.multiplierUnknown)
+            << "\n    realized by mathematical members:";
+        for (const auto& id:constraint.equations) out << " " << id;
+        if (constraint.equations.empty()) out << " BLOCKED: no realization references";
+        out << "\n";
+    }
+    for (const auto& closure:equations.closures) {
+        out << "  closure: " << closure.description << " origin=" << toString(closure.origin.kind)
+            << ":" << closure.origin.source << "\n    equation references:";
+        for (const auto& id:closure.equations) out << " " << id;
+        out << "\n    STATE references:";
+        for (const auto& id:closure.states) out << " " << id;
+        out << "\n";
+        for (const auto& call:program.steps) {
+            bool related=false;
+            for (const auto& id:closure.equations) {
+                const auto consumers=equationConsumers(equations,program,id);
+                related=related || std::find(consumers.begin(),consumers.end(),&call)!=consumers.end();
+            }
+            for (const auto& id:closure.states)
+                related=related || std::any_of(call.stateUses.begin(),call.stateUses.end(),[&](const auto& use){return use.symbol==id;})
+                    || std::any_of(call.stateEffects.begin(),call.stateEffects.end(),[&](const auto& effect){return effect.symbol==id;});
+            if (related) out << "    producer/consumer occurrence=" << call.source.occurrence
+                << " method=" << call.equationMethod << " provider=" << call.backendProvider << "\n";
+        }
+        if (closure.equations.empty() && closure.states.empty()) out << "    BLOCKED: no realization reference\n";
+        out << "    declaration only; no extra PDE, array, loop or refresh implied\n";
+    }
+    out << "  Boundary/halo/reduction/publication/commit operations are infrastructure or numerical lifecycle; not additional PDEs.\n"
+        << "  Exact scopes, repetition limits, termination and operation order follow in COMPILED SOLVE PLAN.\n";
+}
+
 void printNumericalSystem(
         std::ostringstream& output,
         const CompiledNumericalSystem& numerical) {
@@ -125,7 +201,7 @@ void printNumericalSystem(
         output << "  bound Equation occurrences\n";
         for (const auto& term : numerical.operators) {
             output << "    " << term.formulaId << "@" << term.occurrence
-                   << " -> " << term.output << " " << term.operatorName
+                   << " -> " << term.output << " " << term.operatorName()
                    << "(" << term.primary;
             if (!term.secondary.empty()) output << "," << term.secondary;
             output << ") -> " << (term.recipe
@@ -178,85 +254,6 @@ void printAlgebraicConstraints(
 
 bool contains(const std::vector<std::string>& values, const std::string& value) {
     return std::find(values.begin(), values.end(), value) != values.end();
-}
-
-bool hasAlgebraicContent(
-        const SolveBlock& block,
-        const ResolvedSimulationSystem& system) {
-    for (const auto& id : block.equations) {
-        if (isPressureConstraint(id)) return true;
-    }
-    return !block.constraints.empty();
-}
-
-std::string algebraicSystemId(const SolveBlock& block) {
-    if (block.id.find("KKT") != std::string::npos) return "KKT_FLUID_IBM";
-    if (block.id == kPressureScheduleId) return "PRESSURE_CORRECTION";
-    return block.id;
-}
-
-std::string algebraicRowLabel(
-        const std::string& id,
-        const ResolvedSimulationSystem& system) {
-    if (isPressureConstraint(id)) return "pressure/continuity constraint";
-    for (const auto& constraint : system.executableSystem.constraints) {
-        if (constraint.id == id) return constraint.name;
-    }
-    return id;
-}
-
-void printAlgebraicSystems(
-        std::ostringstream& output,
-        const ResolvedSimulationSystem& system) {
-    std::vector<const SolveBlock*> blocks;
-    for (const auto& block : system.solvePlan.blocks) {
-        if (hasAlgebraicContent(block, system)) blocks.push_back(&block);
-    }
-    if (blocks.empty()) return;
-
-    output << "\nALGEBRAIC SYSTEM\n";
-    for (const SolveBlock* block : blocks) {
-        output << "  " << algebraicSystemId(*block) << "\n";
-        std::vector<std::string> rows;
-        const auto appendRow = [&](const std::string& id) {
-            const std::string key = constraintId(id);
-            const bool duplicate = std::any_of(
-                rows.begin(),rows.end(),
-                [&](const std::string& existing) {
-                    return constraintId(existing) == key;
-                });
-            if (!duplicate) rows.push_back(id);
-        };
-        for (const auto& id : block->equations) appendRow(id);
-        for (const auto& id : block->constraints) {
-            appendRow(id);
-        }
-
-        std::stable_sort(rows.begin(), rows.end(), [&](const std::string& left,
-                                                        const std::string& right) {
-            const auto rank = [](const std::string& id) {
-                if (isPressureConstraint(id)) return 1;
-                return 3;
-            };
-            return rank(left) < rank(right);
-        });
-        int row = 1;
-        for (const auto& id : rows) {
-            output << "    row " << row++ << " : "
-                   << algebraicRowLabel(id, system) << "\n";
-        }
-    }
-}
-
-void printSolveBlocks(
-        std::ostringstream& output,
-        const ResolvedSimulationSystem& system) {
-    output << "\nSOLVE BLOCKS\n";
-    for (const auto& block : system.solvePlan.blocks) {
-        output << "  " << block.id << "  " << block.name
-               << "  strategy=" << block.strategy
-               << "  kind=" << FDM::toString(block.strategyKind) << "\n";
-    }
 }
 
 bool hasConstraintVariables(const ResolvedSimulationSystem& system) {
@@ -401,6 +398,8 @@ void printCompiledPlan(
         std::ostringstream& output,
         const ResolvedSimulationSystem& system) {
     output << "\nCOMPILED SOLVE PLAN\n";
+    if (system.runtime.report.status!=RuntimeStatus::Runnable)
+        output << "  NOT EXECUTABLE: declared structure only; see blocking runtime requirements\n";
     printPlanNode(output,system.solvePlan.root,1);
     output << "\nRUNTIME STATUS\n"
            << "  " << (system.runtime.report.status == RuntimeStatus::Runnable
@@ -443,6 +442,7 @@ std::string describe(const ResolvedSimulationSystem& system) {
         output << "  mu=" << t.dynamicViscosity << " Pr=" << t.prandtl << "\n";
         for (const auto& [name,source]:t.provenance) output << "  " << name << " origin: " << source << "\n";
     }
+    printMathematicalCoverage(output,system);
     output << "\nWHAT / EQUATIONS\n";
     for (const Equation& formula:system.executableSystem.registry.entries()) {
         output << "  " << formula.id << ": " << formulaText(formula) << " [" << formula.origin.source << "]\n";
@@ -508,6 +508,15 @@ std::string describe(const ResolvedSimulationSystem& system) {
                << (view.owner==StateViewOwner::PhysicalState ? "physical-state"
                    : view.owner==StateViewOwner::CompilerWorkspace ? "compiler-workspace" : "numerical-provider")
                << "\n";
+    }
+    for (const auto& symbol:system.executableSystem.state.symbols()) if (symbol.producer) {
+        output << "    derived producer: " << symbol.id << " <- " << symbol.producer->id
+               << " / " << (symbol.evaluation==StateEvaluation::Lazy ? "original versioned lazy closure" : "explicit HOW Update") << "\n";
+        output << "      relation: " << formulaText(Equation{"derived."+symbol.id,symbol.expression(),symbol.producer->expression}) << "\n";
+        for (const auto& input:symbol.dependencies) output << "      input: " << input << " [same requested view version]\n";
+        output << "      supported views:";
+        for (auto kind:symbol.producer->versions) output << " " << toString(kind);
+        output << "\n";
     }
     output << "\nHOW / EXECUTION\n";
     const auto printHow=[&](const auto& self,const ExecutionScope& node,int depth)->void {
@@ -611,12 +620,18 @@ std::string describe(const ResolvedSimulationSystem& system) {
         }
         if (!step.temporalMethod.empty())
             output << "    temporal method: " << step.temporalMethod << "\n";
+        if(const auto* scalar=std::any_cast<CompiledScalarEquation>(&step.providerContract)) {
+            output<<"    compiled RHS normalization: "<<scalar->normalized<<" (authored order preserved)\n";
+            output<<"    target-relative structure: "<<(scalar->nonlinear?"nonlinear explicit values; no implicit Jacobian":"affine candidate")<<"\n";
+            for(const auto& binding:scalar->lowering)output<<"      value lowering: "<<binding<<"\n";
+        }
         if (!step.operatorBindings.empty()) {
             output << "    spatial/source providers:";
             for (const auto& provider:step.operatorBindings)
                 output << " " << provider;
             output << "\n";
         }
+        for (const auto& read:step.viewReads) output << "    STATE view read: " << read.symbol << " kind=" << toString(read.kind) << " storage=" << read.storage << " owner=NumericalProvider\n";
         for (const auto& use:step.stateUses) output << "    STATE read: " << use.symbol << " version=" << toString(use.version) << (use.halo ? " halo-required" : " owner/view") << (use.perIteration ? " frozen-per-enclosing-iteration" : "") << "\n";
         for (const auto& effect:step.stateEffects) output << "    STATE write: " << effect.symbol << (effect.publish ? " publication/snapshot" : " invalidates dependent materialized views") << (effect.halo ? " with halo publication" : " without halo publication") << "\n";
         for (const auto& requirement:step.capabilityRequirements) output << "    capability: " << requirement.required << " when=" << requirement.when << " equation=" << requirement.equation << " fluid-port=" << requirement.fluidPort << " boundary=" << requirement.boundary << " : " << requirement.reason << "\n";
@@ -633,6 +648,8 @@ std::string describe(const ResolvedSimulationSystem& system) {
             for (const auto& id:step.workspaceRequires) output << " " << id;
             output << "\n";
         }
+        for (const auto& id:step.workspaceInvalidates) output << "    invalidates workspace: " << id << "\n";
+        for (const auto& id:step.commitRequires) output << "    Commit requires publication: " << id << "\n";
         if (!step.workspaceProvides.empty()) {
             output << "    provides workspace:";
             for (const auto& id:step.workspaceProvides) output << " " << id;
@@ -740,7 +757,7 @@ std::string describe(const ResolvedSimulationSystem& system) {
     printRoleGroup("multipliers",system.realization.multipliers);
 
     const auto& time=system.numericalSystem.time.recipe;
-    output << "\nTIME RECIPE\n"
+    output << "\nCONFIGURED TIME RECIPE (tableau only; actual execution above)\n"
            << "  id       : " << FDM::toString(time.id()) << "\n"
            << "  family   : " << FDM::toString(time.family()) << "\n"
            << "  order    : " << time.order() << "\n"
@@ -798,16 +815,14 @@ std::string describe(const ResolvedSimulationSystem& system) {
     printUnknownSection(output, "CONSTRAINT VARIABLES", system,
                         isConstraintUnknown);
     printAlgebraicConstraints(output, system);
-    printAlgebraicSystems(output, system);
 
-    printSolveBlocks(output, system);
     printCompiledPlan(output,system);
     output << "\nFORMULA CALL EXECUTION\n";
-    bool hasFormulaCalls=false;
+    bool hasEquationCalls=false;
     const auto printCallBindings=[&](const auto& self,const SolvePlanNode& node)
         -> void {
         for (const CompiledMathRef& call:node.equationCalls) {
-            hasFormulaCalls=true;
+            hasEquationCalls=true;
             output << "  " << call.equation << " -> " << node.operation
                    << " provider="
                    << (node.provider.empty() ? "unbound" : node.provider) << "\n";
@@ -815,7 +830,7 @@ std::string describe(const ResolvedSimulationSystem& system) {
         for (const auto& child:node.children) self(self,child);
     };
     printCallBindings(printCallBindings,system.solvePlan.root);
-    if (hasFormulaCalls) {
+    if (hasEquationCalls) {
         output << "  lowering: frozen operation bindings; AST compilation belongs to the selected numerical provider\n";
     } else {
         output << "  (none)\n";

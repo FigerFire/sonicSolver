@@ -1,3 +1,4 @@
+#include "test/typedSymbols.h"
 #include "solver/system/SF_systemBuilder.h"
 #include "solver/system/SF_systemValidator.h"
 #include "solver/system/SF_scalarMethod.h"
@@ -20,7 +21,7 @@
 using namespace SF;
 namespace {
 void require(bool value,const char* message) {if (!value) throw std::runtime_error(message);}
-System::BuildRequest request(const std::string& target,double D,bool source=false) {
+System::BuildRequest request(const std::string& target,double D,bool source=false,Math::Signature signature=Math::signature(0,{})) {
     using namespace System;using E=FormulaExpr;
     BuildRequest result;result.includeDefaultFluidPreset=false;
     result.composition.stateDeclared=true;result.composition.solutionVariables={target};
@@ -28,11 +29,11 @@ System::BuildRequest request(const std::string& target,double D,bool source=fals
     contribution.recordContribution("user.scalar","standalone scalar equation");
     StateSymbol symbol;symbol.id=symbol.name=target;
     symbol.storageBinding=StorageBinding::NamedDistributed;symbol.storageKey=target;
-    symbol.restartEligible=false;
-    contribution.addState(symbol);
-    auto rhs=E::op("diffusion",{E::constantValue(D),E::symbol(target)});
-    if (source) rhs=E::add(std::move(rhs),E::op("source",{E::symbol("Sc")}));
-    contribution.addEquation(System::Equation{"transport."+target,E::op("ddt",{E::symbol(target)}),std::move(rhs)});
+    symbol.restartEligible=false;symbol.signature=signature;
+    contribution.addState(SF::Test::state(symbol));
+    auto rhs=E::op("diffusion",{E::constantValue(D,Math::signature(0,{0,2,-1,0,0,0,0})),E::symbol(target,signature)});
+    if (source) rhs=E::add(std::move(rhs),E::op("source",{E::symbol("Sc",Math::signature(0,{0,0,-1,0,0,0,0}))}));
+    contribution.addEquation(System::Equation{"transport."+target,E::op("ddt",{E::symbol(target,signature)}),std::move(rhs)});
     ExecutionScope call;call.kind=ExecutionKind::EquationCall;call.id="advance."+target;
     call.step={"transport."+target,{target,TargetKind::Physical},"advance."+target};
     contribution.addExecution(call);
@@ -180,8 +181,7 @@ int main(int argc,char** argv) {
         rejects([&] {System::build(invalid,request("tracer",.01));});
     }
     auto unsupported=request("tracer",.01);
-    unsupported.userContributions[0].registeredEquations[0].rhs=System::FormulaExpr::op("div",{System::FormulaExpr::symbol("tracer")});
-    rejects([&] {System::build(config,unsupported);});
+    rejects([&] {unsupported.userContributions[0].registeredEquations[0].rhs=System::FormulaExpr::op("div",{System::FormulaExpr::symbol("tracer",Math::signature(0,{}))});System::build(config,unsupported);});
     auto vector=request("tracer",.01);vector.userContributions[0].states[0].shape=System::ValueShape::Vector;
     vector.userContributions[0].states[0].components=3;rejects([&] {System::build(config,vector);});
     auto working=request("tracer",.01);working.userContributions[0].execution[0].step.target.kind=System::TargetKind::Working;
@@ -196,10 +196,10 @@ int main(int argc,char** argv) {
     rejects([&] {System::build(config,implicit);});
     auto symbolic=request("tracer",.01);
     System::StateSymbol coefficient;coefficient.id=coefficient.name="materialD";
-    coefficient.role=System::StateRole::Algebraic;coefficient.constantValue=.01;
+    coefficient.role=System::StateRole::Algebraic;coefficient.signature=Math::signature(0,{0,2,-1,0,0,0,0});coefficient.constantValue=.01;
     coefficient.runtimeStorageRequired=false;coefficient.initializationRequired=false;coefficient.boundaryRequired=false;
-    symbolic.userContributions[0].addState(coefficient);
-    symbolic.userContributions[0].registeredEquations[0].rhs.arguments[0]=System::FormulaExpr::symbol("materialD");
+    symbolic.userContributions[0].addState(SF::Test::state(coefficient));
+    auto args=symbolic.userContributions[0].registeredEquations[0].rhs.arguments();args[0]=System::FormulaExpr::symbol("materialD",Math::signature(0,{0,2,-1,0,0,0,0}));symbolic.userContributions[0].registeredEquations[0].rhs=symbolic.userContributions[0].registeredEquations[0].rhs.withArguments(args);
     auto symbolicSystem=System::build(config,symbolic);System::validate(symbolicSystem);
     const auto* symbolicContract=std::any_cast<System::CompiledScalarEquation>(&symbolicSystem.solvePlan.compiledProgram.steps[0].providerContract);
     require(symbolicContract && symbolicContract->diffusivity==.01,"Constant STATE diffusivity not compiled");

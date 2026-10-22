@@ -1,3 +1,4 @@
+#include "test/typedSymbols.h"
 #include "fluid_fixture.h"
 #include "solver/discretization/diffusion/SF_formulaCentral2.h"
 #include "solver/algorithm/SF_flowOperations.h"
@@ -9,7 +10,7 @@ System::BuildRequest sharedRequest(bool scalar=true,bool reverse=false) {
     if(scalar) {
         auto& c=r.userContributions[0];c.numerics[0].method="ScalarTransportSharedFluxCentral2";
         using E=System::FormulaExpr;
-        c.registeredEquations[0].rhs=E::op("diffusion",{E::multiply(E::symbol("rho"),E::constantValue(0)),E::divide(E::symbol("rhoC"),E::symbol("rho"))});
+        c.registeredEquations[0].rhs=E::op("diffusion",{E::multiply(SF::Test::symbol("rho"),E::constantValue(0,Math::signature(0,{0,2,-1,0,0,0,0}))),E::divide(SF::Test::symbol("rhoC"),SF::Test::symbol("rho"))});
     }
     return r;
 }
@@ -71,7 +72,7 @@ void variableDiffusion() {
     auto D=[=](int cell,int){double x=cell*h;return (.1+.03*x)/(1+.2*x);};
     v.boundReads={q,rho,[](int,int){return 0.;},D};
     v.boundNeighbor=[&](std::size_t slot,int cell,int axis,int offset,int component){return v.boundReads.at(slot)(cell+offset,component);};
-    auto provider=Discretization::conservativeScalarCentral2(0,3);auto kernel=provider.compileValue({});double error=0;
+    auto kernel=Discretization::conservativeCentral2Kernel(0,3,false);double error=0;
     for(int cell=1;cell<39;++cell){double x=cell*h;error=std::max(error,std::abs(kernel(v,cell,0)-(2*.1+4*.03*x)));}
     require(error<1e-12,"Variable rho-weighted diffusivity manufactured polynomial failed");
     v.boundReads[1]=[](int,int){return 0.;};rejects([&]{kernel(v,4,0);});v.boundReads[1]=rho;
@@ -98,9 +99,9 @@ void multiDimension(int dimensions) {
 double manufactured(int n,double dt,double end,FDM::TimeRecipeId recipe,bool temporal) {
     const int g=3;const double h=1./(n-1),rho=1.2,u=.3,D=temporal?0:.01,pi=std::acos(-1.);
     FDM::SolverConfig config;config.numerics.maxDeltaT=dt;config.numerics.cfl=2;config.numerics.timeRecipe=FDM::builtInTimeRecipe(recipe);
-    auto r=sharedRequest();using E=System::FormulaExpr;auto concentration=E::divide(E::symbol("rhoC"),E::symbol("rho"));
-    auto rhs=E::op("diffusion",{E::multiply(E::symbol("rho"),E::constantValue(D)),concentration});
-    if(temporal)rhs=E::add(rhs,E::op("source",{E::symbol("Sc")}));r.userContributions[0].registeredEquations[0].rhs=rhs;
+    auto r=sharedRequest();using E=System::FormulaExpr;auto concentration=E::divide(SF::Test::symbol("rhoC"),SF::Test::symbol("rho"));
+    auto rhs=E::op("diffusion",{E::multiply(SF::Test::symbol("rho"),E::constantValue(D,Math::signature(0,{0,2,-1,0,0,0,0}))),concentration});
+    if(temporal)rhs=E::add(rhs,E::op("source",{SF::Test::symbol("Sc")}));r.userContributions[0].registeredEquations[0].rhs=rhs;
     auto system=System::build(config,r);System::validate(system);
     Field mesh;mesh.setup(n,1,1,g,5);auto model=Physics::FluidStateModel::makeSingleFluidPerfectGas(1.4,287.05,0,.72);mesh.setStateModel(model);ScalarField scalar;scalar.setupLike(mesh,"rhoC");
     const auto exact=[=](double x,double t){return temporal?std::exp(t):1+.1*std::sin(2*pi*(x-u*t))*std::exp(-4*pi*pi*D*t);};
@@ -126,8 +127,8 @@ void convergence() {
 void stageVariableD() {
     const int n=33,g=3;const double rho=1.2,h=1./(n-1),dt=.0005,end=.005;
     FDM::SolverConfig config;config.numerics.maxDeltaT=dt;config.numerics.cfl=2;config.numerics.timeRecipe=FDM::builtInTimeRecipe(FDM::TimeRecipeId::ClassicalRK4);
-    auto r=sharedRequest();using E=System::FormulaExpr;r.userContributions[0].registeredEquations[0].rhs=E::op("diffusion",{E::multiply(E::symbol("rho"),E::symbol("D")),E::divide(E::symbol("rhoC"),E::symbol("rho"))});
-    auto coefficient=request("D",.01).userContributions[0];coefficient.records[0].id="user.variableD";coefficient.execution.pop_back();coefficient.execution[0].order=200;r.userContributions.push_back(coefficient);r.composition.solutionVariables.push_back("D");
+    auto r=sharedRequest();using E=System::FormulaExpr;r.userContributions[0].registeredEquations[0].rhs=E::op("diffusion",{E::multiply(SF::Test::symbol("rho"),SF::Test::symbol("D")),E::divide(SF::Test::symbol("rhoC"),SF::Test::symbol("rho"))});
+    auto coefficient=request("D",.01,false,Math::signature(0,{0,2,-1,0,0,0,0})).userContributions[0];coefficient.records[0].id="user.variableD";coefficient.execution.pop_back();coefficient.execution[0].order=200;r.userContributions.push_back(coefficient);r.composition.solutionVariables.push_back("D");
     auto system=System::build(config,r);System::validate(system);Field mesh;mesh.setup(n,1,1,g,5);auto model=Physics::FluidStateModel::makeSingleFluidPerfectGas(1.4,287.05,0,.72);mesh.setStateModel(model);ScalarField scalar,D;scalar.setupLike(mesh,"rhoC");D.setupLike(mesh,"D");
     for(int cell=0;cell<mesh.TotalSize();++cell){int i,j,k;mesh.getIJK(cell,i,j,k);double x=(i-g)*h;mesh.X(i,j,k)=x;mesh.Jac(i,j,k)=1/h;mesh.XiX(i,j,k)=1/h;mesh.EtY(i,j,k)=1;mesh.ZeZ(i,j,k)=1;mesh(i,j,k,0)=rho;mesh(i,j,k,4)=2.5;scalar(i,j,k)=rho*(1+x);D(i,j,k)=.02+.01*x;}
     State::StateBundle state;state.patches={&mesh};state.stateModel=model;state.registerConservativeState();state.distributed.add(State::scalarView("rhoC",0,mesh,scalar));state.distributed.add(State::scalarView("D",0,mesh,D));
@@ -176,7 +177,7 @@ int main() {
     duplicateMass.step={"continuity",System::Target{"rho"},"duplicate.mass"};duplicateMass.order=80;
     duplicateFlux.userContributions[0].execution.push_back(duplicateMass);rejects([&]{System::build(config,duplicateFlux);});
     auto unsupportedD=sharedRequest();using E=System::FormulaExpr;
-    unsupportedD.userContributions[0].registeredEquations[0].rhs=E::op("diffusion",{E::multiply(E::symbol("rho"),E::add(E::constantValue(.01),E::constantValue(.02))),E::divide(E::symbol("rhoC"),E::symbol("rho"))});
+    unsupportedD.userContributions[0].registeredEquations[0].rhs=E::op("diffusion",{E::multiply(SF::Test::symbol("rho"),E::add(E::constantValue(.01,Math::signature(0,{0,2,-1,0,0,0,0})),E::constantValue(.02,Math::signature(0,{0,2,-1,0,0,0,0})))),E::divide(SF::Test::symbol("rhoC"),SF::Test::symbol("rho"))});
     rejects([&]{System::build(config,unsupportedD);});
     auto noFlow=sharedRequest();noFlow.includeDefaultFluidPreset=false;noFlow.singleFluidPreset.reset();rejects([&]{System::build(config,noFlow);});
     for(auto id:{FDM::TimeRecipeId::ForwardEuler,FDM::TimeRecipeId::ClassicalRK4}){shared(id,true);shared(id,false);}

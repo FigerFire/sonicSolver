@@ -1,3 +1,4 @@
+#include "SF_builtinState.h"
 #include "SF_scalarMethod.h"
 #include "SF_formulaCompiler.h"
 #include "solver/discretization/diffusion/SF_formulaCentral2.h"
@@ -41,16 +42,16 @@ public:
             || state.components!=1 || state.componentOffset!=0
             || state.location!=VariableLocation::EulerianCell
             || (model_?state.storageBinding!=StorageBinding::ProviderDistributed:state.storageBinding!=StorageBinding::NamedDistributed)
-            || state.constantValue || state.derivation!=StateDerivation::None)
+            || state.constantValue || state.readOnly())
             throw std::runtime_error("Unsupported scalar target: requires writable scalar NamedDistributed cell STATE.");
         const auto& equation=system.registry.at(call.equation);
         using K=FormulaExpr::Kind;
-        const auto target=FormulaExpr::symbol(call.target.symbol);
-        const auto density=FormulaExpr::symbol("rho");
+        const auto target=state.expression();
+        const auto density=BuiltinStateCatalog().expression("rho");
         const auto concentration=model_?target:FormulaExpr::divide(target,density);
-        auto lhs=FormulaExpr::op("ddt",{model_?FormulaExpr::multiply(density,target):target});
-        if (transport_) lhs=FormulaExpr::add(lhs,FormulaExpr::op("div",{FormulaExpr::symbol("rhoU"),concentration}));
-        if (!equivalentMath(equation.lhs,lhs))
+        auto lhs=FormulaExpr::op(Math::Op::Ddt,{model_?FormulaExpr::multiply(density,target):target});
+        if (transport_) lhs=FormulaExpr::add(lhs,FormulaExpr::op(Math::Op::Div,{BuiltinStateCatalog().expression("rhoU"),concentration}));
+        if (transport_ && !equivalentMath(equation.lhs,lhs))
             throw std::runtime_error("Scalar provider LHS does not match its declared transport operator.");
         CompiledScalarEquation contract;contract.target=call.target.symbol;contract.conservativeTransport=transport_;contract.sharedMassFlux=shared_;contract.primitiveStorage=contract.modelCoefficients=model_;
         if(model_) {
@@ -69,58 +70,54 @@ public:
             const auto& partner=system.state.at(name);
             if (partner.shape!=ValueShape::Scalar || partner.components!=1 || partner.componentOffset!=0
                 || partner.location!=VariableLocation::EulerianCell || partner.constantValue
-                || partner.derivation!=StateDerivation::None || (model_?partner.storageBinding!=StorageBinding::ProviderDistributed && partner.storageBinding!=StorageBinding::TransientWorkspace:partner.storageBinding!=StorageBinding::NamedDistributed))
+                || partner.readOnly() || (model_?partner.storageBinding!=StorageBinding::ProviderDistributed && partner.storageBinding!=StorageBinding::TransientWorkspace:partner.storageBinding!=StorageBinding::NamedDistributed))
                 throw std::runtime_error("Unsupported scalar Stage partner shape/storage: "+name);
             if (std::find(contract.stageReads.begin(),contract.stageReads.end(),name)==contract.stageReads.end())
                 contract.stageReads.push_back(name);
         };
+        const auto rhs=transport_?equation.rhs:explicitFormulaRhs(equation,contract.target);
+        const auto structure=inspectFormula(rhs,contract.target);
         int diffusion=0;
-        const auto validate=[&](const auto& self,const FormulaExpr& node)->void {
-            if ((node.kind==K::Add || (model_ && node.kind==K::Subtract)) && node.arguments.size()==2) {
-                self(self,node.arguments[0]);self(self,node.arguments[1]);return;
-            }
-            if (node.kind==K::Constant && std::isfinite(node.constant)) return;
-            if (node.kind==K::Symbol) {stageSymbol(node.name);return;}
-            if (node.kind==K::Multiply && node.arguments.size()==2) {
-                const auto& a=node.arguments[0];const auto& b=node.arguments[1];
-                if(model_ && a.kind==K::Symbol && b.kind==K::Symbol){stageSymbol(a.name);stageSymbol(b.name);return;}
-                if (a.kind==K::Constant && std::isfinite(a.constant) && b.kind==K::Symbol) {stageSymbol(b.name);return;}
-                if (b.kind==K::Constant && std::isfinite(b.constant) && a.kind==K::Symbol) {stageSymbol(a.name);return;}
-                throw std::runtime_error("Unsupported scalar coupling: finite constant times Stage scalar required.");
-            }
-            if (node.kind!=K::Operator) throw std::runtime_error("Unsupported scalar RHS: only diffusion plus additive known source/constants.");
-            if (node.name=="diffusion" && node.arguments.size()==2
-                && (transport_?equivalentMath(node.arguments[1],concentration)
-                    :node.arguments[1].kind==K::Symbol && node.arguments[1].name==contract.target)) {
+        for(const auto& item:structure.nodes) {
+            const auto& node=*item.expression;
+            if (node.kind()==K::Operator && node.operation()==Math::Op::Diffusion) {
+                if(node.arguments().size()!=2 || !(transport_?equivalentMath(node.arguments()[1],concentration)
+                    :node.arguments()[1].kind()==K::Symbol && node.arguments()[1].name()==contract.target))
+                    throw std::runtime_error("Unsupported: selected Central2 kernel only diffuses its declared target/concentration");
                 if (++diffusion!=1) throw std::runtime_error("Scalar provider requires one diffusion term.");
-                const FormulaExpr* coefficientPtr=&node.arguments[0];
+                const FormulaExpr* coefficientPtr=&node.arguments()[0];
                 if (transport_) {
                     const auto& coefficient=*coefficientPtr;
-                    if (coefficient.kind!=K::Multiply || coefficient.arguments.size()!=2
-                        || !equivalentMath(coefficient.arguments[0],density))
+                    if (coefficient.kind()!=K::Multiply || coefficient.arguments().size()!=2
+                        || !equivalentMath(coefficient.arguments()[0],density))
                         throw std::runtime_error("Scalar transport diffusion coefficient requires rho*constantD.");
-                    coefficientPtr=&coefficient.arguments[1];
+                    coefficientPtr=&coefficient.arguments()[1];
                 }
                 const auto& coefficient=*coefficientPtr;
-                if (coefficient.kind==K::Constant) contract.diffusivity=coefficient.constant;
-                else if (coefficient.kind==K::Symbol && system.state.at(coefficient.name).constantValue)
-                    contract.diffusivity=*system.state.at(coefficient.name).constantValue;
-                else if(shared_ && coefficient.kind==K::Symbol) {
-                    stageSymbol(coefficient.name);contract.diffusivityState=coefficient.name;
+                if (coefficient.kind()==K::Constant) contract.diffusivity=coefficient.constant();
+                else if (coefficient.kind()==K::Symbol && system.state.at(coefficient.name()).constantValue)
+                    contract.diffusivity=*system.state.at(coefficient.name()).constantValue;
+                else if(shared_ && coefficient.kind()==K::Symbol) {
+                    stageSymbol(coefficient.name());contract.diffusivityState=coefficient.name();
                 } else throw std::runtime_error("Unsupported scalar diffusivity: requires constant D or explicit shared-flux Stage coefficient.");
                 if (contract.diffusivityState.empty() && (!std::isfinite(contract.diffusivity) || (shared_?contract.diffusivity<0:contract.diffusivity<=0)))
                     throw std::runtime_error("Scalar diffusivity must be finite and positive.");
-                return;
+                continue;
             }
-            if (node.name=="source" && node.arguments.size()==1 && node.arguments[0].kind==K::Symbol
-                && node.arguments[0].name!=contract.target) {
-                if (system.state.contains(node.arguments[0].name) && !system.state.at(node.arguments[0].name).constantValue)
+            if (node.kind()==K::Operator && node.operation()==Math::Op::Source) {
+                if(node.arguments().size()!=1 || node.arguments()[0].kind()!=K::Symbol || node.arguments()[0].name()==contract.target)
+                    throw std::runtime_error("Unsupported: known-source provider requires one declared callback symbol");
+                if (system.state.contains(node.arguments()[0].name()) && !system.state.at(node.arguments()[0].name()).constantValue)
                     throw std::runtime_error("Physical partner STATE cannot masquerade as known source callback.");
-                contract.sources.push_back(node.arguments[0].name);return;
+                if(std::find(contract.sources.begin(),contract.sources.end(),node.arguments()[0].name())==contract.sources.end())contract.sources.push_back(node.arguments()[0].name());
             }
-            throw std::runtime_error("Unsupported scalar operator/operand: "+node.name);
-        };
-        validate(validate,equation.rhs);
+        }
+        for(const auto& name:structure.symbols) {
+            if(std::find(contract.stageReads.begin(),contract.stageReads.end(),name)!=contract.stageReads.end())continue;
+            if(std::find(contract.sources.begin(),contract.sources.end(),name)!=contract.sources.end())continue;
+            if(system.state.contains(name) && system.state.at(name).constantValue)continue;
+            stageSymbol(name);
+        }
         if (diffusion!=1) throw std::runtime_error("Scalar provider requires one diffusion term.");
         FormulaOperatorCatalog operators;
         if(shared_) {
@@ -128,17 +125,19 @@ public:
             operators.add(Discretization::conservativeScalarCentral2(contract.diffusivity,contract.diffusivityState.empty()?-1:static_cast<int>(slot),model_));
         } else operators.add(transport_?Discretization::conservativeScalarCentral2(contract.diffusivity)
             :Discretization::central2ScalarDiffusion(contract.diffusivity));
-        FormulaOperatorProvider source;source.id="scalar.known-source";source.mathematicalOperator="source";
+        FormulaOperatorProvider source;source.id="scalar.known-source";source.mathematicalOperator=Math::Op::Source;
         source.matches=[](const auto&) {return true;};
         source.compileValue=[offset=contract.stageReads.size(),names=contract.sources](const FormulaExpr& expression) -> FormulaValueKernel {
-            const auto slot=offset+static_cast<std::size_t>(std::find(names.begin(),names.end(),expression.arguments[0].name)-names.begin());
+            const auto slot=offset+static_cast<std::size_t>(std::find(names.begin(),names.end(),expression.arguments()[0].name())-names.begin());
             return [slot](const FormulaValues& values,int cell,int) {
                 return values.boundReads.at(slot)(cell,0);
             };
         };
         operators.add(std::move(source));
         CompiledEquationCall result;
-        contract.rhs=compileFormulaValue(equation,equation.rhs,operators,result.operatorBindings,contract.stageReads);
+        contract.nonlinear=structure.targetDegree>1;
+        contract.normalized=formulaText(transport_?equation:Equation{equation.id,FormulaExpr::op(Math::Op::Ddt,{target}),rhs,equation.origin});
+        contract.rhs=compileFormulaValue(equation,rhs,operators,result.operatorBindings,contract.stageReads,&system.state,&contract.lowering);
         if(transport_)result.operatorBindings.push_back(shared_?"scalar.canonical-mass-flux.upwind1":"scalar.independent-center-rhoU.upwind1");
         if(shared_)result.stageRequires={"canonicalMassFlux(Stage)"};
         if(model_) {

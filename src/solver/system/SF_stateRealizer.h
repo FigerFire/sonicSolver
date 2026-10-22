@@ -39,11 +39,26 @@ public:
     void finishStage();
     void requireStageRead(int index,double time) const;
     void requireStageAdvance(int index,double time) const;
+    /// @brief provider 已绑定输入版本后，在启动阶段绑定显式声明的派生视图。
+    void bindDerivedViews();
+    /// @brief 仅供已有 HOW Update callback 调用；读取绝不隐式更新。
+    void updateView(std::string_view symbol,StateViewKind kind,int stage=-1);
 private:
-    int activeStage_=-1;
-    double activeStageTime_=0;
     enum class StagePhase { Closed, Preparing, Reading, Advancing };
-    StagePhase stagePhase_=StagePhase::Closed;
+    struct StageEpoch { int index=-1;double time=0;StagePhase phase=StagePhase::Closed; };
+    std::shared_ptr<StageEpoch> epoch_=std::make_shared<StageEpoch>();
+    State::StateBundle* state_=nullptr;
+    const StateRegistry* symbols_=nullptr;
+    struct DerivedView {
+        CompiledStateView descriptor;
+        State::DistributedFieldView field;
+        std::function<void()> update;
+        std::vector<unsigned long long> versions;
+        unsigned long long outputVersion=0;
+        bool ready=false;
+    };
+    std::vector<std::shared_ptr<DerivedView>> derived_;
+    void bindDerived(const CompiledStateView& descriptor);
     friend StateRealization realizeState(const StateRegistry&,const RuntimeRequirements&,
         State::StateBundle&,const std::vector<CompiledStateView>&);
     struct ViewStorage {

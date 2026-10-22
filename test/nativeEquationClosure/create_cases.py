@@ -15,16 +15,16 @@ def make(name,recipe,ids,eqs):
  write(p/'solvers/numerics.yaml','solver','numerics',{'time':{'default':recipe}})
  write(p/'solvers/state.yaml','solver','state',{'use':ids})
  formula=lambda op,*args:{'op':op,'args':list(args)}
- add={e:{'lhs':formula('ddt',{'symbol':s}),'rhs':formula('diffusion',{'constant':d},{'symbol':s})} for s,e,d in zip(ids,eqs,[.03,.08,.11])}
+ add={e:{'lhs':formula('ddt',{'symbol':s}),'rhs':formula('diffusion',{'constant':d,'dimensions':[0,2,-1,0,0,0,0]},{'symbol':s})} for s,e,d in zip(ids,eqs,[.03,.08,.11])}
  if name=='linearTermsRK4':
-  add[eqs[0]]['rhs']=formula('add',add[eqs[0]]['rhs'],formula('multiply',{'constant':.2},{'symbol':ids[0]}))
-  add[eqs[1]]['rhs']=formula('add',add[eqs[1]]['rhs'],{'constant':.15})
+  add[eqs[0]]['rhs']=formula('add',add[eqs[0]]['rhs'],formula('multiply',{'constant':.2,'dimensions':[0,0,-1,0,0,0,0]},{'symbol':ids[0]}))
+  add[eqs[1]]['rhs']=formula('add',add[eqs[1]]['rhs'],{'constant':.15,'dimensions':[0,0,-1,0,0,0,0]})
  write(p/'solvers/equationRegistry.yaml','solver','equationRegistry',{'use':eqs,'add':add})
  write(p/'solvers/execution.yaml','solver','execution',{'Explicit':{}})
  calls=[{'kind':'EquationCall','equation':e,'target':s,'occurrence':'advance.'+s} for s,e in zip(ids,eqs)]
  write(p/'solvers/how.yaml','solver','how',{'root':{'kind':'Sequence','id':'native.diffusion','children':calls+[{'kind':'Commit','id':'physical.commit'}]}})
  write(p/'solvers/which.yaml','solver','which',{'bindings':[{'equation':e,'method':'ScalarDiffusionCentral2'} for e in eqs]})
- fields={s:{'new':True,'type':'scalar','output':True} for s in ids}
+ fields={s:{'new':True,'type':'scalar','output':True,'dimensions':[0]*7} for s in ids}
  fields.update({'internalField':{'type':'internalField','file':'fields/internalField.yaml'},'boundaries':{'type':'boundary','file':'fields/boundaries.yaml'}})
  write(p/'fields/fields.yaml','fields','registry',fields)
  init={ids[0]:{'default':0,'leftHalf':1},ids[1]:{'default':.5,'rightHalf':2}}

@@ -10,8 +10,8 @@ NumericalSelection selectNumerics(const FDM::SolverConfig& config,const BuildReq
     selection.recipes=config.numerics.recipes;
     selection.recipes.time=config.numerics.timeRecipe;
     const auto diffusion=[](const auto& self,const FormulaExpr& expression)->bool {
-        if (expression.kind==FormulaExpr::Kind::Operator && expression.name=="diffusion") return true;
-        return std::any_of(expression.arguments.begin(),expression.arguments.end(),
+        if (expression.kind()==FormulaExpr::Kind::Operator && expression.operation()==Math::Op::Diffusion) return true;
+        return std::any_of(expression.arguments().begin(),expression.arguments().end(),
             [&](const auto& child) { return self(self,child); });
     };
     const auto providers=builtinProviders();

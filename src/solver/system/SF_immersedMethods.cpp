@@ -1,3 +1,4 @@
+#include "models/ibm/SF_immersedMathematics.h"
 /// @brief IBM provider validates supported AST, binds original storage and numerical operation.
 #include "SF_immersedMethods.h"
 #include "core/system/SF_operationIds.h"
@@ -10,9 +11,9 @@ namespace {
 std::vector<Equation> supportedMathematics(const FDM::ImmersedAlgorithmDescriptor& selection) {
 
 using E=FormulaExpr;
-const auto s=[](const std::string& name) { return E::symbol(name); };
+const auto s=[&](const std::string& name) { return IBM::SystemContribution::Mathematics::symbol(name,selection.support==FDM::IBMConstraintSupport::Surface); };
 const auto mul=[](E a,E b) {return E::multiply(std::move(a),std::move(b));};
-const auto op=[](const std::string& name,std::vector<E> args) {return E::op(name,std::move(args));};
+const auto op=[](const std::string& name,std::vector<E> args) {return IBM::SystemContribution::Mathematics::op(name,std::move(args));};
 const bool lagged=selection.enforcement==FDM::IBMEnforcement::ExplicitIBM;
 const bool penalty=selection.enforcement==FDM::IBMEnforcement::BrinkmanPenalty;
 const bool kkt=selection.enforcement==FDM::IBMEnforcement::MonolithicKKT;
@@ -27,34 +28,34 @@ const auto rigid= kkt?op("rigidVelocity",{s("U_s"),s("omega_s")}):
 std::vector<Equation> equations;
 if (lagged) {
     equations.push_back({"ibm.momentum",s("rhoU"),E::add(s("rhoU.predictor"),
-        mul(s("dt"),s("ibm.laggedForceDensity"))),{},true});
+        mul(s("dt"),s("ibm.laggedForceDensity"))),{}});
 } else if (penalty) {
     equations.push_back({"ibm.momentum",s("rhoU"),E::add(s("rhoU.predictor"),
         mul(s("dt"),op("source",{mul(mul(s("ibm.mask"),s("ibm.penaltyCoefficient")),
-            E::subtract(s("U_b"),s("U.predictor")))}))),{},true});
+            E::subtract(s("U_b"),s("U.predictor")))}))),{}});
 } else {
     E increment=op("massIncrement",{s("U"),s("U.predictor"),s("dt")});
     if (kkt) increment=E::add(std::move(increment),op("grad",{s("ibm.pCorrection")}));
     if (selection.algorithm==FDM::IBMForcingAlgorithm::DFMAugmentedLagrangian)
         increment=E::add(std::move(increment),op("augmentationGradient",{s("U"),s("U_b"),s("ibm.gamma")}));
     equations.push_back({"ibm.momentum",E::subtract(std::move(increment),transfer(s(lambda))),
-        E::constantValue(0.0),{},true});
+        E::constantValue(0.0),{}});
 }
 // All current kernels update conservative energy by midpoint mechanical work.
 equations.push_back({"ibm.energy",s("rhoE"),E::add(s("rhoE.predictor"),
     op("mechanicalWork",{E::subtract(s("rhoU"),s("rhoU.predictor")),
-        op("midpoint",{s("U.predictor"),s("U")})})),{},true});
+        op("midpoint",{s("U.predictor"),s("U")})})),{}});
 if (!penalty) {
     const auto interpolate=[&](E value) {return op(surface?"interpolate":"bodyRestrict",{std::move(value)});};
     if (lagged) {
         const auto target=solid?E::add(rigid,s("U_deform")):s("U_b");
         equations.push_back({"ibm.multiplier",mul(mul(s("dt"),
             op("diagonalMassResponse",{s("rho"),s("geometry")})),s(lambda)),
-            E::subtract(target,interpolate(s("U"))),{},true});
+            E::subtract(target,interpolate(s("U"))),{}});
     } else {
         E constrained=interpolate(s("U"));
         if (solid) constrained=E::subtract(std::move(constrained),rigid);
-        equations.push_back({"ibm.noSlip",std::move(constrained),solid?s("U_deform"):s("U_b"),{},true});
+        equations.push_back({"ibm.noSlip",std::move(constrained),solid?s("U_deform"):s("U_b"),{}});
     }
 }
 if (solid && !kkt) {
@@ -65,19 +66,19 @@ if (solid && !kkt) {
     equations.push_back({"ibm.translation",rotation?s("U_s"):
         mul(op("virtualBodyMass",{s("rho"),s("geometry")}),s("U_s")),
         rotation?s("U_s.old"):E::add(op("virtualBodyMomentum",{s("rho"),s("geometry"),relative}),
-            mul(s("dt"),s("solid.externalForce"))),{},true});
+            mul(s("dt"),s("solid.externalForce"))),{}});
     equations.push_back({"ibm.rotation",rotation?
-        mul(op("virtualBodyInertia",{s("rho"),s("geometry")}),s("omega_s")):s("omega_s"),
+        E::op(Math::Op::Dot,{op("virtualBodyInertia",{s("rho"),s("geometry")}),s("omega_s")}):s("omega_s"),
         rotation?E::add(op("virtualBodyAngularMomentum",{s("rho"),s("geometry"),relative}),
-            mul(s("dt"),s("solid.externalTorque"))):s("omega_s.old"),{},true});
+            mul(s("dt"),s("solid.externalTorque"))):s("omega_s.old"),{}});
 } else if (solid) {
     equations.push_back({"ibm.translation",op("solidMassIncrement",{s("U_s"),s("U_s.old"),s("dt")}),
-        E::subtract(s("solid.externalForce"),op("constraintLoad",{s(lambda)})),{},true});
+        E::subtract(s("solid.externalForce"),op("constraintLoad",{s(lambda)})),{}});
     equations.push_back({"ibm.rotation",E::add(op("solidInertiaIncrement",{s("omega_s"),s("omega_s.old"),s("dt")}),
         op("gyroscopic",{s("omega_s")})),E::subtract(s("solid.externalTorque"),
-        op("constraintTorque",{s(lambda)})),{},true});
+        op("constraintTorque",{s(lambda)})),{}});
 }
-if (kkt) equations.push_back({"ibm.incompressibility",op("div",{s("U")}),E::constantValue(0.0),{},true});
+if (kkt) equations.push_back({"ibm.incompressibility",op("div",{s("U")}),E::constantValue(0.0),{}});
 return equations;
 
 }

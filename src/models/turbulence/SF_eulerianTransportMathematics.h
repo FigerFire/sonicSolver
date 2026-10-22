@@ -1,16 +1,16 @@
 #pragma once
 /// @file SF_eulerianTransportMathematics.h
 /// @brief 相质量加权湍流 WHAT；对应既有 Eulerian 半隐式输运及模型闭合。
-#include "core/system/SF_formula.h"
+#include "SF_transportMathematics.h"
 #include <stdexcept>
 
 namespace SF::Turbulence {
 inline System::Equation eulerianClosureMathematics(const std::string& model,
         const std::string& phase) {
     using E=System::FormulaExpr;
-    return {"mu_t."+phase,E::symbol("mu_t."+phase),
-        E::symbol(model+".eddyDynamicViscosity."+phase),
-        {System::OriginKind::Model,model},true};
+    return {"mu_t."+phase,mathematicalSymbol("mu_t."+phase),
+        mathematicalSymbol(model+".eddyDynamicViscosity."+phase),
+        {System::OriginKind::Model,model}};
 }
 inline System::Equation eulerianTransportMathematics(const std::string& second,
         const std::string& phase,const std::string& variable) {
@@ -19,7 +19,7 @@ inline System::Equation eulerianTransportMathematics(const std::string& second,
         throw std::runtime_error("Unsupported Eulerian RAS mathematical contract.");
     const bool epsilon=second=="epsilon";
     const std::string model=epsilon ? "kEpsilon" : "kOmegaSST";
-    const auto s=[&](const std::string& name) { return E::symbol(name+"."+phase); };
+    const auto s=[&](const std::string& name) { return mathematicalSymbol(name+"."+phase); };
     const auto c=[&](const std::string& name) { return s(model+"."+name); };
     const auto mul=[](E a,E b) { return E::multiply(std::move(a),std::move(b)); };
     const auto div=[](E a,E b) { return E::divide(std::move(a),std::move(b)); };
@@ -38,10 +38,10 @@ inline System::Equation eulerianTransportMathematics(const std::string& second,
         sink=mul(c(variable=="k" ? "betaStar" : "beta"),mul(s("phaseMass"),s("omega")));
         source=variable=="k" ? production : E::add(mul(div(mul(c("gamma"),s("rho")),s("mu_t")),production),c("crossSource"));
     }
-    const auto transient=E::op("ddt",{mul(s("phaseMass"),s(variable))});
-    const auto convection=E::op("div",{mul(s("massFaceFlux"),s(variable))});
+    const auto transient=E::op(Math::Op::Ddt,{mul(s("phaseMass"),s(variable))});
+    const auto convection=faceMassDivergence(mul(s("massFaceFlux"),s(variable)));
     return {variable+"."+phase,E::add(E::add(transient,convection),mul(std::move(sink),s(variable))),
-        E::add(E::op("diffusion",{std::move(diffusivity),s(variable)}),std::move(source)),
-        {System::OriginKind::Model,model},true};
+        E::add(E::op(Math::Op::Diffusion,{std::move(diffusivity),s(variable)}),std::move(source)),
+        {System::OriginKind::Model,model}};
 }
 }

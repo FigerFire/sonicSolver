@@ -23,7 +23,7 @@ void addEulerianState(System::SystemContribution& system,const std::string& id,
     symbol.storageBinding=System::StorageBinding::ProviderDistributed;
     symbol.initializationRequired=symbol.boundaryRequired=!closure;
     symbol.restartEligible=false;
-    system.addState(std::move(symbol));
+    symbol.signature=mathematicalSignature(symbol.id);system.addState(std::move(symbol));
 }
 void addEulerian(System::SystemContribution& system,const SystemContributionSpec& spec,bool transport) {
     if (spec.phases.empty() || spec.phaseOrder.empty())
@@ -55,7 +55,7 @@ void addEulerian(System::SystemContribution& system,const SystemContributionSpec
     };
     contributeCalls(closures,"EulerianTurbulenceClosure");
     if (transport) contributeCalls(inputs,"EulerianTurbulenceTransport");
-    system.addClosure("mu_t from "+spec.model);
+    system.addClosure("mu_t from "+spec.model,closures);
 }
 
 } // namespace
@@ -71,8 +71,8 @@ void contribute(
     const bool kEpsilon = spec.model == "kEpsilon";
     const bool kOmega = spec.model == "kOmegaSST";
     if (!kEpsilon && !kOmega) {
-        system.addClosure(
-            spec.model.empty() ? "turbulence closure" : "turbulence: "+spec.model);
+        if (!spec.eulerian) system.addClosure(
+            spec.model.empty() ? "turbulence closure" : "turbulence: "+spec.model,{},spec.eulerian ? std::vector<std::string>{} : std::vector<std::string>{"mu_t"});
         if (spec.eulerian && spec.model=="Smagorinsky") {
             addEulerian(system,spec,false);
         } else if (!spec.eulerian && spec.model=="Smagorinsky") {
@@ -83,10 +83,10 @@ void contribute(
             closure.storageBinding=System::StorageBinding::ProviderDistributed;
             closure.initializationRequired=closure.boundaryRequired=closure.restartEligible=false;
             closure.origin={System::OriginKind::Model,spec.model};
-            system.addState(std::move(closure));
-            system.addEquation(System::Equation{"mu_t",System::FormulaExpr::symbol("mu_t"),
-                System::FormulaExpr::symbol("Smagorinsky.eddyDynamicViscosity"),
-                {System::OriginKind::Model,spec.model},true});
+            closure.signature=mathematicalSignature(closure.id);system.addState(std::move(closure));
+            system.addEquation(System::Equation{"mu_t",mathematicalSymbol("mu_t"),
+                mathematicalSymbol("Smagorinsky.eddyDynamicViscosity"),
+                {System::OriginKind::Model,spec.model}});
             System::ExecutionScope call;
             call.kind=System::ExecutionKind::EquationCall;
             call.step={"mu_t",{"mu_t"}};
@@ -115,12 +115,12 @@ void contribute(
             symbol.origin={System::OriginKind::Model,spec.model};
             symbol.restartEligible=false; // Manager has no restart reader for these arrays.
             symbol.initializationRequired=symbol.boundaryRequired=id!="mu_t";
-            system.addState(std::move(symbol));
+            symbol.signature=mathematicalSignature(symbol.id);system.addState(std::move(symbol));
         }
         if(spec.stageConservativeTransport)for(const auto& id:{"SST.nu.k","SST.nu.omega","SST.production.k","SST.production.omega","SST.sink.k","SST.sink.omega","SST.cross"}) {
             System::StateSymbol coefficient;coefficient.id=coefficient.name=coefficient.storageKey=id;
             coefficient.role=System::StateRole::Derived;coefficient.outputEligible=false;coefficient.storageBinding=System::StorageBinding::TransientWorkspace;coefficient.runtimeStorageRequired=false;
-            coefficient.initializationRequired=coefficient.boundaryRequired=coefficient.restartEligible=false;system.addState(std::move(coefficient));
+            coefficient.initializationRequired=coefficient.boundaryRequired=coefficient.restartEligible=false;coefficient.signature=mathematicalSignature(coefficient.id);system.addState(std::move(coefficient));
         }
         for (const auto& id:std::vector<std::string>{"k",second}) {
             system.addEquation(spec.stageConservativeTransport?stageTransportMathematics(id):transportMathematics(second,id));
@@ -130,7 +130,7 @@ void contribute(
             system.addExecution(std::move(call));
             system.bindNumerics({id,spec.stageConservativeTransport?"SSTStageTransport":"TurbulenceTransport",{"k",second}});
         }
-        system.addClosure("mu_t from "+spec.model);
+        system.addClosure("mu_t from "+spec.model,{"k",second},{"mu_t"});
         return;
     }
     addEulerian(system,spec,true);

@@ -4,9 +4,11 @@
 /// @brief Solver-owned catalog of ordinary physical variables. Models still declare
 /// their requirements; users declare only new variables, initialization and boundaries.
 #include "core/system/SF_stateRegistry.h"
+#include "core/system/SF_stateViews.h"
 #include "core/system/SF_solveProgram.h"
 
 namespace SF::System {
+inline constexpr const char* velocityProducer="closure.thermodynamicVelocity";
 
 /// @brief Typed entries prevent field-name heuristics in composition and cell loops.
 enum class BuiltinState {
@@ -28,6 +30,7 @@ public:
     void require(StateRegistry& active,std::string_view id) const;
     /// Writable solution metadata; dependency metadata remains a closure/view.
     StateSymbol solution(std::string_view id) const;
+    FormulaExpr expression(std::string_view id) const {return at(id).expression();}
 private:
     std::vector<StateSymbol> symbols_;
 };

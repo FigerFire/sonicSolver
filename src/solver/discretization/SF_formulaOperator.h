@@ -3,7 +3,7 @@
 /// @file SF_formulaOperator.h
 /// @brief Numerical-provider contract for Equation AST operator occurrences.
 
-#include "core/system/SF_formula.h"
+#include "methods/math/SF_signature.h"
 #include "solver/linearAlgebra/SF_globalDofSystem.h"
 
 #include <algorithm>
@@ -50,15 +50,5 @@ using FormulaValueKernel =
 using FormulaLinearKernel =
     std::function<FormulaLinearTerm(const FormulaValues&,int,int)>;
 
-/// @brief A numerical provider compiles one mathematical operator occurrence.
-/// Discretization mathematics lives here, never in FormulaCompiler.
-struct FormulaOperatorProvider {
-    std::string id;
-    std::string mathematicalOperator;
-    std::function<bool(const FormulaExpr&)> matches;
-    std::function<FormulaValueKernel(const FormulaExpr&)> compileValue;
-    std::function<FormulaLinearKernel(const FormulaExpr&,const std::string&)>
-        compileLinear;
-};
 
 } // namespace SF::System

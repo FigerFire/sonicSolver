@@ -39,8 +39,8 @@ void SystemCompositionBuilder::addState(StateSymbol unknown) {
 }
 
 void SystemCompositionBuilder::addEquation(Equation equation) {
+    system_.state.validateSymbols(equation.lhs);system_.state.validateSymbols(equation.rhs);
     if(equation.origin.source.empty())equation.origin=origin_;
-    equation.authored=true;
     system_.registry.add(std::move(equation));
 }
 
@@ -53,9 +53,12 @@ void SystemCompositionBuilder::addConstraint(ConstraintDescriptor constraint) {
     system_.constraints.push_back(std::move(constraint));
 }
 
-void SystemCompositionBuilder::addClosure(std::string closure) {
+void SystemCompositionBuilder::addClosure(std::string closure,
+        std::vector<std::string> equations,std::vector<std::string> states) {
     if (closure.empty()) throw std::runtime_error("Closure contribution is empty.");
-    system_.closures.push_back(std::move(closure));
+    if (std::any_of(system_.closures.begin(),system_.closures.end(),[&](const auto& item) { return item.description==closure; }))
+        throw std::runtime_error("Duplicate closure contribution: "+closure);
+    system_.closures.push_back({std::move(closure),std::move(equations),std::move(states),origin_});
 }
 
 void SystemCompositionBuilder::addDependency(std::string dependency) {
@@ -100,6 +103,11 @@ void SystemCompositionBuilder::applyModification(SystemModification modification
 }
 
 void SystemCompositionBuilder::applyContribution(SystemContribution contribution) {
+    const auto parentOrigin=origin_;
+    if (!contribution.records.empty()) {
+        origin_.source+=" /";
+        for (const auto& record:contribution.records) origin_.source+=" "+record.id;
+    }
     for (auto& record : contribution.records) {
         recordContribution(std::move(record.id),std::move(record.name));
     }
@@ -124,8 +132,13 @@ void SystemCompositionBuilder::applyContribution(SystemContribution contribution
                     return equation.id==family || equation.id.rfind(family+".",0)==0;
                 });
             if (!applies) continue;
+            const auto identity=canonicalFormula(Equation{{},FormulaExpr::constantValue(0),extension.rhs,{}});
+            if (std::any_of(system_.modifications.begin(),system_.modifications.end(),[&](const auto& item) {
+                    return item.kind==ModificationKind::Extend && item.targetKind=="equation"
+                        && item.targetId==equation.id && item.detail==identity;
+                })) throw std::runtime_error("Duplicate mathematical contribution to equation: "+equation.id);
+            system_.modifications.push_back({ModificationKind::Extend,"equation",equation.id,identity,origin_});
             equation.rhs=FormulaExpr::add(std::move(equation.rhs),extension.rhs);
-            equation.authored=true;
             system_.registry.replace(std::move(equation));
             matched=true;
         }
@@ -142,11 +155,13 @@ void SystemCompositionBuilder::applyContribution(SystemContribution contribution
         closure.origin=origin_;
         system_.boundaryClosures.push_back(std::move(closure));
     }
-    for (auto& closure : contribution.closures) addClosure(std::move(closure));
+    for (auto& closure : contribution.closures)
+        addClosure(std::move(closure.description),std::move(closure.equations),std::move(closure.states));
     for (auto& dependency : contribution.dependencies) addDependency(std::move(dependency));
     for (auto& descriptor : contribution.transformations) {
         requestTransformation(std::move(descriptor));
     }
+    origin_=parentOrigin;
 }
 
 } // namespace SF::System

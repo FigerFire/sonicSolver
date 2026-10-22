@@ -21,12 +21,14 @@ inline int components(ValueType t) {
 struct FieldDescriptor {
     std::string name, symbol;
     std::string domain="fluid", location="point";
-    Parameters dimensions=Parameters::array({0,0,0,0,0,0,0});
+    Parameters dimensions; // Unspecified; explicitly declared zeros mean dimensionless.
     std::string storage="primary";
     std::string outputName;
     ValueType type=ValueType::Scalar;
     bool output=true, restart=false;
     Parameters initial, sets=Parameters::object(), boundaries=Parameters::object();
+    /// @brief 显式 output 请求不得被 inactive 模型过滤为隐式默认。
+    bool outputDeclared=false;
 };
 /// @brief 方程、约束、闭式、几何等对象的公共描述。
 struct ObjectDescriptor {
@@ -39,6 +41,8 @@ struct ObjectDescriptor {
 };
 /// @brief 文件、GUI、API 共用的中立输入。
 struct Description {
+    /// @brief 解析选择的来源/被覆盖默认；只作诊断，不保存第二份配置或参与执行。
+    std::map<std::string,std::string> selectionOrigins;
     int formatVersion=1;
     std::string caseDir, name;
     std::vector<FieldDescriptor> fields;

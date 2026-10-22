@@ -5,18 +5,33 @@
 namespace SF::Physics::Multiphase {
 namespace {
 using E=System::FormulaExpr;
+Math::Signature signature(const std::string& name) {
+    if(name=="U")return Math::signature(1,{0,1,-1,0,0,0,0});
+    if(name=="thermal.T")return Math::signature(0,{0,0,0,1,0,0,0});
+    if(name=="rhoU")return Math::signature(1,{1,-2,-1,0,0,0,0});
+    if(name=="rhoE")return Math::signature(0,{1,-1,-2,0,0,0,0});
+    if(name=="momentumFlux")return Math::signature(2,{1,-1,-2,0,0,0,0});
+    if(name=="energyFlux")return Math::signature(1,{1,0,-3,0,0,0,0});
+    if(name.rfind("componentFlux.",0)==0 || name.rfind("phaseMassFlux.",0)==0)return Math::signature(1,{1,-2,-1,0,0,0,0});
+    if(name.rfind("partialDensity.",0)==0 || name.rfind("phaseMass.",0)==0)return Math::signature(0,{1,-3,0,0,0,0,0});
+    if(name=="phaseChangeMdot" || name=="phaseMassTransfer")return Math::signature(0,{1,-3,-1,0,0,0,0});
+    if(name=="phaseMassDiffusivity")return Math::signature(0,{0,2,-1,0,0,0,0});
+    throw std::runtime_error("Unknown multiphase mathematical symbol: "+name);
+}
+E symbol(const std::string& name) {return E::symbol(name,signature(name));}
+
 void addState(System::SystemContribution& system,const std::string& name,
         const std::string& storage,int offset,int components,bool primary) {
     System::StateSymbol state;state.id=state.name=name;state.storageKey=storage;state.componentOffset=offset;
     state.components=components;state.shape=components==1 ? System::ValueShape::Scalar : System::ValueShape::Vector;
     state.role=primary ? System::StateRole::Primary : System::StateRole::Transported;
     state.storageBinding=storage=="conservative" ? System::StorageBinding::PackedDistributed : System::StorageBinding::NamedDistributed;
-    state.restartEligible=false;system.addState(std::move(state));
+    state.signature=signature(name);state.restartEligible=false;system.addState(std::move(state));
 }
 void addBalance(System::SystemContribution& system,const std::string& id,const std::string& unknown,
         const std::string& flux,const std::string& method,const std::vector<std::string>& members,int order,E source=E::constantValue(0.0)) {
-    system.addEquation(System::Equation{id,E::add(E::op("ddt",{E::symbol(unknown)}),E::op("div",{E::symbol(flux)})),
-        std::move(source),{},true});
+    system.addEquation(System::Equation{id,E::add(E::op(Math::Op::Ddt,{symbol(unknown)}),E::op(Math::Op::Div,{symbol(flux)})),
+        std::move(source),{}});
     System::ExecutionScope call;call.kind=System::ExecutionKind::EquationCall;call.order=order;
     call.step={id,{unknown}};system.addExecution(std::move(call));system.bindNumerics({id,method,members});
 }
@@ -52,7 +67,7 @@ void contributeHomogeneous(System::SystemContribution& system,const MultiPhaseCo
     for (std::size_t index=0;index<components.size();++index) {
         addState(system,components[index],"conservative",(int)index,1,true);
         addBalance(system,components[index],components[index],"componentFlux."+components[index],"HomogeneousBalance",members,10+(int)index,transferSigns.count(components[index]) ?
-            E::multiply(E::constantValue(transferSigns.at(components[index])),E::op("source",{E::symbol("phaseChangeMdot")})) : E::constantValue(0.0));
+            E::multiply(E::constantValue(transferSigns.at(components[index])),E::op(Math::Op::Source,{symbol("phaseChangeMdot")})) : E::constantValue(0.0));
     }
     addState(system,"rhoU","conservative",(int)components.size(),3,true);
     addState(system,"rhoE","conservative",(int)components.size()+3,1,true);
@@ -71,10 +86,10 @@ void contributeThermal(System::SystemContribution& system,const MultiPhaseConfig
     system.recordContribution("model.thermal","independent transported temperature; does not replace EOS T");
     addState(system,"thermal.T",t.fieldName,0,1,false);
     if(t.transportEnabled)system.requireState("U");
-    auto lhs=E::op("ddt",{E::symbol("thermal.T")});
-    if (t.transportEnabled) lhs=E::add(std::move(lhs),E::op("div",{E::symbol("U"),E::symbol("thermal.T")}));
-    auto rhs=t.diffusionEnabled ? E::op("diffusion",{E::constantValue(t.diffusivity),E::symbol("thermal.T")}) : E::constantValue(0);
-    system.addEquation(System::Equation{"thermalTemperature",std::move(lhs),std::move(rhs),{},true});
+    auto lhs=E::op(Math::Op::Ddt,{symbol("thermal.T")});
+    if (t.transportEnabled) lhs=E::add(std::move(lhs),E::op(Math::Op::Div,{symbol("U"),symbol("thermal.T")}));
+    auto rhs=t.diffusionEnabled ? E::op(Math::Op::Diffusion,{E::constantValue(t.diffusivity,Math::signature(0,{0,2,-1,0,0,0,0})),symbol("thermal.T")}) : E::constantValue(0);
+    system.addEquation(System::Equation{"thermalTemperature",std::move(lhs),std::move(rhs),{}});
     System::ExecutionScope call;call.kind=System::ExecutionKind::EquationCall;call.order=20;
     call.step={"thermalTemperature",{"thermal.T"}};system.addExecution(std::move(call));
     const auto mode=normalizeModelType(t.boundMode);
@@ -95,10 +110,10 @@ void contributeMixture(System::SystemContribution& system,const MultiPhaseConfig
     system.recordContribution("model.mixture","tracked conservative phase mass, derived alpha and thermal closure");
     system.requireProvider("equation.mixture","bind tracked phase-mass state and closure ports");
     addState(system,mass,mass,0,1,false);
-    auto lhs=E::op("ddt",{E::symbol(mass)});
-    if (config.alpha.transportEnabled) lhs=E::add(std::move(lhs),E::op("div",{E::symbol("phaseMassFlux."+config.alpha.phaseName)}));
-    if (config.alpha.diffusionEnabled) lhs=E::add(std::move(lhs),E::op("diffusion",{E::symbol("phaseMassDiffusivity"),E::symbol(mass)}));
-    system.addEquation(System::Equation{mass,std::move(lhs),config.phaseChange.enabled ? E::op("source",{E::symbol("phaseMassTransfer")}) : E::constantValue(0.0),{},true});
+    auto lhs=E::op(Math::Op::Ddt,{symbol(mass)});
+    if (config.alpha.transportEnabled) lhs=E::add(std::move(lhs),E::op(Math::Op::Div,{symbol("phaseMassFlux."+config.alpha.phaseName)}));
+    if (config.alpha.diffusionEnabled) lhs=E::add(std::move(lhs),E::op(Math::Op::Diffusion,{symbol("phaseMassDiffusivity"),symbol(mass)}));
+    system.addEquation(System::Equation{mass,std::move(lhs),config.phaseChange.enabled ? E::op(Math::Op::Source,{symbol("phaseMassTransfer")}) : E::constantValue(0.0),{}});
     System::ExecutionScope call;call.kind=System::ExecutionKind::EquationCall;call.order=70;call.step={mass,{mass}};
     system.addExecution(std::move(call));system.bindNumerics({mass,"MixtureBalance"});
     system.addClosure("alpha = phaseMass/rho_tracked; alpha is a derived cache, never a second integrated quantity");

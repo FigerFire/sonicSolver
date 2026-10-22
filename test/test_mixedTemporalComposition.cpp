@@ -1,3 +1,4 @@
+#include "test/typedSymbols.h"
 #include "solver/system/SF_methodObjects.h"
 #include "solver/run/SF_planExecutor.h"
 #include "core/system/SF_operationIds.h"
@@ -34,10 +35,10 @@ int main() {
     ExecutableEquationSystem system;
     for (const auto* name:{"A","B"}) {
         StateSymbol symbol;symbol.id=name;symbol.storageKey=name;
-        system.state.add(symbol);
+        system.state.add(SF::Test::state(symbol));
     }
-    system.registry.add({"refresh",FormulaExpr::symbol("A"),FormulaExpr::constantValue(2),{}});
-    system.registry.add({"advance",FormulaExpr::op("ddt",{FormulaExpr::symbol("B")}),FormulaExpr::constantValue(0),{}});
+    system.registry.add({"refresh",SF::Test::symbol("A"),FormulaExpr::constantValue(2),{}});
+    system.registry.add({"advance",FormulaExpr::op("ddt",{SF::Test::symbol("B")}),FormulaExpr::constantValue(0),{}});
     ExecutionProgram source{{{"refresh",{"A"}},{"advance",{"B"}}}};
     ExecutionScope commit;commit.kind=ExecutionKind::Commit;source.root.children.push_back(commit);
     auto providers=builtinProviders();Independent independent;providers.add(independent);
