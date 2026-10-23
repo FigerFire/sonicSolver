@@ -174,7 +174,7 @@ int main(int argc,char** argv) {
     auto missing=request("tracer",.01);missing.userContributions[0].numerics.clear();rejects([&] {System::build(config,missing);});
     auto unknown=request("tracer",.01);unknown.userContributions[0].numerics[0].method="ImplicitUnknown";rejects([&] {System::build(config,unknown);});
     auto mpi=request("tracer",.01);mpi.parallel=true;rejects([&] {System::build(config,mpi);});
-    rejects([&] {System::build(config,request("tracer",-1));});
+    rejects([&] {System::build(config,request("tracer",std::numeric_limits<double>::quiet_NaN()));});
     auto bad=config;bad.numerics.maxDeltaT=0;rejects([&] {System::build(bad,request("tracer",.01));});
     for (double dt:{-1.0,std::numeric_limits<double>::infinity(),std::numeric_limits<double>::quiet_NaN()}) {
         auto invalid=config;invalid.numerics.maxDeltaT=dt;
@@ -202,7 +202,7 @@ int main(int argc,char** argv) {
     auto args=symbolic.userContributions[0].registeredEquations[0].rhs.arguments();args[0]=System::FormulaExpr::symbol("materialD",Math::signature(0,{0,2,-1,0,0,0,0}));symbolic.userContributions[0].registeredEquations[0].rhs=symbolic.userContributions[0].registeredEquations[0].rhs.withArguments(args);
     auto symbolicSystem=System::build(config,symbolic);System::validate(symbolicSystem);
     const auto* symbolicContract=std::any_cast<System::CompiledScalarEquation>(&symbolicSystem.solvePlan.compiledProgram.steps[0].providerContract);
-    require(symbolicContract && symbolicContract->diffusivity==.01,"Constant STATE diffusivity not compiled");
+    require(symbolicContract && symbolicContract->diffusions.size()==1 && symbolicContract->diffusions[0].coefficient==.01,"Constant STATE diffusivity not compiled");
     auto corrupted=system;
     const auto corrupt=[&](const auto& self,System::SolvePlanNode& node)->void {
         if (node.operation==system.solvePlan.compiledProgram.steps.front().temporalRhs) node.operation=System::OpIds::ExplicitStageExecute;

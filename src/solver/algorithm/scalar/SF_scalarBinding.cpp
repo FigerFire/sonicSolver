@@ -43,6 +43,18 @@ class ScalarOperations {
     int nextStage_=-1;
     std::function<StageMassFluxView(StageFluxIdentity)> massFlux_;
 
+    int entry(int cell,int component) const {return component*geometry_.TotalSize()+cell;}
+    template<class F> void ownedValues(F&& f) const {
+        for(int component=0;component<contract_.components;++component)
+            owned([&](int cell){f(cell,component);});
+    }
+    double boundaryValue(const FDM::ScalarBoundaryCondition& bc,int cell,double time,int component) const {
+        if(contract_.components==1)return known(bc.value,cell,time);
+        const auto at=index(cell);
+        const double v=bc.componentValue(geometry_.X(at[0],at[1],at[2]),geometry_.Y(at[0],at[1],at[2]),geometry_.Z(at[0],at[1],at[2]),time,component);
+        if(!std::isfinite(v))throw std::runtime_error("Non-finite component boundary value.");
+        return v;
+    }
     std::array<int,3> index(int cell) const {
         int i,j,k;geometry_.getIJK(cell,i,j,k);return {i,j,k};
     }
@@ -73,39 +85,39 @@ class ScalarOperations {
         const int g=geometry_.NG();
         // Boundary nodes are part of the nodal physical array. Dirichlet is
         // imposed at each true stage time; conflicting corner data are errors.
-        owned([&](int cell) {
+        ownedValues([&](int cell,int component) {
             const auto at=index(cell);bool assigned=false;double value=0;
             for (int axis=0;axis<3;++axis) if (active_[axis])
                 for (int side=0;side<2;++side) {
                     const auto& bc=data_.boundary[2*axis+side];
                     if (at[axis]!=g+(side?shape_[axis]-1:0) || bc.kind!=FDM::ScalarBoundaryKind::FixedValue) continue;
-                    const double next=known(bc.value,cell,time);
+                    const double next=boundaryValue(bc,cell,time,component);
                     if (assigned && std::abs(value-next)>1e-12*std::max({1.0,std::abs(value),std::abs(next)}))
                         throw std::runtime_error("Conflicting scalar fixedValue corner boundaries.");
                     value=next;assigned=true;
                 }
-            if (assigned) stage_[cell]=value*(contract_.primitiveStorage?geometry_(at[0],at[1],at[2],0):1);
+            if (assigned) stage_[entry(cell,component)]=value*(contract_.primitiveStorage?geometry_(at[0],at[1],at[2],0):1);
         });
         // Legacy scalar retains its nodal reflection. Shared transport publishes
         // concentration ghosts against the prepared NS density before Ready;
         // evaluation of any participant RHS then performs no scalar Stage writes.
         for (int axis=0;axis<3;++axis) if (active_[axis])
-            owned([&](int cell) {
+            ownedValues([&](int cell,int component) {
                 auto at=index(cell);
                 for (int side=0;side<2;++side) {
                     const int wall=g+(side?shape_[axis]-1:0);
                     if (at[axis]!=wall) continue;
                     auto inside=at,outside=at;inside[axis]+=side?-1:1;outside[axis]+=side?1:-1;
-                    const double interior=stage_[geometry_.getIdx(inside[0],inside[1],inside[2])];
+                    const double interior=stage_[entry(geometry_.getIdx(inside[0],inside[1],inside[2]),component)];
                     const auto& bc=data_.boundary[2*axis+side];
                     const int ghost=geometry_.getIdx(outside[0],outside[1],outside[2]);
                     if(contract_.sharedMassFlux) {
                         const double rho=geometry_(at[0],at[1],at[2],0),ri=geometry_(inside[0],inside[1],inside[2],0),rg=geometry_(outside[0],outside[1],outside[2],0);
                         if(!std::isfinite(rho) || !std::isfinite(ri) || !std::isfinite(rg) || rho<=0 || ri<=0 || rg<=0)
                             throw std::runtime_error("Primitive scalar boundary density must be positive and finite.");
-                        const double wallConcentration=bc.kind==FDM::ScalarBoundaryKind::FixedValue?known(bc.value,cell,time)/(contract_.primitiveStorage?1:rho):0;
-                        stage_[ghost]=(bc.kind==FDM::ScalarBoundaryKind::ZeroGradient?stage_[cell]/rho:2*wallConcentration-interior/ri)*rg;
-                    } else stage_[ghost]=bc.kind==FDM::ScalarBoundaryKind::ZeroGradient?interior:2*stage_[cell]-interior;
+                        const double wallConcentration=bc.kind==FDM::ScalarBoundaryKind::FixedValue?boundaryValue(bc,cell,time,component)/(contract_.primitiveStorage?1:rho):0;
+                        stage_[entry(ghost,component)]=(bc.kind==FDM::ScalarBoundaryKind::ZeroGradient?stage_[entry(cell,component)]/rho:2*wallConcentration-interior/ri)*rg;
+                    } else stage_[entry(ghost,component)]=bc.kind==FDM::ScalarBoundaryKind::ZeroGradient?interior:2*stage_[entry(cell,component)]-interior;
                 }
             });
     }
@@ -116,11 +128,11 @@ public:
     }
     ScalarOperations(const System::CompiledNumericalSystem& numerical,const System::CompiledEquationCall& call,
         State::StateBundle& state,const FDM::ScalarEquationData& data,System::StateRealization& realized,const double& limit,
-        std::function<StageMassFluxView(StageFluxIdentity)> massFlux)
+        std::function<StageMassFluxView(StageFluxIdentity)> massFlux,bool stencil)
         :state_(state),geometry_(state.singlePatch()),data_(data),recipe_(numerical.time.recipe),limit_(limit),
          fixedDt_(numerical.dt.maxDeltaT),contract_(std::any_cast<System::CompiledScalarEquation>(call.providerContract)),
          physical_(realized.at(call.target.symbol).fields.at(0)),shape_{geometry_.NX(),geometry_.NY(),geometry_.NZ()},realized_(realized),massFlux_(std::move(massFlux)) {
-        for(int axis=0;axis<3;++axis)active_[axis]=shape_[axis]>1 && (!contract_.sharedMassFlux || Math::isDirectionActiveIndex(axis));
+        for(int axis=0;axis<3;++axis)active_[axis]=stencil && shape_[axis]>1 && (!contract_.sharedMassFlux || Math::isDirectionActiveIndex(axis));
         if(contract_.sharedMassFlux && !massFlux_)throw std::runtime_error("Shared scalar requires a bound canonical NS mass flux producer.");
         for (const auto& name:contract_.stageReads)
             if(std::none_of(call.stateUses.begin(),call.stateUses.end(),[&](const auto& use){return use.symbol==name && use.version==System::StateVersion::Stage;}))
@@ -128,8 +140,8 @@ public:
         if(physical_->geometry!=&geometry_ || !physical_->read || !physical_->write)
             throw std::runtime_error("Scalar storage geometry/read/write binding mismatch.");
         if (data.target!=contract_.target) throw std::runtime_error("Scalar boundary/source port targets a different STATE.");
-        if (geometry_.NG()<1) throw std::runtime_error("Scalar Central2 requires one ghost layer.");
-        if (physical_->components!=1) throw std::runtime_error("Scalar physical storage requires exactly one component.");
+        if (stencil && geometry_.NG()<1) throw std::runtime_error("Scalar Central2 requires one ghost layer.");
+        if (physical_->components!=contract_.components) throw std::runtime_error("Physical storage component count differs from compiled target.");
         const std::array<int,3> origin{geometry_.NG(),geometry_.NG(),geometry_.NG()};
         for (int axis=0;axis<3;++axis) if (active_[axis]) {
             if (shape_[axis]<3) throw std::runtime_error("Scalar active axis requires at least three nodes.");
@@ -140,11 +152,11 @@ public:
             for (int side=0;side<2;++side) {
                 const auto& bc=data.boundary[2*axis+side];
                 if (bc.kind==FDM::ScalarBoundaryKind::Unspecified
-                    || (bc.kind==FDM::ScalarBoundaryKind::FixedValue && !bc.value))
+                    || (bc.kind==FDM::ScalarBoundaryKind::FixedValue && (contract_.components==1?!bc.value:!bc.componentValue)))
                     throw std::runtime_error("Missing scalar boundary contract on active axis.");
             }
         }
-        if (spacing_==std::array<double,3>{}) throw std::runtime_error("Scalar diffusion requires an active spatial axis.");
+        if (stencil && spacing_==std::array<double,3>{}) throw std::runtime_error("Scalar diffusion requires an active spatial axis.");
         owned([&](int cell) {
             const auto at=index(cell);
             for (int axis=0;axis<3;++axis) if(active_[axis]) {
@@ -157,15 +169,15 @@ public:
         for (const auto& name:contract_.sources)
             if (!data.sources.count(name) || !data.sources.at(name))
                 throw std::runtime_error("Missing scalar known-source binding: "+name);
-        const auto total=geometry_.TotalSize();old_.resize(total);stage_.resize(total);rhs_.resize(total);
+        const auto total=geometry_.TotalSize()*contract_.components;old_.resize(total);stage_.resize(total);rhs_.resize(total);
         for (int i=0;i<recipe_.stageCount();++i) increments_[i].resize(total);
         if(std::getenv("SF_SCALAR_TRACE")) {
             std::ostringstream trace;trace<<"[SF SCALAR storage] target="<<contract_.target<<" old="<<static_cast<const void*>(old_.data())<<" stage="<<static_cast<const void*>(stage_.data())<<" rhs="<<static_cast<const void*>(rhs_.data());
             std::cout<<trace.str()<<'\n';
         }
-        oldView_=State::workspaceView(call.oldTimeWorkspace,0,geometry_,old_,1);
-        stageView_=State::workspaceView(call.stageWorkspace,0,geometry_,stage_,1);
-        rhsView_=State::workspaceView(call.residualWorkspace,0,geometry_,rhs_,1);
+        oldView_=State::workspaceView(call.oldTimeWorkspace,0,geometry_,old_,contract_.components);
+        stageView_=State::workspaceView(call.stageWorkspace,0,geometry_,stage_,contract_.components);
+        rhsView_=State::workspaceView(call.residualWorkspace,0,geometry_,rhs_,contract_.components);
         realized.bindView(contract_.target,System::StateViewKind::Workspace,rhsView_);
         if(contract_.primitiveStorage) {
             oldView_.read=[this](int cell,int) {
@@ -182,9 +194,7 @@ public:
         for (int i=0;i<recipe_.stageCount();++i)
             realized.bindView(contract_.target,System::StateViewKind::Stage,stageView_,i);
         values_.spacing=[this](int axis) {return spacing_.at(axis);};
-        values_.neighbor=[this](int cell,int axis,int offset) {
-            auto at=index(cell);at.at(axis)+=offset;return stage_.at(geometry_.getIdx(at[0],at[1],at[2]));
-        };
+
     }
     void bindInputs() {
         for (const auto& name:contract_.stageReads)
@@ -206,10 +216,10 @@ public:
     }
     void begin() {
         requireData();
-        for (int cell=0;cell<geometry_.TotalSize();++cell) {
+        for(int component=0;component<contract_.components;++component) for (int cell=0;cell<geometry_.TotalSize();++cell) {
             int i,j,k;geometry_.getIJK(cell,i,j,k);
-            stage_[cell]=physical_->read(cell,0)*(contract_.primitiveStorage?geometry_(i,j,k,0):1);
-            if (!std::isfinite(stage_[cell])) throw std::runtime_error("Scalar physical STATE is non-finite.");
+            stage_[entry(cell,component)]=physical_->read(cell,component)*(contract_.primitiveStorage?geometry_(i,j,k,0):1);
+            if (!std::isfinite(stage_[entry(cell,component)])) throw std::runtime_error("Scalar physical STATE is non-finite.");
         }
         boundary(state_.time);old_=stage_;nextStage_=0;
     }
@@ -252,23 +262,23 @@ public:
             }
             return geometry_.Jac(center[0],center[1],center[2])*divergence;
         };
-        owned([&](int cell) {
-            rhs_[cell]=fixed(cell)?0:contract_.rhs(values_,cell,0)
+        ownedValues([&](int cell,int component) {
+            rhs_[entry(cell,component)]=fixed(cell)?0:contract_.rhs(values_,cell,component)
                 -(contract_.conservativeTransport?advection(cell):0);
-            if (!std::isfinite(rhs_[cell])) throw std::runtime_error("Scalar RHS is non-finite.");
-            increments_[n][cell]=rhs_[cell];
+            if (!std::isfinite(rhs_[entry(cell,component)])) throw std::runtime_error("Scalar RHS is non-finite.");
+            increments_[n][entry(cell,component)]=rhs_[entry(cell,component)];
         });
     }
     void advanceStage(const Run::ExecutionContext& context) {
         const int n=context.stageIndex;
         if (n+1<recipe_.stageCount() || recipe_.stageCount()==1) {
-            owned([&](int cell) {stage_[cell]=old_[cell]+recipe_.stage(n).incrementWeight*state_.dt*rhs_[cell];});
+            ownedValues([&](int cell,int component) {stage_[entry(cell,component)]=old_[entry(cell,component)]+recipe_.stage(n).incrementWeight*state_.dt*rhs_[entry(cell,component)];});
         } else {
             const auto weights=recipe_.finalWeights();
-            owned([&](int cell) {
+            ownedValues([&](int cell,int component) {
                 double increment=0;
-                for (int i=0;i<recipe_.stageCount();++i) increment+=weights[i]*increments_[i][cell];
-                stage_[cell]=old_[cell]+state_.dt*increment/recipe_.finalDivisor();
+                for (int i=0;i<recipe_.stageCount();++i) increment+=weights[i]*increments_[i][entry(cell,component)];
+                stage_[entry(cell,component)]=old_[entry(cell,component)]+state_.dt*increment/recipe_.finalDivisor();
             });
         }
         ++nextStage_;
@@ -277,17 +287,17 @@ public:
         requireData();
         if (nextStage_!=recipe_.stageCount()) throw std::runtime_error("Scalar cannot commit incomplete stages.");
         boundary(state_.time+state_.dt);
-        for (int cell=0;cell<geometry_.TotalSize();++cell) {
-            if (!std::isfinite(stage_[cell])) throw std::runtime_error("Scalar update is non-finite.");
+        for(int component=0;component<contract_.components;++component) for (int cell=0;cell<geometry_.TotalSize();++cell) {
+            if (!std::isfinite(stage_[entry(cell,component)])) throw std::runtime_error("Scalar update is non-finite.");
         }
-        if(contract_.primitiveStorage)owned([&](int cell){if(stage_[cell]<=0)throw std::runtime_error("Native stage scalar physical update nonpositive; no repair.");});
+        if(contract_.primitiveStorage)ownedValues([&](int cell,int component){if(stage_[entry(cell,component)]<=0)throw std::runtime_error("Native stage scalar physical update nonpositive; no repair.");});
     }
     void publish() {
-        for (int cell=0;cell<geometry_.TotalSize();++cell) {
+        for(int component=0;component<contract_.components;++component) for (int cell=0;cell<geometry_.TotalSize();++cell) {
             int i,j,k;geometry_.getIJK(cell,i,j,k);
-            const double value=stage_[cell]/(contract_.primitiveStorage?geometry_(i,j,k,0):1);
+            const double value=stage_[entry(cell,component)]/(contract_.primitiveStorage?geometry_(i,j,k,0):1);
             if(contract_.primitiveStorage && (!std::isfinite(value)))throw std::runtime_error("Stage turbulence update is nonpositive; no repair.");
-            physical_->write(cell,0,value);
+            physical_->write(cell,component,value);
         }
         state_.distributed.markModified(physical_->name);
         nextStage_=-1;
@@ -401,7 +411,12 @@ std::vector<Time::TemporalCallbacks> scalarParticipants(const System::CompiledNu
         }
         const auto* data=modelData?modelData.get():services.scalarEquation?services.scalarEquation:locked.get();
         if (!data) throw std::runtime_error("Missing scalar instance data: "+call->source.occurrence);
-        auto owner=checked("STATE binding",-1,[&]{return std::make_shared<ScalarOperations>(numerical,*call,state,*data,realized,limit,massFlux);});
+        auto owner=checked("STATE binding",-1,[&]{return std::make_shared<ScalarOperations>(numerical,*call,state,*data,realized,limit,massFlux,
+            std::any_of(calls.begin(),calls.end(),[&](const auto* consumer){
+                const auto& contract=std::any_cast<const System::CompiledScalarEquation&>(consumer->providerContract);
+                return (contract.conservativeTransport && contract.target==call->target.symbol)
+                    || std::any_of(contract.diffusions.begin(),contract.diffusions.end(),[&](const auto& d){return d.input==call->target.symbol;});
+            }));});
         if (locked) owner->trackData(found->data);
         if(modelData)owner->ownBoundaryData(modelData);
         owners.push_back(owner);

@@ -130,6 +130,12 @@ if(BUILD_TESTS)
         set_tests_properties(${name} PROPERTIES WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/test/mathWhatA1" TIMEOUT 5)
     endforeach()
 
+    add_executable(test_explicitA6 test/explicitA6/test_equations.cpp)
+    target_link_libraries(test_explicitA6 PRIVATE SF_application)
+    set_target_properties(test_explicitA6 PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/test/explicitA6/bin")
+    add_test(NAME explicitEquationCapabilities COMMAND test_explicitA6)
+    set_tests_properties(explicitEquationCapabilities PROPERTIES WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/test/explicitA6" TIMEOUT 60)
+
     add_executable(test_contributionA5 test/contributionA5/test_contribution.cpp)
     target_link_libraries(test_contributionA5 PRIVATE SF_application)
     set_target_properties(test_contributionA5 PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/test/contributionA5/bin")

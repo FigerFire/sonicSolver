@@ -40,12 +40,12 @@ public:
         if ((!model_ && !binding.inputs.empty()) || !binding.parameters.empty())
             throw std::runtime_error("ScalarDiffusionCentral2 has no extra inputs/parameters; D belongs to WHAT.");
         const auto& state=system.state.at(call.target.symbol);
-        if (call.target.kind!=TargetKind::Physical || state.shape!=ValueShape::Scalar
-            || state.components!=1 || state.componentOffset!=0
+        if (call.target.kind!=TargetKind::Physical || (state.shape!=ValueShape::Scalar && (transport_ || state.shape!=ValueShape::Vector || state.components!=3))
+            || (state.shape==ValueShape::Scalar && state.components!=1) || state.componentOffset!=0
             || state.location!=VariableLocation::EulerianCell
             || (model_?state.storageBinding!=StorageBinding::ProviderDistributed:state.storageBinding!=StorageBinding::NamedDistributed)
             || state.constantValue || state.readOnly())
-            throw std::runtime_error("Unsupported scalar target: requires writable scalar NamedDistributed cell STATE.");
+            throw std::runtime_error("Unsupported scalar target: requires writable scalar or three-component vector NamedDistributed cell STATE.");
         const auto& equation=system.registry.at(call.equation);
         using K=FormulaExpr::Kind;
         const auto target=state.expression();
@@ -55,7 +55,8 @@ public:
         if (transport_) lhs=FormulaExpr::add(lhs,FormulaExpr::op(Math::Op::Div,{BuiltinStateCatalog().expression("rhoU"),concentration}));
         if (transport_ && !equivalentMath(equation.lhs,lhs))
             throw std::runtime_error("Scalar provider LHS does not match its declared transport operator.");
-        CompiledScalarEquation contract;contract.target=call.target.symbol;contract.conservativeTransport=transport_;contract.sharedMassFlux=shared_;contract.primitiveStorage=contract.modelCoefficients=model_;
+        double transportD=0;
+        CompiledScalarEquation contract;contract.components=state.components;contract.target=call.target.symbol;contract.conservativeTransport=transport_;contract.sharedMassFlux=shared_;contract.primitiveStorage=contract.modelCoefficients=model_;
         if(model_) {
             if(binding.inputs!=std::vector<std::string>{"k","omega"} || (call.target.symbol!="k" && call.target.symbol!="omega"))throw std::runtime_error("Stage SST requires explicit k/omega coefficient port.");
             contract.modelTargets=binding.inputs;
@@ -70,7 +71,7 @@ public:
         }
         const auto stageSymbol=[&](const std::string& name) {
             const auto& partner=system.state.at(name);
-            if (partner.shape!=ValueShape::Scalar || partner.components!=1 || partner.componentOffset!=0
+            if ((partner.shape!=ValueShape::Scalar && (transport_ || partner.shape!=ValueShape::Vector || partner.components!=3)) || partner.componentOffset!=0
                 || partner.location!=VariableLocation::EulerianCell || partner.constantValue
                 || partner.readOnly() || (model_?partner.storageBinding!=StorageBinding::ProviderDistributed && partner.storageBinding!=StorageBinding::TransientWorkspace:partner.storageBinding!=StorageBinding::NamedDistributed))
                 throw std::runtime_error("Unsupported scalar Stage partner shape/storage: "+name);
@@ -84,9 +85,10 @@ public:
             const auto& node=*item.expression;
             if (node.kind()==K::Operator && node.operation()==Math::Op::Diffusion) {
                 if(node.arguments().size()!=2 || !(transport_?equivalentMath(node.arguments()[1],concentration)
-                    :node.arguments()[1].kind()==K::Symbol && node.arguments()[1].name()==contract.target))
-                    throw std::runtime_error("Unsupported: selected Central2 kernel only diffuses its declared target/concentration");
-                if (++diffusion!=1) throw std::runtime_error("Scalar provider requires one diffusion term.");
+                    :node.arguments()[1].kind()==K::Symbol))
+                    throw std::runtime_error("Unsupported: Central2 diffusion requires a declared Stage symbol/concentration operand");
+                if (++diffusion!=1 && transport_) throw std::runtime_error("Scalar transport provider requires one diffusion term.");
+                if(!transport_)stageSymbol(node.arguments()[1].name());
                 const FormulaExpr* coefficientPtr=&node.arguments()[0];
                 if (transport_) {
                     const auto& coefficient=*coefficientPtr;
@@ -96,17 +98,20 @@ public:
                     coefficientPtr=&coefficient.arguments()[1];
                 }
                 const auto& coefficient=*coefficientPtr;
-                if (coefficient.kind()==K::Constant) contract.diffusivity=coefficient.constant();
+                if (coefficient.kind()==K::Constant) transportD=coefficient.constant();
                 else if (coefficient.kind()==K::Symbol && system.state.at(coefficient.name()).constantValue)
-                    contract.diffusivity=*system.state.at(coefficient.name()).constantValue;
+                    transportD=*system.state.at(coefficient.name()).constantValue;
                 else if(shared_ && coefficient.kind()==K::Symbol) {
                     stageSymbol(coefficient.name());contract.diffusivityState=coefficient.name();
                 } else throw std::runtime_error("Unsupported scalar diffusivity: requires constant D or explicit shared-flux Stage coefficient.");
-                if (contract.diffusivityState.empty() && (!std::isfinite(contract.diffusivity) || (shared_?contract.diffusivity<0:contract.diffusivity<=0)))
-                    throw std::runtime_error("Scalar diffusivity must be finite and positive.");
+                if (contract.diffusivityState.empty() && (!std::isfinite(transportD) || (transport_ && (shared_?transportD<0:transportD<=0))))
+                    throw std::runtime_error("Diffusion coefficient must be finite; transport requires positive/nonnegative diffusivity.");
+                contract.diffusions.push_back({node.occurrence().empty()?item.path:node.occurrence(),
+                    transport_?contract.target:node.arguments()[1].name(),transportD,node.arguments()[1].signature().rank==0?1:3});
                 continue;
             }
             if (node.kind()==K::Operator && node.operation()==Math::Op::Source) {
+                if(contract.components!=1)throw std::runtime_error("Unsupported: vector known-source callbacks need a component-aware source port.");
                 if(node.arguments().size()!=1 || node.arguments()[0].kind()!=K::Symbol || node.arguments()[0].name()==contract.target)
                     throw std::runtime_error("Unsupported: known-source provider requires one declared callback symbol");
                 if (system.state.contains(node.arguments()[0].name()) && !system.state.at(node.arguments()[0].name()).constantValue)
@@ -120,13 +125,13 @@ public:
             if(system.state.contains(name) && system.state.at(name).constantValue)continue;
             stageSymbol(name);
         }
-        if (diffusion!=1) throw std::runtime_error("Scalar provider requires one diffusion term.");
+        if (transport_ && diffusion!=1) throw std::runtime_error("Scalar transport provider requires one diffusion term.");
         FormulaOperatorCatalog operators;
         if(shared_) {
             auto slot=std::find(contract.stageReads.begin(),contract.stageReads.end(),contract.diffusivityState)-contract.stageReads.begin();
-            operators.add(Discretization::conservativeScalarCentral2(contract.diffusivity,contract.diffusivityState.empty()?-1:static_cast<int>(slot),model_));
-        } else operators.add(transport_?Discretization::conservativeScalarCentral2(contract.diffusivity)
-            :Discretization::central2ScalarDiffusion(contract.diffusivity));
+            operators.add(Discretization::conservativeScalarCentral2(transportD,contract.diffusivityState.empty()?-1:static_cast<int>(slot),model_));
+        } else if(transport_)operators.add(Discretization::conservativeScalarCentral2(transportD));
+        else operators.add(Discretization::central2ScalarDiffusion(system.state,contract.stageReads));
         FormulaOperatorProvider source;source.id="scalar.known-source";source.mathematicalOperator=Math::Op::Source;
         source.matches=[](const auto&) {return true;};
         source.compileValue=[offset=contract.stageReads.size(),names=contract.sources](const FormulaExpr& expression) -> FormulaValueKernel {
@@ -168,7 +173,7 @@ public:
         result.oldTimeWorkspace="scalar."+call.target.symbol+".old";
         result.stageWorkspace="scalar."+call.target.symbol+".stage";
         result.residualWorkspace="scalar."+call.target.symbol+".rhs";
-        result.requiredHaloWidth=1;
+        result.requiredHaloWidth=diffusion?1:0;
         result.numericalWorkspaces={result.oldTimeWorkspace,result.stageWorkspace,result.residualWorkspace};
         result.temporalCapabilities={FDM::TimeRecipeId::ForwardEuler,FDM::TimeRecipeId::ClassicalRK4};
         result.calls={{call.equation,call.target.symbol}};
@@ -177,7 +182,8 @@ public:
         if(model_)for(const auto& name:stageReads)if(name.rfind("SST.",0)==0)
             result.coefficientUses.push_back({name,{StateVersion::Stage}});
         result.stateEffects={{result.residualWorkspace,true,false,false}};
-        result.requirements={"serial single patch orthogonal grid","common group dt","scalar fixedValue/zeroGradient boundary","stage-time known source"};
+        result.requirements={"serial single patch","common group dt","component-major scalar/vector workspace","stage-time known source"};
+        if(diffusion)result.requirements.push_back("Cartesian Central2; each stencil input requires its own fixedValue/zeroGradient Stage boundary");
         if(model_)result.requirements.push_back("primitive physical alias; conservative stage workspace; explicit model coefficient publication; no correct() advance");
         if(transport_)result.requirements.push_back("conservative Upwind1 advection and rho-weighted Central2 concentration diffusion; boundary values refer to rhoC");
         for (const auto& op:{result.temporalSnapshot,result.temporalStagePrepare,result.temporalRhs,

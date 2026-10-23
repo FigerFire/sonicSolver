@@ -76,7 +76,7 @@ WHICH 按算子 occurrence 与用户选择绑定实现：例如 momentum.pressur
 
 `explicitFormulaRhs()` 仅提取一个加性、正号、单位系数的 `ddt(target)`；保留其他加减/负号树的求值次序，重建仍用 Math 工厂。它不会把代数关系、约束、`ddt(rho*c)` 或质量矩阵自动转换为显式 ODE，不做线性化或算子恒等变换。现有 conservative/shared/SST provider 保留真实融合形式。
 
-ScalarDiffusionCentral2 对现有串行单 patch scalar 支持原 Central2 加局部 Add/Subtract/Negate/Multiply/Divide/Pow；反应 `-k*c*c` 与 `-k*pow(c,2)` 已经实际执行和独立验证。新增合法局部组合无需增加 ScalarMethod 的 AST 模板分支。所选方法仍要求一个受支持的 target diffusion、常数正 D、明确 Stage 存储与原 BC/halo/recipe。数学合法的其他算子、非线性 implicit 或新布局继续准确拒绝，不换算法。
+ScalarDiffusionCentral2 对现有串行单 patch scalar 支持原 Central2 加局部 Add/Subtract/Negate/Multiply/Divide/Pow；反应 `-k*c*c` 与 `-k*pow(c,2)` 已经实际执行和独立验证。新增合法局部组合无需增加 ScalarMethod 的 AST 模板分支。A2 初版要求一个 target diffusion；A6 已将普通命名场路径扩展为零个或多个常系数 Central2 occurrence、交叉 Stage 输入和三分量向量。空间需求只施加到实际 stencil 输入；transport/shared/SST 的原融合数学与限定范围保留。其他算子、非线性 implicit 或未实现布局继续准确拒绝，不换算法。
 
 扩展数学身份在每个 EquationRegistry/OperatorCatalog 的编译范围内检查 name/hash/rule 一致性，无进程全局可变 registry。STATE 同名引用在公共编译入口核验签名。现有 core domain 声明未扩充；模块扩展可声明规则和注册现有 catalog 的 numerical implementation，无需修改 Math 枚举、中央物理清单或 PlanExecutor。
 
@@ -1075,3 +1075,18 @@ CompiledEquationCall.physicalResources继续复用ResourceViewRequirement。普�
 本轮没有重建k–ε：其现有single-fluid once-step仅实现冻结的source/diffusion、无对流；支持范围和现有floors保留。native k–ε+gravity、禁用/覆盖、flow+双标量及SST真实运行完成。新增内部双标量模块经同一贡献/绑定/Plan执行，并以独立解析解验证；不等于任意native新公式或任意资源已实现。
 
 无生产写入的SolvePlanNode旧兼容标记及其fingerprint/打印已删除。LegacyPressureInputs、DistributedRowMap、native decode仍有真实消费者，保留到相应模块替换。详见 [本轮报告](../docs/contribution-a5-report.md)；原压力阈值失败及历史Level-set参考失配不因本轮通过而消失。
+
+
+## A6：通用显式局部方程与多 occurrence Central2（2026-10-23）
+
+普通 `ScalarDiffusionCentral2` 是现役 WHICH 方法标识，现在支持 NamedDistributed 的标量及三分量向量；名称不表示向量被转换成速度 U。没有新增 solver family、provider-family dispatch、时间循环或 Plan 节点。纯反应、多个 diffusion、交叉 diffusion 和向量 diffusion 均使用原 `FormulaExpr → 所选方法 → FormulaOperatorProvider → 资源 binder → 同步 temporal group → PlanExecutor`。
+
+编译的 `diffusions` 每项保存原 occurrence（无显式 occurrence 时使用 AST path）、输入、常系数和分量数；实际 kernel 各自捕获自己的系数与 Stage slot。相同表达式不去重，交叉输入不替换成 target。不再有一个全局 diffusivity 代表所有普通扩散。signed 常系数按作者数学计算，不自动判断扩散矩阵稳定性或修改系数；已有 conservative/shared/SST 的 rho-weighted 数学与系数限制不变。
+
+局部式没有 stencil 时不要求 BC、halo、正交 spacing 或 active axis。被其他 diffusion 消费的局部方程仍必须提供其自身真实 Stage 边界。当前 native SFM reader 保留 NG>0 及非退化几何要求，这是网格入口范围，不是反应算子的 halo 需求；内部零 ghost layer 运行另行验收。
+
+向量以三个原 ScalarField 分量组成唯一多分量 physical view；旧 scalar 和 vector 使用同一 binder。OldTime/Stage/RHS/RK 数组采用 component-major，仅属 solver workspace。Math 声明的标量系数在逐分量值求解中广播；标量 STATE 读取固定分量 0，向量 STATE/邻域读取实际分量。fixedValue 必须给全三个分量，zeroGradient 各分量独立。registeredStateFields/原 writer 输出 NumberOfComponents=3，不造第二份输出数组。绑定失败在任何 distributed 注册之前退出。
+
+每 stage 保持全部 participant prepare/boundary → Stage ready → ordered RHS → RHS ready → 全部 advance；physical publication 后唯一 clock Commit。cross diffusion 读取 partner 已准备的原 Stage workspace，不复制 partner physical state。公共 NumericalCompiler、PlanExecutor 与中央模块装配选择未因这些数学能力增加分支。
+
+本轮数值能力限 serial single patch、单位质量 additive ddt、forwardEuler/classicalRK4、Cartesian constant-coefficient Central2；不包括通用变系数/各向异性、dot/cross/tensor execution、向量 source callback、隐式/Jacobian/DAE/Subcycle、MPI 新资源或任意 PDE。正交 stencil、完整边界和实际 storage 缺失仍 fail-fast。独立解析/半离散参考、native 六例、现役前后对照与已知历史失败见 [A6 报告](../docs/explicit-a6.md)。

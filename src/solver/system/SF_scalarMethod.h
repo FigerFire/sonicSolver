@@ -15,7 +15,10 @@ inline constexpr const char* SharedFluxProvider="equation.scalar-shared-flux";
 /// Immutable AST lowering output. No physical storage or temporal coefficients.
 struct CompiledScalarEquation {
     std::string target;
-    double diffusivity=0;
+    /// @brief 每个空间 occurrence 独立绑定；空集合表示局部反应。
+    struct Diffusion {std::string occurrence,input; double coefficient=0; int components=1;};
+    std::vector<Diffusion> diffusions;
+    int components=1;
     bool conservativeTransport=false;
     bool sharedMassFlux=false;
     bool primitiveStorage=false,modelCoefficients=false;

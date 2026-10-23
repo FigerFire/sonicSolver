@@ -1,3 +1,4 @@
+#include "solver/system/SF_scalarMethod.h"
 #include "test/typedSymbols.h"
 #include "core/system/SF_formula.h"
 #include "solver/system/SF_formulaCompiler.h"
@@ -125,8 +126,9 @@ int main(int argc,char** argv) {
         auto other=state;other.id=other.storageKey="partner";system.state.add(other);
         auto otherDiffusion=FormulaExpr::op(Math::Op::Diffusion,{FormulaExpr::constantValue(.03,Math::signature(0,{0,2,-1,0,0,0,0})),other.expression()});
         system.registry.add({"wrongDiffusion",nonlinear.lhs,rhs+otherDiffusion});
-        rejected=false;try{System::builtinProviders().at("ScalarDiffusionCentral2").compile(system,{"wrongDiffusion",{"C"}},{"wrongDiffusion","ScalarDiffusionCentral2"});}catch(const std::runtime_error& e){rejected=std::string(e.what()).find("only diffuses its declared target")!=std::string::npos;}
-        require(rejected,"Selected diffusion kernel silently consumed another variable's operator");
+        const auto cross=System::builtinProviders().at("ScalarDiffusionCentral2").compile(system,{"wrongDiffusion",{"C"}},{"wrongDiffusion","ScalarDiffusionCentral2"});
+        const auto& crossContract=std::any_cast<const System::CompiledScalarEquation&>(cross.providerContract);
+        require(crossContract.diffusions.size()==2 && crossContract.diffusions.back().input=="partner","Cross diffusion lost its declared operand");
         const Math::OperatorRule twice{"test.module.twice",[](const std::vector<Math::Signature>& a){if(a.size()!=1 || a[0].rank)throw std::runtime_error("scalar required");return a[0];}};
         const Math::OperatorRule conflict{"test.module.twice",[](const std::vector<Math::Signature>& a){return a.at(0);}};
         auto extension=FormulaExpr::op(twice,{c},"module.operator");System::Equation ext{"module",c,extension};

@@ -43,12 +43,12 @@ FormulaValueKernel valueKernel(
                 const auto found=std::find(slots->begin(),slots->end(),name);
                 if (found==slots->end()) throw std::runtime_error("Unbound AST value symbol: "+name);
                 const auto slot=static_cast<std::size_t>(found-slots->begin());
-                return [slot](const FormulaValues& values,int cell,int component) {
-                    return values.boundReads.at(slot)(cell,component);
+                return [slot,scalar=expression.signature().rank==0](const FormulaValues& values,int cell,int component) {
+                    return values.boundReads.at(slot)(cell,scalar?0:component);
                 };
             }
-            return [name](const FormulaValues& values,int cell,int component) {
-                return values.read(name,cell,component);
+            return [name,scalar=expression.signature().rank==0](const FormulaValues& values,int cell,int component) {
+                return values.read(name,cell,scalar?0:component);
             };
         }
         case Kind::Negate: {
@@ -227,10 +227,16 @@ inline std::pair<std::string,std::string> central2Symbols(
 
 
 }
-System::FormulaOperatorProvider central2ScalarDiffusion(double D) {
+System::FormulaOperatorProvider central2ScalarDiffusion(const System::StateRegistry& state,const std::vector<std::string>& slots) {
     System::FormulaOperatorProvider p;p.id="scalar.central2.diffusion";p.mathematicalOperator=Math::Op::Diffusion;
-    p.matches=[](const auto& e){return e.arguments().size()==2;};
-    p.compileValue=[D](const auto&){return scalarCentral2Kernel(D);};return p;
+    p.matches=[](const auto& e){return e.arguments().size()==2 && e.arguments()[1].kind()==System::FormulaExpr::Kind::Symbol;};
+    p.compileValue=[&state,&slots](const auto& e) {
+        const auto& coefficient=e.arguments()[0];
+        const double D=coefficient.kind()==System::FormulaExpr::Kind::Constant?coefficient.constant():state.at(coefficient.name()).constantValue.value();
+        const auto slot=std::find(slots.begin(),slots.end(),e.arguments()[1].name());
+        if(slot==slots.end())throw std::runtime_error("Missing Central2 Stage operand: "+e.arguments()[1].name());
+        return central2StageKernel(D,static_cast<std::size_t>(slot-slots.begin()),e.arguments()[1].signature().rank==0);
+    };return p;
 }
 System::FormulaOperatorProvider conservativeScalarCentral2(double D,int slot,bool primitive) {
     System::FormulaOperatorProvider p;p.id="scalar.conservative.central2";p.mathematicalOperator=Math::Op::Diffusion;

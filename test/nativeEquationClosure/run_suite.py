@@ -131,7 +131,7 @@ negative('duplicate-which',w,lambda x:x['bindings'].append(x['bindings'][0]),'Co
 negative('unselected-target',s,lambda x:x['use'].pop(),'unknown declared STATE symbol')
 negative('missing-state-registration','solvers/solvers.yaml',lambda x:x.pop('state'),'explicit solution STATE')
 negative('scalar-mpi','solvers/runtime.yaml',lambda x:x.update(parallel={'enabled':True,'nProcs':2}),'serial')
-negative('negative-diffusion',q,lambda x:x['add']['spreadDye']['rhs']['args'][0].update(constant=-.03),'diffusivity must be finite and positive')
+negative('variable-diffusion',q,lambda x:x['add']['spreadDye']['rhs']['args'].__setitem__(0,{'op':'multiply','args':[{'constant':.03,'dimensions':[0,2,-1,0,0,0,0]},{'symbol':'dye'}]}),'Unsupported scalar diffusivity')
 negative('missing-time-recipe','solvers/numerics.yaml',lambda x:x.pop('time'),'explicit time recipe')
 negative('repeated-physical-loop',h,lambda x:x['root'].update(children=[{'kind':'Loop','repetitions':2,'children':x['root']['children'][:-1]},x['root']['children'][-1]]),'authored HOW topology')
 negative('numerics-cannot-replace-D',w,lambda x:x['bindings'][0].update(parameters={'D':.5}),'D belongs to WHAT')

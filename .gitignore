@@ -612,3 +612,13 @@ test/builtinComposition/*
 !/test/contributionA5/mpi.py
 !/test/contributionA5/pressure.py
 !/test/contributionA5/verify.py
+
+!/test/explicitA6/
+/test/explicitA6/*
+!/test/explicitA6/test_equations.cpp
+!/test/explicitA6/native.py
+!/test/explicitA6/negative.py
+!/test/explicitA6/protect.py
+!/test/explicitA6/module_cases.py
+!/test/explicitA6/run_tests.py
+!/test/explicitA6/verify.py

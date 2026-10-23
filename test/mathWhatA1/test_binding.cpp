@@ -24,9 +24,10 @@ int main() {
  auto c=E::symbol("c",Math::signature(0,{}));
  auto rhs=E::op(Math::Op::Diffusion,{E::constantValue(.1,Math::signature(0,{0,2,-1,0,0,0,0})),c},"spread");
  const Equation scalar{"scalar",E::op(Math::Op::Ddt,{c}),rhs};FormulaOperatorCatalog values;
- auto first=Discretization::central2ScalarDiffusion(.1),second=first;
+ StateRegistry state;const std::vector<std::string> slots={"c"};
+ auto first=Discretization::central2ScalarDiffusion(state,slots),second=first;
  second.id="test.central2.independent-registration";values.add(first);values.add(second);
- FormulaValues data;data.spacing=[](int d){return d==0?1.:0.;};data.neighbor=[](int,int,int sign){return sign<0?1.:sign>0?9.:4.;};
+ FormulaValues data;data.spacing=[](int d){return d==0?1.:0.;};data.boundNeighbor=[](std::size_t,int,int,int sign,int){return sign<0?1.:sign>0?9.:4.;};
  for(const auto& id:{first.id,second.id}) {
   const auto& selected=values.resolve(scalar,rhs,{{"scalar","spread",id}});
   assert(selected.mathematicalOperator==rhs.operation());

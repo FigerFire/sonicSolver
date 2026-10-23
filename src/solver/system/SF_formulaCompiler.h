@@ -66,7 +66,7 @@ FormulaValueKernel compileFormulaValue(const Equation& equation,const FormulaExp
 namespace SF::Discretization {
 struct FormulaCartesianGrid;
 // AST binding is compiler-side. Kernels and geometry stay in discretization.
-System::FormulaOperatorProvider central2ScalarDiffusion(double diffusivity);
+System::FormulaOperatorProvider central2ScalarDiffusion(const System::StateRegistry&,const std::vector<std::string>& slots);
 System::FormulaOperatorProvider conservativeScalarCentral2(double D,int coefficientSlot=-1,bool primitive=false);
 System::FormulaOperatorProvider central2FormulaDiffusion(FormulaCartesianGrid grid);
 }

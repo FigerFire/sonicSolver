@@ -12,6 +12,8 @@ enum class ScalarBoundaryKind { Unspecified, FixedValue, ZeroGradient };
 struct ScalarBoundaryCondition {
     ScalarBoundaryKind kind=ScalarBoundaryKind::Unspecified;
     ScalarKnownValue value;
+    /// @brief 显式三分量边界；标量端口继续使用 value，不广播未声明的 vector 数据。
+    std::function<double(double,double,double,double,int)> componentValue;
 };
 /// Non-owning numerical data injection. Storage/clock remain in StateBundle.
 /// Face order: x-/x+, y-/y+, z-/z+. Known functions receive x,y,z,stageTime.

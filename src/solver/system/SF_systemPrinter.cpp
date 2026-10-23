@@ -633,6 +633,13 @@ std::string describe(const ResolvedSimulationSystem& system) {
         if(const auto* scalar=std::any_cast<CompiledScalarEquation>(&step.providerContract)) {
             output<<"    compiled RHS normalization: "<<scalar->normalized<<" (authored order preserved)\n";
             output<<"    target-relative structure: "<<(scalar->nonlinear?"nonlinear explicit values; no implicit Jacobian":"affine candidate")<<"\n";
+            for(const auto& d:scalar->diffusions) {
+                output<<"      diffusion occurrence="<<d.occurrence<<" input="<<d.input
+                    <<(scalar->conservativeTransport && !scalar->primitiveStorage?"/rho":"")<<" version=Stage coefficient=";
+                if(scalar->diffusivityState.empty())output<<d.coefficient;else output<<scalar->diffusivityState<<"(Stage)";
+                output<<" components="<<d.components<<" implementation="
+                    <<(scalar->conservativeTransport?"rho-weighted Central2 concentration":"Central2 Cartesian")<<" halo=1\n";
+            }
             for(const auto& binding:scalar->lowering)output<<"      value lowering: "<<binding<<"\n";
         }
         if (!step.operatorBindings.empty()) {

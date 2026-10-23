@@ -14,17 +14,18 @@ namespace SF::Discretization {
 
 /// Constant-coefficient nodal Central2. Geometry and stage neighbors are
 /// frozen runtime bindings; this operator never selects a temporal method.
-inline System::FormulaValueKernel scalarCentral2Kernel(double diffusivity) {
-    return [diffusivity](const System::FormulaValues& values,int cell,int) {
-            double result=0;
-            for (int axis=0;axis<3;++axis) {
-                const double h=values.spacing(axis);
-                if (h==0) continue;
-                result+=diffusivity*(values.neighbor(cell,axis,-1)-2*values.neighbor(cell,axis,0)
-                    +values.neighbor(cell,axis,1))/(h*h);
-            }
-            return result;
-        };
+/// @brief 借用已发布的输入分量；交叉扩散不复制 partner state。
+inline System::FormulaValueKernel central2StageKernel(double D,std::size_t slot,bool scalar) {
+    return [D,slot,scalar](const System::FormulaValues& v,int cell,int component) {
+        if(scalar)component=0;
+        double result=0;
+        for(int axis=0;axis<3;++axis) {
+            const double h=v.spacing(axis);if(h==0)continue;
+            result+=D*(v.boundNeighbor(slot,cell,axis,-1,component)-2*v.boundNeighbor(slot,cell,axis,0,component)
+                +v.boundNeighbor(slot,cell,axis,1,component))/(h*h);
+        }
+        return result;
+    };
 }
 inline System::FormulaValueKernel conservativeCentral2Kernel(double D,int coefficientSlot,bool primitive) {
     return [D,coefficientSlot,primitive](const auto& v,int cell,int) {

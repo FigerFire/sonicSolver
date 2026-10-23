@@ -497,12 +497,13 @@ CaseConfig CaseAdapter::build(const Model::Description& m) {
             const auto field=std::find_if(m.fields.begin(),m.fields.end(),[&](const auto& f){return f.symbol==id;});
             if(field==m.fields.end())throw std::runtime_error("Native solution STATE lacks registered field metadata: "+id);
             if(field->initial.is_null())throw std::runtime_error("Native STATE missing initialization backing in registered internalField: "+id);
-            if(field->type!=Model::ValueType::Scalar || field->location!="point" || field->storage!="primary")
-                throw std::runtime_error("Unsupported native STATE layout for '"+id+"': scalar primary point storage required.");
+            if((field->type!=Model::ValueType::Scalar && field->type!=Model::ValueType::Vector) || field->location!="point" || field->storage!="primary")
+                throw std::runtime_error("Unsupported native STATE layout for '"+id+"': scalar/vector primary point storage required.");
             if(field->restart)throw std::runtime_error("Native scalar restart persistence is Unsupported: "+id);
             System::StateSymbol symbol;symbol.id=symbol.name=id;symbol.storageKey=id;
             symbol.storageBinding=System::StorageBinding::NamedDistributed;symbol.restartEligible=false;symbol.outputEligible=field->output;
             symbol.signature=symbols.at(id).signature();
+            symbol.shape=field->type==Model::ValueType::Vector?System::ValueShape::Vector:System::ValueShape::Scalar;symbol.components=field->type==Model::ValueType::Vector?3:1;
             symbol.origin={System::OriginKind::User,"fields registry/"+field->name};
             nativeContribution.addState(std::move(symbol));
         }
