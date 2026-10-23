@@ -118,7 +118,8 @@ int runConservative(
         std::function<void(int)> saveStep,
         std::function<void(double)> saveTime,
         std::function<bool(bool)> globallyFinished,
-        const FDM::ThermalEquationData* thermal) {
+        const FDM::ThermalEquationData* thermal,
+        const std::vector<FDM::ScalarInstanceData>& scalarInstances) {
     SolverAlgorithm::SingleFluidStepper solver(
         config,system.executableSystem,system.numericalSystem,
         system.solvePlan,system.runtime);
@@ -132,6 +133,7 @@ int runConservative(
     services.transportModel = transport;
     services.equationSystem = equations;
     services.thermalEquation = thermal;
+    services.scalarInstances = scalarInstances;
     services.levelSet = dynamic_cast<FDM::ILevelSetOperations*>(equations);
     solver.bindServices(services);
     return flowLoop(

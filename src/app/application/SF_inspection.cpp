@@ -252,8 +252,9 @@ CaseInspection inspectCase(const CaseConfig& config) {
         config,config.solver,result.system.numericalSystem.requiredHaloWidth);
     result.mesh.initializeConservativeState=System::requiresProvider(result.system,"flow.conservative")
         || System::requiresProvider(result.system,"flow.pressure-operators") || System::requiresProvider(result.system,"flow.eulerian-pressure");
-    if(!result.mesh.initializeConservativeState && config.modelDescription)for(const auto& field:config.modelDescription->fields) {
+    if(config.modelDescription)for(const auto& field:config.modelDescription->fields) {
         if(!result.system.executableSystem.state.contains(field.symbol))continue;
+        if(result.mesh.initializeConservativeState && result.system.executableSystem.state.at(field.symbol).storageBinding!=System::StorageBinding::NamedDistributed)continue;
         // A declared scalar default initializes the entire geometry, unlike a fluid set-only IC.
         if(field.initial.is_number())result.mesh.configuredSetNames.push_back("all");
         for(const auto& item:field.sets.items())result.mesh.configuredSetNames.push_back(item.key());

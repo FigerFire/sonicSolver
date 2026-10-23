@@ -318,7 +318,7 @@ int executeMulti(
         nullptr,equationProvider,caseConfig.time,"Multi-patch density",
         saveStep,
         saveTime,
-        [&](bool finished) { return coordinator.allRanksAgree(finished); });
+        [&](bool finished) { return coordinator.allRanksAgree(finished); },nullptr,{});
     if (std::getenv("SF_LEVEL_SET_CHECKPOINT_DIR")) {
         const auto& counts=executionRuntime.statistics();
         std::cout<<"[SF D1 runtime] haloRequests="<<counts.haloRequests

@@ -8,11 +8,16 @@
 #include "core/system/SF_equationIR.h"
 #include "core/system/SF_solveProgram.h"
 
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <vector>
 
 namespace SF::System {
+
+class TermProviderCatalog;
+struct FormulaOperatorBinding;
+struct CompiledNumericalSystem;
 
 class ITemporalMethod {
 public:
@@ -43,6 +48,12 @@ public:
     virtual bool usesSpatialRecipes() const { return false; }
     virtual std::string_view operationProvider(const OpId&) const {
         return runtimeProvider();
+    }
+    /// @brief 所选实现负责自身 AST 能力与数值绑定，公共 compiler 不假设融合格式。
+    virtual void lowerSpatial(const ExecutableEquationSystem&,const CompiledEquationCall&,
+        const FDM::NumericalRecipeSet&,const TermProviderCatalog&,
+        const std::vector<FormulaOperatorBinding>&,CompiledNumericalSystem&) const {
+        throw std::runtime_error("Selected provider has no spatial lowering implementation: "+std::string(id()));
     }
     /// Provider-local lifecycle only decorates compiled scopes; source stays immutable.
     virtual void lowerLifecycle(const ExecutionScope&, bool,

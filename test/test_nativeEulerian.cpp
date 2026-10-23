@@ -52,7 +52,7 @@ int main() {
         && counts[OpIds::EeStepCommit]==1 && counts[OpIds::EeTimeCommit]==1,"Multi-phase kernels executed once per member instead of group.");
     const auto provenance=[&](const auto& self,const SolvePlanNode& node)->void {
         if (!node.operation.empty()) {
-            require(!node.legacyAdapter && node.provider=="flow.eulerian-pressure","Core leaf uses legacy provider discovery.");
+            require(node.provider=="flow.eulerian-pressure","Core leaf uses legacy provider discovery.");
             if (node.operation==OpIds::EeContinuityAssemble || node.operation==OpIds::EeMomentumSolve || node.operation==OpIds::EeEnergySolve)
                 require(node.equationCalls.size()==3,"Grouped phase provenance disappeared.");
             if (node.operation==OpIds::EePhaseCorrect) require(node.equationCalls.size()==4,"Shared/phase correction provenance disappeared.");

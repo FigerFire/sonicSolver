@@ -238,7 +238,7 @@ int main() {
             roleIndependent,conservativeSystem.solvePlan.compiledProgram,
             conservativeSystem.numericalSystem.recipes,
             SF::System::TermProviderCatalog::builtIn(),
-            conservativeSystem.numericalSystem.time.recipe);
+            conservativeSystem.numericalSystem.time.recipe,SF::System::builtinProviders());
         require(compiledWithoutRoles.operators.size()
                     ==conservativeSystem.numericalSystem.operators.size(),
                 "Native AST did not preserve the compiled spatial inputs.");
@@ -254,7 +254,7 @@ int main() {
                 changed,conservativeSystem.solvePlan.compiledProgram,
                 conservativeSystem.numericalSystem.recipes,
                 SF::System::TermProviderCatalog::builtIn(),
-                conservativeSystem.numericalSystem.time.recipe);
+                conservativeSystem.numericalSystem.time.recipe,SF::System::builtinProviders());
         } catch (const std::runtime_error& error) {
             authoredFormulaChangeVisible=
                 std::string(error.what()).find("mass.unauthorizedSource")

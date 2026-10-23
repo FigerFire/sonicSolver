@@ -201,7 +201,7 @@ int main() {
     for (const auto& call:calls) require(call.backendProvider=="flow.conservative",
             "native conservative method did not freeze its backend owner");
     const auto owned=[&](const auto& self,const System::SolvePlanNode& node)->void {
-        if (!node.operation.empty()) require(!node.legacyAdapter && node.provider=="flow.conservative",
+        if (!node.operation.empty()) require(node.provider=="flow.conservative",
             "single-fluid pressure leaf still depends on a legacy provider selector");
         for (const auto& child:node.children) self(self,child);
     };

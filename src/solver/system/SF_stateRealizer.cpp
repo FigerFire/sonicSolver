@@ -361,4 +361,29 @@ void StateRealization::bindView(std::string_view symbol,StateViewKind kind,
     }
 }
 
+void validatePhysicalResources(const CompiledExecutionProgram& program,const std::vector<ResourceView>& bound) {
+    std::vector<const ResourceViewRequirement*> required;
+    for (const auto& call:program.steps) for (const auto& item:call.physicalResources) {
+        if (item.id.empty() || item.owner.empty() || item.type==typeid(void))
+            throw std::runtime_error("Invalid physical resource declaration: "+item.id);
+        if (std::any_of(required.begin(),required.end(),[&](const auto* previous){return previous->id==item.id;}))
+            throw std::runtime_error("Duplicate physical resource identity: "+item.id);
+        required.push_back(&item);
+    }
+    for (const auto* item:required) {
+        int matches=0;
+        for (const auto& view:bound) {
+            const auto& actual=view.requirement();
+            if (actual.id!=item->id) continue;
+            if (actual.owner!=item->owner || actual.type!=item->type || actual.writable!=item->writable)
+                throw std::runtime_error("Physical resource type/owner/access conflict: "+item->id+" owner="+item->owner);
+            view.requireAvailable();++matches;
+        }
+        if (matches!=1) throw std::runtime_error("Missing/duplicate physical resource binding: "+item->id+" owner="+item->owner);
+    }
+    for (const auto& view:bound)
+        if (std::none_of(required.begin(),required.end(),[&](const auto* item){return item->id==view.requirement().id;}))
+            throw std::runtime_error("Unconsumed physical resource binding: "+view.requirement().id);
+}
+
 } // namespace SF::System

@@ -1,3 +1,4 @@
+#include "solver/system/SF_builtinState.h"
 #include "infrastructure/io/mesh/SF_meshParameters.h"
 #include "SF_meshGen.h"
 #include "compatibility/SF_compatibility.h"
@@ -271,6 +272,7 @@ CaseConfig CaseAdapter::build(const Model::Description& m) {
                 Model::Schema{{{"equation","string",true},{"method","string",true},{"inputs","array"},
                     {"occurrence","string"},{"parameters","object"}},false}.validate(value,"WHICH binding");
                 System::NumericalBinding binding;
+                binding.origin={System::OriginKind::User,object.source};
                 binding.equation=value.at("equation").get<std::string>();binding.method=value.at("method").get<std::string>();
                 binding.occurrence=value.value("occurrence",std::string());
                 if (value.contains("inputs")) binding.inputs=value.at("inputs").get<std::vector<std::string>>();
@@ -487,7 +489,11 @@ CaseConfig CaseAdapter::build(const Model::Description& m) {
     if(!nativeContribution.registeredEquations.empty()) {
         if(!result->authoredExecution)throw std::runtime_error("Native added equations require explicit HOW executionProgram and WHICH bindings.");
         if(!result->solver.numerics.timeRecipeDeclared)throw std::runtime_error("Native added equations require an explicit time recipe in registered numerics.");
+        const System::BuiltinStateCatalog builtinStates;
         for(const auto& id:result->composition.solutionVariables) {
+            // Existing equation/module declarations own builtin storage; added equations
+            // must not redeclare packed flow components as new scalar arrays.
+            if (builtinStates.contains(id)) continue;
             const auto field=std::find_if(m.fields.begin(),m.fields.end(),[&](const auto& f){return f.symbol==id;});
             if(field==m.fields.end())throw std::runtime_error("Native solution STATE lacks registered field metadata: "+id);
             if(field->initial.is_null())throw std::runtime_error("Native STATE missing initialization backing in registered internalField: "+id);
@@ -501,7 +507,7 @@ CaseConfig CaseAdapter::build(const Model::Description& m) {
             nativeContribution.addState(std::move(symbol));
         }
         const auto references=[&](const auto& self,const System::FormulaExpr& expression)->void {
-            if(expression.kind()==System::FormulaExpr::Kind::Symbol && std::none_of(nativeContribution.states.begin(),nativeContribution.states.end(),[&](const auto& s){return s.id==expression.name();}))
+            if(expression.kind()==System::FormulaExpr::Kind::Symbol && !builtinStates.contains(expression.name()) && std::none_of(nativeContribution.states.begin(),nativeContribution.states.end(),[&](const auto& s){return s.id==expression.name();}))
                 throw std::runtime_error(expression.occurrence()+": unknown declared STATE symbol '"+expression.name()+"'.");
             for(const auto& child:expression.arguments())self(self,child);
         };

@@ -261,11 +261,11 @@ ResolvedSimulationSystem build(
         if (eos == "rhoConst") {
             result.classification.densityBehavior = "constant";
             result.classification.thermodynamicCompressibility = "zero";
-            builtin.addClosure("rho = rho0 (rhoConst)",{},{"rho"});
+            builtin.addClosure("rho = rho0 (rhoConst)",{},{"rho"},{"rho"});
         } else if (eos == "perfectGas") {
             result.classification.densityBehavior = "variable";
             result.classification.thermodynamicCompressibility = "available";
-            builtin.addClosure("p = p(rho,T) (perfectGas)",{},{"p","rho","T"});
+            builtin.addClosure("p = p(rho,T) (perfectGas)",{},{"p","rho","T"},{"p"});
         }
     }
 
@@ -299,6 +299,7 @@ ResolvedSimulationSystem build(
         users.applyModification(modification);
     }
 
+    for (auto* module:{&builtin,&models,&users}) module->finalizeMathematics();
     const BuiltinStateCatalog stateCatalog;
     for (const auto* module:{&builtin,&models,&users})
         for (const auto& symbol:module->requiredStates)
@@ -308,6 +309,14 @@ ResolvedSimulationSystem build(
     for (const auto& id:selection.solutionVariables)
         if (!result.rawSystem.state.isSolution(id)) result.rawSystem.state.selectSolution(id);
 
+    for (const auto& equation:result.rawSystem.registry.entries()) {
+        result.rawSystem.state.validateSymbols(equation.lhs);
+        result.rawSystem.state.validateSymbols(equation.rhs);
+    }
+    for (const auto& closure:result.rawSystem.closures)
+        for (const auto& output:closure.outputs)
+            if (!result.rawSystem.state.contains(output))
+                throw std::runtime_error("Closure output has no declared STATE: "+output+" from "+closure.origin.source);
     validateImmersedComposition(result.rawSystem);
     TransformerRegistry transformers;
     const auto pressureInputs=request.pressureInputs ? request.pressureInputs : builtin.pressureInputs;
@@ -352,19 +361,41 @@ ResolvedSimulationSystem build(
     }
     composeContributions(result,request,executionProgram,equationMethods,pressureInputs ? &*pressureInputs : nullptr);
     requireTargetStates(result.executableSystem.state,executionProgram.root);
+    auto explicitBindings=request.authoredNumerics;
+    for (std::size_t i=0;i<explicitBindings.size();++i) {
+        auto& binding=explicitBindings[i];binding.origin.kind=OriginKind::User;
+        if (binding.origin.source.empty()) binding.origin.source="explicit WHICH["+std::to_string(i)+"]";
+    }
+    const auto sameKey=[](const NumericalBinding& a,const NumericalBinding& b) {
+        return a.equation==b.equation && a.occurrence==b.occurrence;
+    };
+    for (std::size_t i=0;i<explicitBindings.size();++i)
+        for (std::size_t j=0;j<i;++j) if (sameKey(explicitBindings[i],explicitBindings[j]))
+            throw std::runtime_error("Conflicting explicit WHICH for '"+explicitBindings[i].equation+"@"+explicitBindings[i].occurrence
+                +"': "+explicitBindings[j].origin.source+" and "+explicitBindings[i].origin.source);
     if (request.authoredExecution) {
-        if (request.authoredNumerics.empty()) throw std::runtime_error("Authored HOW requires explicit WHICH bindings.");
+        if (explicitBindings.empty()) throw std::runtime_error("Authored HOW requires explicit WHICH bindings.");
         const auto requirements=executionProgram.requirements;
         executionProgram=*request.authoredExecution;
         executionProgram.explicitOrder=true;
         executionProgram.requirements.insert(executionProgram.requirements.end(),requirements.begin(),requirements.end());
-        equationMethods=request.authoredNumerics;
-    } else for (const auto& binding:request.authoredNumerics) {
-        equationMethods.erase(std::remove_if(equationMethods.begin(),equationMethods.end(),[&](const auto& previous) {
-            return previous.equation==binding.equation && previous.occurrence==binding.occurrence;
-        }),equationMethods.end());
-        equationMethods.push_back(binding);
+        equationMethods.clear();
     }
+    for (auto binding:explicitBindings) {
+        binding.origin.kind=OriginKind::User;
+        if (binding.origin.source.empty()) binding.origin.source="explicit WHICH";
+        equationMethods.erase(std::remove_if(equationMethods.begin(),equationMethods.end(),[&](const auto& previous) {
+            const bool overrides=previous.equation==binding.equation
+                && (binding.occurrence.empty() || previous.occurrence==binding.occurrence);
+            if (overrides) binding.origin.source+="; overrides default "+previous.method+" from "+previous.origin.source;
+            return overrides;
+        }),equationMethods.end());
+        equationMethods.push_back(std::move(binding));
+    }
+    for (std::size_t i=0;i<equationMethods.size();++i)
+        for (std::size_t j=0;j<i;++j) if (sameKey(equationMethods[i],equationMethods[j]))
+            throw std::runtime_error("Ambiguous default WHICH for '"+equationMethods[i].equation+"@"+equationMethods[i].occurrence
+                +"': "+equationMethods[j].origin.source+" and "+equationMethods[i].origin.source);
     result.numericalSelection=selectNumerics(config,request,result.executableSystem,std::move(equationMethods));
     // Source composition is complete; the compiler receives immutable WHAT/HOW/WHICH.
     NumericalCompiler::compileSystem(result,executionProgram,result.numericalSelection,

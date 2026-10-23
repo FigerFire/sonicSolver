@@ -79,7 +79,7 @@ void compositionCoverage() {
     auto modified=build(config,extended);validate(modified);
     require(modified.rawSystem.modifications.size()==1 && modified.rawSystem.modifications[0].origin.source.find("internal.reaction")!=std::string::npos,"Term contribution lost source identity");
     extended.userContributions.back().mathematicalExtensions.push_back(term.mathematicalExtensions[0]);
-    fails([&]{(void)build(config,extended);},"Duplicate mathematical contribution");
+    require(build(config,extended).rawSystem.modifications.size()==2,"Intentional additive terms were deduplicated.");
     auto wrong=request;term.mathematicalExtensions[0].families={"missingEquation"};wrong.userContributions.push_back(term);
     fails([&]{(void)build(config,wrong);},"no registered target equation");
 }

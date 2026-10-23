@@ -70,6 +70,9 @@ private:
     std::vector<std::unique_ptr<ViewStorage>> owned_;
 };
 
+/// @brief 需求与实际借用端口逐项对应；不选择binder、不分配、不执行同步。
+void validatePhysicalResources(const CompiledExecutionProgram&,const std::vector<ResourceView>&);
+
 /// @brief Startup-only allocation: absent Working/Correction demands allocate nothing.
 StateRealization realizeState(const StateRegistry& symbols,
     const RuntimeRequirements& requirements,State::StateBundle& state,

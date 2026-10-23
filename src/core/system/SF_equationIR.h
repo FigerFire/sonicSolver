@@ -23,6 +23,8 @@ struct ContributionRecord {
     std::string id;
     std::string name;
     Provenance origin;
+    /// @brief id 是实例身份，module 是贡献实现类别；均不参与 runtime dispatch。
+    std::string module;
 };
 
 struct SystemModification {
@@ -63,6 +65,8 @@ struct ClosureDescriptor {
     std::vector<std::string> equations;
     std::vector<std::string> states;
     Provenance origin;
+    /// @brief 显式闭合输出，不能与 states（依赖引用）混淆；每个输出仅一个闭合。
+    std::vector<std::string> outputs;
 };
 
 /// @brief Composition 完成、algorithmic transformation 开始前的数学系统。

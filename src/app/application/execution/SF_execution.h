@@ -74,10 +74,6 @@ int execute(const System::ResolvedSimulationSystem& system,
 
 namespace Detail {
 
-/// @brief 实现 compiled scalar storage/BC 需求；复用唯一 executeEquations 时间循环。
-int executeScalarEquations(Field&,ResultWriter&,const FDM::SolverConfig&,
-    const System::ResolvedSimulationSystem&,const CaseConfig&,bool initialOutputOnly);
-
 /// @brief conservative single-field 方程装配入口。
 int executeConservativeEquations(
     Field&, ResultWriter&, Parallel::ParallelContext&, IBM::IB&,

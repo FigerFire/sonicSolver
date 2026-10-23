@@ -1,3 +1,5 @@
+#include "core/interfaces/SF_transportModel.h"
+#include "SF_fusedSpatial.h"
 #include "models/turbulence/SF_transportMathematics.h"
 #include "SF_thermalMethod.h"
 /// Numerical providers own domain matching, storage realization and local lifecycle.
@@ -161,6 +163,11 @@ CompiledTarget bindTarget(const ExecutableEquationSystem&,const EquationCall& ca
 
 class ConservativeResidualMethod final : public IProvider {
 public:
+    void lowerSpatial(const ExecutableEquationSystem& system,const CompiledEquationCall& call,
+            const FDM::NumericalRecipeSet& recipes,const TermProviderCatalog& catalog,
+            const std::vector<FormulaOperatorBinding>& bindings,CompiledNumericalSystem& result) const override {
+        FusedSpatial::lower(system,call,recipes,catalog,bindings,result);
+    }
     bool usesSpatialRecipes() const override { return true; }
     std::string_view id() const override { return "ConservativeResidual"; }
     std::string_view runtimeProvider() const override { return "flow.conservative"; }
@@ -303,6 +310,7 @@ public:
             || closure.storageKey!="mu_t")
             throw std::runtime_error("TurbulenceTransport requires the provider-owned mu_t closure.");
         CompiledEquationCall result;
+        result.physicalResources.push_back({step.occurrence,"model.turbulence",typeid(FDM::ITransportModel),true});
         result.source=step;result.target=bindTarget(system,step);
         result.equationMethod=std::string(id());
         result.backendOperation=OpIds::TurbulenceAdvance;
@@ -356,6 +364,7 @@ public:
             || system.state.at("mu_t").storageBinding!=StorageBinding::ProviderDistributed)
             throw std::runtime_error("Unsupported TurbulenceClosure equation/state contract.");
         CompiledEquationCall result;
+        result.physicalResources.push_back({step.occurrence,"model.turbulence",typeid(FDM::ITransportModel),true});
         result.source=step;result.target=bindTarget(system,step);
         result.equationMethod=std::string(id());
         result.backendOperation=OpIds::TurbulenceClosureRefresh;
@@ -561,6 +570,11 @@ void pressureLifecycleContract(CompiledEquationCall& call,bool conservative) {
 
 class PressureMethod final : public IProvider {
 public:
+    void lowerSpatial(const ExecutableEquationSystem& system,const CompiledEquationCall& call,
+            const FDM::NumericalRecipeSet& recipes,const TermProviderCatalog& catalog,
+            const std::vector<FormulaOperatorBinding>& bindings,CompiledNumericalSystem& result) const override {
+        FusedSpatial::lower(system,call,recipes,catalog,bindings,result);
+    }
     bool usesSpatialRecipes() const override { return true; }
     enum class OutputContract { Assignment, Relation };
     PressureMethod(std::string_view method,std::string_view output,
@@ -692,6 +706,11 @@ private:
 // Working(p) and Correction(p) alias the Corrector's existing workspace.
 class ConservativePressureMethod final : public IProvider {
 public:
+    void lowerSpatial(const ExecutableEquationSystem& system,const CompiledEquationCall& call,
+            const FDM::NumericalRecipeSet& recipes,const TermProviderCatalog& catalog,
+            const std::vector<FormulaOperatorBinding>& bindings,CompiledNumericalSystem& result) const override {
+        FusedSpatial::lower(system,call,recipes,catalog,bindings,result);
+    }
     bool usesSpatialRecipes() const override { return true; }
     ConservativePressureMethod(std::string_view method,std::string_view equation,
             std::string_view output,TargetKind kind,std::vector<const char*> operations,

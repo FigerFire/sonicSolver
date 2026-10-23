@@ -27,6 +27,7 @@ add_library(SF_solverSystem STATIC
     SF_systemPrinter.cpp
     SF_systemValidator.cpp
     SF_stateRealizer.cpp
+    SF_fusedSpatial.cpp
     SF_numericalCompiler.cpp
     SF_numericalCompiler.h
     SF_formulaCompiler.cpp

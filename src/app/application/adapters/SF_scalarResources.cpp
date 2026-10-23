@@ -1,11 +1,12 @@
 /// @file SF_scalarResources.cpp
 /// @brief 将已编译的命名标量需求绑定到唯一物理数组；时间循环仍由 executeEquations 执行。
-#include "app/application/execution/SF_execution.h"
-#include "app/application/output/SF_fields.h"
+#include "SF_scalarResources.h"
+#include "solver/system/SF_resolvedSimulationSystem.h"
+#include "solver/system/SF_stateRealizer.h"
+#include "core/state/SF_stateBundle.h"
 #include "core/field/SF_scalarField.h"
 #include "core/state/SF_state.h"
 #include "core/interfaces/SF_log.h"
-#include "infrastructure/execution/SF_localExecutionRuntime.h"
 #include "infrastructure/io/SF_caseConfig.h"
 #include "solver/system/SF_scalarMethod.h"
 #include <algorithm>
@@ -53,23 +54,37 @@ FDM::ScalarEquationData boundaryData(const Field& field,const Model::FieldDescri
     return data;
 }
 }
-int executeScalarEquations(Field& geometry,ResultWriter& writer,const FDM::SolverConfig& config,
-        const System::ResolvedSimulationSystem& system,const CaseConfig& input,bool initialOnly) {
-    if(geometry.NVar()!=0 || geometry.stateModel())throw std::runtime_error("Native scalar resources require geometry-only Field without Q/EOS.");
-    if(!input.modelDescription)throw std::runtime_error("Native scalar resources require registered field declarations.");
-    std::vector<std::unique_ptr<ScalarField>> arrays;
-    std::vector<std::shared_ptr<const FDM::ScalarEquationData>> ports;
-    State::StateBundle state;state.patches={&geometry};state.time=input.time.startTime;
-    FDM::SolverServices services;::SF::Execution::LocalRuntime runtime;services.executionRuntime=&runtime;
-    for(const auto& symbol:system.executableSystem.state.symbols()) {
-        if(symbol.storageBinding!=System::StorageBinding::NamedDistributed || symbol.components!=1)
-            throw std::runtime_error("Unsupported native physical storage binding: "+symbol.id);
+ScalarResources bindScalarResources(Field& geometry,State::StateBundle& state,
+        const System::ResolvedSimulationSystem& system,const CaseConfig& input,int block,
+        const std::vector<System::ResourceView>& alreadyBound) {
+    ScalarResources resources;
+    const auto descriptor=[&](const std::string& id)->const Model::FieldDescriptor& {
+        if (!input.modelDescription) throw std::runtime_error("Native scalar resources require registered field declarations.");
         const auto& fields=input.modelDescription->fields;
-        const auto found=std::find_if(fields.begin(),fields.end(),[&](const auto& f){return f.symbol==symbol.id;});
-        if(found==fields.end())throw std::runtime_error("Missing registered storage backing: "+symbol.id);
-        auto physical=std::make_unique<ScalarField>();physical->setupLike(geometry,symbol.storageKey,finiteValue(found->initial,"fields/"+found->name+"/initial"));
-        for(const auto& item:found->sets.items()) {
-            const auto source="fields/"+found->name+"/initial/"+item.key();
+        const auto found=std::find_if(fields.begin(),fields.end(),[&](const auto& f){return f.symbol==id;});
+        if(found==fields.end())throw std::runtime_error("Missing registered storage backing: "+id);
+        return *found;
+    };
+    std::map<std::string,std::string> allocated;
+    std::vector<std::string> storageKeys;
+    std::set<std::string> occurrences;
+    const auto allocate=[&](const std::string& id) {
+        const auto& symbol=system.executableSystem.state.at(id);
+        if (symbol.storageBinding!=System::StorageBinding::NamedDistributed || symbol.components!=1
+            || symbol.componentOffset!=0)
+            throw std::runtime_error("Unsupported native physical storage binding: "+symbol.id);
+        const auto [previous,inserted]=allocated.emplace(symbol.storageKey,id);
+        if (!inserted) {
+            if (previous->second!=id) throw std::runtime_error("Conflicting native initialization owners for storage: "+symbol.storageKey);
+            return;
+        }
+        if (!state.distributed.select(symbol.storageKey,State::HaloSyncStage::None).empty())
+            throw std::runtime_error("Native resource already has a physical owner: "+symbol.storageKey);
+        const auto& found=descriptor(id);
+        auto physical=std::make_unique<ScalarField>();
+        physical->setupLike(geometry,symbol.storageKey,finiteValue(found.initial,"fields/"+found.name+"/initial"));
+        for(const auto& item:found.sets.items()) {
+            const auto source="fields/"+found.name+"/initial/"+item.key();
             Model::Schema{{{"type","string",true},{"value","number",true}},false}.validate(item.value(),source);
             if(item.value().at("type")!="fixedValue")throw std::runtime_error(source+": unsupported scalar initialization.");
             const double value=finiteValue(item.value().at("value"),source);
@@ -77,27 +92,34 @@ int executeScalarEquations(Field& geometry,ResultWriter& writer,const FDM::Solve
             if(set==geometry.getAllSets().end() || set->second.empty())throw std::runtime_error(source+": initialization mesh set absent.");
             for(int cell:set->second)physical->values().at(cell)=value;
         }
-        state.distributed.add(State::scalarView(symbol.storageKey,0,geometry,*physical));arrays.push_back(std::move(physical));
+        storageKeys.push_back(symbol.storageKey);
+        resources.arrays.push_back(std::move(physical));
+    };
+    for(const auto& call:system.solvePlan.compiledProgram.steps) for(const auto& required:call.physicalResources) {
+        if (required.owner!="native.scalar") continue;
+        if(required.owner!="native.scalar" || required.type!=typeid(FDM::ScalarEquationData)
+            || required.writable || required.id!=call.source.occurrence || !occurrences.insert(required.id).second)
+            throw std::runtime_error("Unsupported/duplicate physical resource contract: "+required.id+" owner="+required.owner);
+        const auto* scalarContract=std::any_cast<System::CompiledScalarEquation>(&call.providerContract);
+        if (!scalarContract) throw std::runtime_error("Physical scalar resource lacks its compiled implementation contract: "+required.id);
+        const auto& contract=*scalarContract;
+        if(!contract.sources.empty())throw std::runtime_error("Native scalar known-source callback binding is Unsupported: "+required.id);
+        allocate(call.target.symbol);
+        for (const auto& id:contract.stageReads)
+            if (system.executableSystem.state.at(id).storageBinding==System::StorageBinding::NamedDistributed) allocate(id);
+        auto port=std::make_shared<FDM::ScalarEquationData>(boundaryData(geometry,descriptor(call.target.symbol)));
+        resources.views.push_back(System::ResourceView::bind(required,port,*port,required.owner));
+        resources.instances.push_back({required.id,port});resources.ports.push_back(std::move(port));
     }
-    for(const auto& call:system.solvePlan.compiledProgram.steps) {
-        if(call.backendProvider!=System::ScalarOps::Provider)throw std::runtime_error("Unsupported native resource provider: "+call.backendProvider);
-        const auto& contract=std::any_cast<const System::CompiledScalarEquation&>(call.providerContract);
-        if(!contract.sources.empty())throw std::runtime_error("Native scalar known-source callback binding is Unsupported: "+call.source.occurrence);
-        const auto& fields=input.modelDescription->fields;
-        const auto descriptorAt=std::find_if(fields.begin(),fields.end(),[&](const auto& f){return f.symbol==call.target.symbol;});
-        if(descriptorAt==fields.end())throw std::runtime_error("Missing registered scalar port backing: "+call.target.symbol);
-        const auto& descriptor=*descriptorAt;
-        auto port=std::make_shared<FDM::ScalarEquationData>(boundaryData(geometry,descriptor));
-        services.scalarInstances.push_back({call.source.occurrence,port});ports.push_back(std::move(port));
-    }
-    const auto output=Output::registeredStateFields(system.executableSystem.state,state,geometry);
-    auto saveStep=[&](int step){writer.saveStep(geometry,step,state.time,output);};
-    auto saveTime=[&](double time){writer.save(geometry,time,output);};
-    SF::broadcast("Native resources: ","geometry-only, Q=0, EOS=none, scalar arrays="+std::to_string(arrays.size()));
-    if(input.writeInitial || initialOnly) {if(input.time.writeByStep)saveStep(0);else saveTime(state.time);}
-    if(initialOnly)return 0;
-    Time::DriverCallbacks callbacks;callbacks.saveStep=saveStep;callbacks.saveTime=saveTime;
-    callbacks.report=[&](int step,const Time::AdvanceResult& result){SF::broadcast("Scalar step: ","step="+std::to_string(step)+", time="+std::to_string(result.time)+", dt="+std::to_string(result.dt));};
-    return executeEquations(config,system,state,services,input.time,callbacks);
+    auto completeBindings=alreadyBound;
+    completeBindings.insert(completeBindings.end(),resources.views.begin(),resources.views.end());
+    System::validatePhysicalResources(system.solvePlan.compiledProgram,completeBindings);
+    // Publish borrowed storage only after every requested array/port validates.
+    // A failed bind cannot leave dangling registrations in the active state.
+    for (std::size_t i=0;i<resources.arrays.size();++i)
+        state.distributed.add(State::scalarView(storageKeys[i],block,geometry,*resources.arrays[i]));
+    for (const auto& instance:resources.instances)
+        SF::broadcast("Bound physical resource: ",instance.occurrence+" owner=native.scalar target="+instance.data.lock()->target);
+    return resources;
 }
 }

@@ -31,12 +31,12 @@ void sourceIdentity() {
         const auto lhs=E::op(Math::Op::Ddt,{states.expression("rhoU")});
         Equation equation{"force",lhs,E::op(Math::Op::Source,{force},"force.source"),{origin,"different provenance"}};
         ExecutableEquationSystem system;system.registry.add(equation);
-        const auto numerical=NumericalCompiler::compile(system,program,recipes,providers,time);
+        const auto numerical=NumericalCompiler::compile(system,program,recipes,providers,time,builtinProviders());
         require(numerical.operators.size()==1 && numerical.operators[0].conservativeSource,"Explicit source lost execution");
         if(canonical.empty()){canonical=canonicalFormula(equation);provider=numerical.operators[0].provider;}
         require(canonicalFormula(equation)==canonical && numerical.operators[0].provider==provider,"Provenance changed mathematics/provider");
         ExecutableEquationSystem naked;naked.registry.add({"force",lhs,force,{origin,"same origin"}});
-        rejects("explicit Source AST",[&]{NumericalCompiler::compile(naked,program,recipes,providers,time);});
+        rejects("explicit Source AST",[&]{NumericalCompiler::compile(naked,program,recipes,providers,time,builtinProviders());});
     }
 }
 struct CountingModel:Physics::FluidStateModel::Model {

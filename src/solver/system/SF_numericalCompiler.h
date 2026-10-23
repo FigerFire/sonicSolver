@@ -25,6 +25,7 @@ CompiledNumericalSystem compile(
     const FDM::NumericalRecipeSet& recipes,
     const TermProviderCatalog& catalog,
     const CompiledTimeRecipe& time,
+    const ProviderRegistry& providers,
     const std::vector<FormulaOperatorBinding>& bindings = {});
 
 const FDM::TermRecipe& requireUniqueRecipe(

@@ -1,3 +1,5 @@
+#include "core/interfaces/SF_transportModel.h"
+#include "core/interfaces/SF_scalarEquationData.h"
 #include "SF_builtinState.h"
 #include "SF_scalarMethod.h"
 #include "SF_formulaCompiler.h"
@@ -151,6 +153,8 @@ public:
             }
         }
         const auto stageReads=contract.stageReads;
+        if (model_) result.physicalResources.push_back({call.occurrence,"model.turbulence",typeid(FDM::ITransportModel),true});
+        if (!model_) result.physicalResources.push_back({call.occurrence,"native.scalar",typeid(FDM::ScalarEquationData),false});
         result.providerContract=std::move(contract);
         result.source=call;result.target.symbol=call.target.symbol;result.target.kind=call.target.kind;
         result.equationMethod=id();result.temporalResidual=true;result.synchronousStages=true;

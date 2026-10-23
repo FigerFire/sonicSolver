@@ -41,7 +41,7 @@ int main() {
             validateEulerianAssemblyBindings(resolved.solvePlan.compiledProgram,request.phaseNames,0);
             std::map<std::string,int> counts;std::vector<std::string> order;SF::Run::OpRegistry operations;
             leaves(resolved.solvePlan.root,[&](const auto& node) {
-                require(!node.legacyAdapter && !node.operation.empty(),"Legacy/unbound native leaf.");
+                require(!node.operation.empty(),"Legacy/unbound native leaf.");
                 const bool tur=node.operation.rfind("ee.turbulence.",0)==0;
                 require(node.provider==(tur ? "flow.eulerian-turbulence" : "flow.eulerian-pressure"),"Wrong operation ownership.");
                 if (tur) require(node.equationCalls.size()==selected.size()*(node.operation==OpIds::EeTurbulencePrepare ? 1 : 2),"Lost grouped mathematical provenance.");

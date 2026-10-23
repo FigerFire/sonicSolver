@@ -66,7 +66,7 @@ WHICH 按算子 occurrence 与用户选择绑定实现：例如 momentum.pressur
 - `FormulaSymbols` 和 STATE 的 `expression()` 提供已声明类型。普通非零数字常量明确无量纲；带单位常数必须声明。只有语法上的 literal zero 在加减/方程两侧获得对方的具体类型，随后固定为 typed zero；显式声明了量纲的零不具有此特例。
 - 物理符号和扩展关系归属实际模块：IBM 的 `SF_immersedMathematics.h`、湍流的 `SF_transportMathematics.h`、level-set 的 `SF_levelSetSystemContribution.h`。具体 numerical provider 可读取这些数学声明并独立核对支持范围；通用 compiler 不创建模型，不按模型名调度。公共 core 不再维护 domain 清单；纯 Math 不认识 rho、k、IBM 等物理名字。
 - 连续 `div` 要求 rank≥1；积分面率使用明确的 `faceVolumeDivergence`、`faceMassDivergence` 等既有离散关系。异质 iterate、几何测度采用类型 product，不能冒充无量纲 scalar；当前 product 最多四个非嵌套成员，函数签名最多三个输入。这是现有数学契约的受限元数据，尚非通用类型语言。
-- `NumericalCompiler` / `TermProviderCatalog` 和 `FormulaOperatorCatalog` 复用 Math identity + occurrence + 原 provider matcher。AST pattern binding 留在 compiler；`solver/discretization` 的 Central2/feedback kernels 不 include WHAT。原融合 flow、pressure、turbulence、IBM kernels 保留。
+- `NumericalCompiler` / `TermProviderCatalog` 和 `FormulaOperatorCatalog` 复用 Math identity + occurrence + 原 provider matcher。AST pattern binding 由所选 provider 的 lowering 承担，公共 compiler 只组织调用与绑定校验；`solver/discretization` 的 Central2/feedback kernels 不 include WHAT。原融合 flow、pressure、turbulence、IBM kernels 保留。
 - native 显式数学字段须声明 `dimensions`；省略不再解释为无量纲。保留现有有限语法与单目录注册身份，不自动升级历史输入。已声明数学合法不保证存在 provider。
 - STATE 的 Q、clock、storage、view/halo 生命周期及 HOW topology 没有迁移。本轮没有新增通用 implicit/Jacobian、非线性源项 kernel、任意多 provider stage 或模块组合能力。
 
@@ -108,7 +108,7 @@ Physical packed 输入需要 componentOffset；数值 provider 已切片的 Stag
 
 架构守卫禁止恢复旧来源解释和派生枚举；solver/system 仍禁止 include concrete model implementation，仅允许上述三个模块数学声明头，并检查其不引入 Field/MPI/solver/backend 实现头。provider 的独立 AST/capability 校验不因数学声明归属调整而删除。
 
-本轮不是 A5。application 的 flow/Eulerian/scalar 具体资源装配保留，后续须以真实消费者逐条替换并同轮删除旧入口。既有 serial/MPI pressure shape 差 `1.0851072147488594e-6` 仍超过 `1e-6` 原阈值，不改容差、不因同配置前后相等而称跨配置一致性通过。实施与本轮验证见 [核心单路径报告](../docs/core-single-path-closure.md)。
+核心单路径阶段未实施 A5；后续首个 A5 闭环已删除 scalar 专用执行分流，flow/Eulerian 的其他具体装配仍保留，见下方 A5 范围。既有 serial/MPI pressure shape 差 `1.0851072147488594e-6` 仍超过 `1e-6` 原阈值，不改容差、不因同配置前后相等而称跨配置一致性通过。实施与本轮验证见 [核心单路径报告](../docs/core-single-path-closure.md)。
 
 ### A4：耦合贡献与 HOW 生命周期（2026-10-22）
 
@@ -120,6 +120,18 @@ Pressure methods 的 `viewReads` 显式声明 Correction(p) 和适用的 Working
 
 同配置短时串行/两进程压力结果、首个矩阵/RHS与 trace 保持。串行/MPI 压力形状差仍有迁移前即存在的约 1.085e-6（原阈值 1e-6），没有扩大容差。改名、错误版本、缺 publication、lazy invalidation、scope 负例及独立双方程 Loop 见 [A4 报告](../docs/coupling-contributions-how-lifecycle-a4.md)。没有实现 Subcycle、通用 Newton/BlockSolve、新 SIMPLE/PISO/PIMPLE 数学或 A5。
 
+
+### A5 首个闭环：所选 lowering 与声明驱动的标量资源（2026-10-22）
+
+公共 `NumericalCompiler` 通过 `IProvider::lowerSpatial` 调用冻结的 WHICH 实现；不再解释融合后端的裸符号、符号/系数或项左右侧限制。`SF_fusedSpatial` 供现有 ConservativeResidual、primitive/conservative pressure 实现共享，保留原 matcher 与 kernel 限制。普通 scalar 继续使用其局部表达式 lowering；没有放宽扩散、时间、layout、边界或 EOS 能力。
+
+`CompiledEquationCall::physicalResources` 复用已有 typed `ResourceViewRequirement`。所选 ordinary scalar 实现声明 immutable `ScalarEquationData` 端口，application 的 `bindScalarResources` 核验 owner/type/occurrence、字段初值/边界和唯一存储，完成全部校验后才向 StateBundle 注册原数组 views。数组与强端口由局部 `ScalarResources` 保活，SolverServices 只借用端口；不分配第二份 Q/clock 或 stage workspace。Explain 区分编译需求与实际绑定日志。
+
+独立多标量和 flow+多标量消费同一 binder；删除 `executeScalarEquations` 及中央 scalar-provider 装配分支。已有流体主变量由原 BuiltinStateCatalog 声明，native added equations 不再把它们重新注册为 NamedDistributed 标量。控制层仅解析已有 metadata，没有调用 kernel。
+
+验收组合是既有显式 flow + 两条交叉反应/扩散标量，共用 RK4；这不是一般资源自动装配、任意方程支持或新模块数值耦合。Eulerian/flow 的其他资源、模型自有数组、MPI/phase/face ports 仍由现有 owner/binder 负责。原 stage、BC/halo、canonical COPY 和 residual SUM 不变。
+
+压力原 serial/MPI shape 阈值失败保留；独立收紧 absolute linear tolerance 的诊断支持其来源为线性求解精度，未更改正式输入或原阈值。旧 level-set isolated-kernel 参考仍未完成首差异归因；当前同配置回归及选定 D1 serial/MPI publication 对照单独验收。完整范围和逐例证据见 [A5 报告](../docs/resource-binding-a5-report.md)。
 
 ### 更新后的顺序与文件约束
 
@@ -551,7 +563,7 @@ STATE 为 packed rho/rhoU/rhoE 与 EOS-derived U/p/T。原预测器已直接发�
 
 PressureConstraintTransformer 读取 composition 解析出的默认 momentum occurrence target（U 或 rhoU），不再用 rho.constantValue 选择关系。closure 只参与当前实现能力的校验。
 
-HOW 是唯一 loop/count/order authority。WHICH 的局部 fragment 提供原 assemble/solve/correction kernels；root/Commit 的 pressure.prepare、pressure.step.commit、time.commit 按 selected method lifecycle lower。所有生产 leaves `legacyAdapter=false` 且 owner=flow.conservative。bindPressureOps 保留为 callback registration；无主时间或 corrector loop。
+HOW 是唯一 loop/count/order authority。WHICH 的局部 fragment 提供原 assemble/solve/correction kernels；root/Commit 的 pressure.prepare、pressure.step.commit、time.commit 按 selected method lifecycle lower。该流程生产 leaves 的 frozen owner=flow.conservative；无兼容selector标记。bindPressureOps 保留为 callback registration；无主时间或 corrector loop。
 
 现有 conservative provider 仅支持单 patch、单 stage、PISO、无额外非正交 pass 的 laminar single-fluid contract。conservative SIMPLE/PIMPLE fixed-time、RK stage treatment、多 patch/MPI conservative pressure、IBM/turbulence/phase services 尚未实现；编译或启动 capability validation 明确拒绝。保留 generic outer/pressure/nonOrthogonal HOW 不代表这些 kernel 已支持。
 
@@ -601,11 +613,11 @@ Execute Frozen Decisions          PlanExecutor / owned OpRegistry / existing ker
 
 Compiler 通过 const source HOW/WHICH 和 const equation/provider interfaces 接收输入。scope sorting 发生在 compiler 的独立 HOW 副本，source 不被修改；provider 不得改变 equation/occurrence/target semantics。编译器不增添 equation、不选择 preset、不替换 numerical selection。compiled operation/resource metadata 是输出，不是另一份数学 authority。
 
-`SF_methodObjects.cpp` 只做 deterministic occurrence binding、capability validation、generic lowering；domain numerical implementations 位于 `SF_builtinProviders.cpp`。`SF_numericalCompiler.cpp` 按 provider 声明的 spatial terms 和 kernel/workspace requirements 绑定，不按 momentum/U/constantDensity 识别 solver。旧 flat DSL 选择由 `Legacy::spatialInputs` 在 composition 显式提供，generic compiler 不导入 legacy numerical adapter。不新建平行 SimulationPlan、manager 或 forwarding planner。
+`SF_methodObjects.cpp` 只做 deterministic occurrence binding、capability validation、generic lowering；domain numerical implementations 位于 `SF_builtinProviders.cpp`。`SF_numericalCompiler.cpp` 按 provider 声明的 spatial terms 和 kernel/workspace requirements 绑定，不按 momentum/U/constantDensity 识别 solver。空间输入由所选 provider 的 spatialTerms/sourceMathInputs 显式声明，generic compiler 不导入旧 numerical adapter。不新建平行 SimulationPlan、manager 或 forwarding planner。
 
 `SolvePlanNode.provider` 是每个 executable leaf 的最终 implementation identity。`RuntimeRequirements.operationBindings` 只是该 frozen leaf ownership 的校验/index 投影；`SystemValidator` 拒绝两者不一致。`OpRegistry::bind(id, provider, callback)` 注册实现的 owner，`PlanExecutor` 在任何 operation 执行之前检查所有 ID 与 owner，然后直接 invoke；它不读取 state/formulation 或 coupling preset。SingleFluidStepper 按 frozen provider ID 构造/绑定资源，不再由 constantDensity flag 选择 backend。
 
-只有显式 `legacyAdapter` plan leaf 允许在编译时调用 `Legacy::selectOperationProvider`。IBM constraint 已由 native Immersed method 冻结 owner/operation，不进入兼容 selector；native Eulerian shared pressure 同样不进入该 selector。Eulerian turbulence 使用独立原生 numerical provider，不进入 compatibility selector。所有 native single-fluid pressure 不走该 adapter。不存在 compile 后的 provider matching。
+生产 leaf 必须在编译时拥有明确 provider/operation。IBM、Eulerian pressure/turbulence、single-fluid pressure 均由所选方法冻结绑定，OpRegistry/PlanExecutor 只消费冻结结果。旧兼容 selector 与其空标记已删除；不存在 compile 后的 provider matching。
 
 `CompiledSolvePlan.root` 是冻结后的 executable operations，不再是独立 authored HOW；source program、compiled calls、numerical bindings 与 explain 都来自同一编译链。compiler 不猜 equation target/order，也不选择 coupling preset。
 
@@ -647,7 +659,7 @@ Eulerian PhaseSystem 明确贡献每相 phaseMass/momentum/enthalpy、shared p �
 
 明确注册的 PIMPLE 贡献 generic Sequence/EquationCall/Loop/Commit：outer 内 continuity group -> momentum group -> pressure/nonOrthogonal 下 shared-pressure correction、phase correction、paired phase flux correction -> enthalpy group，最后 Commit。三层次数只在 source HOW；当前其他 Eulerian coupling 明确 Unsupported，不自动替换。source 无 raw Ee operations。
 
-六个 Eulerian methods 显式选择 flow.eulerian-pressure，完整 phase inputs/group targets 按声明的 PhaseSystem storage order 验证。通用 compiler 支持 N-member fragment fusion，保留每相数学 provenance，core leaves legacyAdapter=false。Provider-local prepare/source/BC/halo/canonical-copy lowering 保留原 Ee 微操作顺序。`sharedPressurePlanFragment`、S_EE_PIMPLE policy 与 transformer Ee inventory 已删除；EulerianStepper 不从 policyKind 选择算法，只执行 frozen plan。
+六个 Eulerian methods 显式选择 flow.eulerian-pressure，完整 phase inputs/group targets 按声明的 PhaseSystem storage order 验证。通用 compiler 支持 N-member fragment fusion，保留每相数学 provenance，core leaves 使用冻结的 provider/operation。Provider-local prepare/source/BC/halo/canonical-copy lowering 保留原 Ee 微操作顺序。`sharedPressurePlanFragment`、S_EE_PIMPLE policy 与 transformer Ee inventory 已删除；EulerianStepper 不从 policyKind 选择算法，只执行 frozen plan。
 
 native Eulerian 数学只在 Formula EquationRegistry 中表示一次。所选 provider 直接校验准确 AST、源项扩展和 STATE/backing，产生不可变的 CompiledEulerianAssemblyContract：方程/输出、实现关系、phase slot/name、method/provider 与支持的扩展。generic compiler 只携带不透明 provider 编译产物，不解释 Eulerian 类型。
 
@@ -722,7 +734,7 @@ scalar physical arrays 由 application/STATE 持有，ScalarOperations 只持有
 
 普通 native case 现可显式注册 STATE、有限 WHAT、HOW 与 WHICH，运行多个独立常系数扩散标量。`CaseAdapter` 将 typed add lower 到原 SystemContribution/FormulaExpr；fields registry 的声明提供自定义符号的 metadata，已注册 internalField/boundaries 提供初值和边界。每个方程有独立 equation identity、每次调用有独立 occurrence 和 target；compiler 决定 OldTime/Stage/RHS demands，不由用户配置数组。
 
-没有流体 preset 请求时，通用 composition 不要求 Momentum、Continuity 或 EOS；这些检查仍由真正的流体 preset 保留。inspection 从冻结的 flow provider requirements 得到 mesh 是否需要 conservative storage。geometry-only loader 不分配 Q、不执行 fluid initialization；声明的 scalar default 覆盖整个几何，不套用 fluid 的 set-only IC 覆盖推断。`adapters/SF_scalarResources` 只为已编译的 NamedDistributed scalar 需求创建唯一 ScalarField 数组及 immutable boundary ports，再调用已有 `executeEquations`。它不拥有新的时间循环，不依据字段名或数量选择算法。flow/Eulerian 的既有资源装配保留，并未宣称所有 provider binder 已统一。
+没有流体 preset 请求时，通用 composition 不要求 Momentum、Continuity 或 EOS；这些检查仍由真正的流体 preset 保留。inspection 从冻结的 flow provider requirements 得到 mesh 是否需要 conservative storage。geometry-only loader 不分配 Q、不执行 fluid initialization；声明的 scalar default 覆盖整个几何，不套用 fluid 的 set-only IC 覆盖推断。`adapters/SF_scalarResources` 只为编译端口需求创建唯一 NamedDistributed ScalarField 数组及 immutable boundary ports；geometry-only 和 flow 入口共同消费它，随后由已有 `executeEquations`/统一 Plan 执行。它不拥有新的时间循环，不依据字段名或数量选择算法。flow/Eulerian 的既有资源装配保留，并未宣称所有 provider binder 已统一。
 
 独立 scalar 的正式输出沿用 registeredStateFields/ResultWriter/fields registry；没有伪 rho/rhoU/rhoE 或 FluidStateModel。当前 native 闭环限制为 serial 单 patch、均匀轴对齐网格、完整面 constant fixedValue/zeroGradient、ScalarDiffusionCentral2、显式 forwardEuler/classicalRK4。native source callback、通用初始化函数、restart 文件持久化、scalar MPI、新模块 stage 组合不因此开放。`check/explain` 校验声明/编译能力，完整 BC 面覆盖和实际 layout 在 runtime binding 校验；尚未加载 mesh 时不宣称已验证全部 runtime geometry。
 
@@ -1048,3 +1060,18 @@ step-frozen 缓存、stage SST 的 publishStageViscosity 以及 Eulerian 矩阵�
 SST F1/F2/cross/strain 等物理闭合所用既有 Central2 kernel 仍属 model 的真实消费者。
 不开放 pressure/MPI RAS、移动壁、其他 IBM 组合或新时间策略。
 数值证据、API 删除与完整逐例设置见[迁移报告](../docs/single-fluid-ras-execution-ownership-migration.md)。
+
+
+## A5 后续：统一贡献及模型资源契约（2026-10-23）
+
+延用SystemContribution，不新增模块控制器或另一Registry。ContributionRecord.module表示实现类别，id表示实例；默认单实例id=module，显式实例为module@instance。这些元数据仅用于冲突与Explain，runtime不据此调度。
+
+所有方程/STATE注册完成后、transformation之前，builder.finalizeMathematics按原贡献顺序合并显式加性RHS。不得按相同AST去重，亦不自动合并系数。families是作者显式提供的目标引用/namespace选择，不用于猜数学。closure.outputs显式声明闭合输出并拒绝冲突；states仍是依赖引用。缺输出的历史描述不能冒充一个已声明owner。
+
+numerics默认来自module/preset；用户显式WHICH优先，精确重复的显式key拒绝，未覆盖的同级default冲突拒绝。key为equation+occurrence，equation级显式覆盖其默认项，细粒度选择沿原occurrence优先级。authored HOW仍要求显式非空WHICH，不偷偷继承默认。NumericalBinding.origin保留选择/覆盖来源，不参与数学或provider匹配。
+
+CompiledEquationCall.physicalResources继续复用ResourceViewRequirement。普通scalar与single-fluid模型输运分别请求ScalarEquationData/ITransportModel端口；application具体binder按需求保留原数组owner，validatePhysicalResources逐项核验真实view的身份/类型/权限/lifetime，拒绝遗漏、重复及未消费端口。Manager不因configured但inactive而分配数组；已有startup初始化、BC、once-step source/diffusion、stage SST和publication顺序不变。资源校验不插入刷新、同步或时间操作。
+
+本轮没有重建k–ε：其现有single-fluid once-step仅实现冻结的source/diffusion、无对流；支持范围和现有floors保留。native k–ε+gravity、禁用/覆盖、flow+双标量及SST真实运行完成。新增内部双标量模块经同一贡献/绑定/Plan执行，并以独立解析解验证；不等于任意native新公式或任意资源已实现。
+
+无生产写入的SolvePlanNode旧兼容标记及其fingerprint/打印已删除。LegacyPressureInputs、DistributedRowMap、native decode仍有真实消费者，保留到相应模块替换。详见 [本轮报告](../docs/contribution-a5-report.md)；原压力阈值失败及历史Level-set参考失配不因本轮通过而消失。

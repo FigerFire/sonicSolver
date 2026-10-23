@@ -105,7 +105,7 @@ int main() {
         const auto operation=kkt?OpIds::IbmKktSolve:OpIds::IbmConstraintProject;
         std::vector<std::string> order;SF::Run::OpRegistry callbacks;
         const auto bind=[&](const auto& self,const SolvePlanNode& node)->void {
-            require(!node.legacyAdapter,"Native IBM plan contains a compatibility leaf.");
+            if (!node.operation.empty()) require(!node.provider.empty(),"Native IBM operation has no frozen provider.");
             if (node.operation==OpIds::IbmKktSolve)
                 require(node.kind==PlanNodeKind::BlockSolve,"Coupled IBM plan lost block-solve semantics.");
             if (!node.operation.empty()) callbacks.bind(node.operation,node.provider,[&,op=node.operation]{order.push_back(op);});

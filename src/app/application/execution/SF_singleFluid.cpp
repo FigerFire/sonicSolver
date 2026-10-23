@@ -1,3 +1,5 @@
+#include "solver/system/SF_stateRealizer.h"
+#include "app/application/adapters/SF_scalarResources.h"
 #include "solver/algorithm/transport/SF_transportBinding.h"
 /// @file SF_singleFluid.cpp
 /// @brief 组装 conservative single-field state、providers 与 solver interfaces。
@@ -245,8 +247,20 @@ int executeConservativeEquations(
         && system.executableSystem.immersed->wallClosure==FDM::ImmersedWallClosure::StationaryNoSlipAdiabatic;
     if (viscousImmersedWall && ibm.algorithmDescriptor().wallClosure!=system.executableSystem.immersed->wallClosure)
         throw std::runtime_error("Compiled viscous wall selection differs from the bound IBM implementation.");
-    SF::Turbulence::Manager turbulenceManager(solverConfig.turbulence,viscousImmersedWall && solverConfig.turbulence.enabled
-        && solverConfig.turbulence.model==FDM::TurbulenceModelKind::kOmegaSST?&ibm:nullptr);
+    std::shared_ptr<SF::Turbulence::Manager> turbulenceManager;
+    std::vector<System::ResourceView> boundModelResources;
+    for (const auto& call:plan.compiledProgram.steps) for (const auto& required:call.physicalResources) {
+        if (required.owner!="model.turbulence") continue;
+        if (required.type!=typeid(FDM::ITransportModel) || !required.writable || required.id!=call.source.occurrence)
+            throw std::runtime_error("Invalid model transport resource contract: "+required.id);
+        if (!turbulenceManager) {
+            if (!solverConfig.turbulence.enabled) throw std::runtime_error("Required model transport configuration is inactive.");
+            turbulenceManager=std::make_shared<SF::Turbulence::Manager>(solverConfig.turbulence,
+                viscousImmersedWall && solverConfig.turbulence.model==FDM::TurbulenceModelKind::kOmegaSST?&ibm:nullptr);
+        }
+        boundModelResources.push_back(System::ResourceView::bind(required,turbulenceManager,
+            static_cast<FDM::ITransportModel&>(*turbulenceManager),required.owner));
+    }
     CompositeTransportProvider coupledTransport;
     auto& parallelCoordinator = parallel.coordinator();
     // A pressure-based serial case initializes an MPI-capable backend for
@@ -310,13 +324,13 @@ int executeConservativeEquations(
             *interfaceModel, stateBundle.transported, executionRuntime,field);
         coupledTransport.setInterfaceModel(interfaceModel.get());
     }
-    const bool turbulenceActive = turbulenceManager.initialize(field);
+    const bool turbulenceActive = turbulenceManager && turbulenceManager->initialize(field);
     if (System::requiresProvider(system,"flow.turbulence") && !turbulenceActive)
         throw std::runtime_error("Compiled flow.turbulence owner requires an initialized turbulence implementation.");
     if (turbulenceActive) {
-        SolverAlgorithm::initializeTransport(field,turbulenceManager);
-        coupledTransport.setTurbulence(&turbulenceManager);
-        SF::broadcast("Turbulence active : ", turbulenceManager.description());
+        SolverAlgorithm::initializeTransport(field,*turbulenceManager);
+        coupledTransport.setTurbulence(turbulenceManager.get());
+        SF::broadcast("Turbulence active : ", turbulenceManager->description());
     } else if (solverConfig.turbulence.enabled) {
         SF::broadcast("Turbulence warning: ", "enabled but no valid turbulence model was created.");
     }
@@ -325,14 +339,14 @@ int executeConservativeEquations(
 
     auto turbulenceVTKScalars = [&]() {
         std::vector<SF::ResultWriter::ScalarField> scalars;
-        if (!turbulenceManager.active()) return scalars;
+        if (!turbulenceManager || !turbulenceManager->active()) return scalars;
         if (!solverConfig.turbulence.enabled
             || solverConfig.turbulence.family == SF::FDM::TurbulenceFamily::None
             || solverConfig.turbulence.family == SF::FDM::TurbulenceFamily::DNS) {
             return scalars;
         }
 
-        const auto& state = turbulenceManager.scalarFields();
+        const auto& state = turbulenceManager->scalarFields();
         if (solverConfig.turbulence.family == SF::FDM::TurbulenceFamily::RAS) {
             scalars.push_back({"TurbulenceK", [&](int i, int j, int k) {
                 return state.K(i, j, k);
@@ -443,12 +457,15 @@ int executeConservativeEquations(
         return scalars;
     };
 
+    std::vector<ResultWriter::ScalarField> declaredOutput;
     auto saveStepVTK = [&](int outStep) {
         auto scalars = solverVTKScalars();
+        scalars.insert(scalars.end(),declaredOutput.begin(),declaredOutput.end());
         writer.saveStep(field,outStep,stateBundle.time,scalars,parallel.active()?localBlockId:-1);
     };
     auto saveTimeVTK = [&](double outTime) {
         auto scalars = solverVTKScalars();
+        scalars.insert(scalars.end(),declaredOutput.begin(),declaredOutput.end());
         if (parallel.active()) writer.save(field, outTime, localBlockId, scalars);
         else               writer.save(field, outTime, scalars);
     };
@@ -475,7 +492,19 @@ int executeConservativeEquations(
                 levelSet->curvatures(), 1));
         }
     }
-    turbulenceManager.registerDistributed(stateBundle.distributed,localBlockId,field);
+    if (turbulenceManager) {
+        if (!turbulenceActive) throw std::runtime_error("Required model transport backing could not initialize.");
+        turbulenceManager->registerDistributed(stateBundle.distributed,localBlockId,field);
+    }
+    auto declaredResources=bindScalarResources(field,stateBundle,system,caseConfig,localBlockId,boundModelResources);
+    for (const auto& view:boundModelResources)
+        SF::broadcast("Bound physical resource: ",view.requirement().id+" owner="+view.requirement().owner);
+    if (!declaredResources.instances.empty()) {
+        System::StateRegistry namedOutput;
+        for (const auto& symbol:system.executableSystem.state.symbols())
+            if (symbol.storageBinding==System::StorageBinding::NamedDistributed) namedOutput.add(symbol);
+        declaredOutput=Output::registeredStateFields(namedOutput,stateBundle,field);
+    }
 
     // 初值先由各 rank 独立闭合为物理保守量，再通过 Runtime 声明其 stencil
     // 需求。不能在 application 装配网格后立刻交换，否则 canonical owner
@@ -521,7 +550,7 @@ int executeConservativeEquations(
         saveTimeVTK,
         [&](bool finished) {
             return parallelCoordinator.allRanksAgree(finished);
-        },thermalActive ? &thermalData : nullptr);
+        },thermalActive ? &thermalData : nullptr,declaredResources.instances);
     if (std::getenv("SF_LEVEL_SET_CHECKPOINT_DIR")) {
         const auto& counts=executionRuntime.statistics();
         std::cout<<"[SF D1 runtime] haloRequests="<<counts.haloRequests

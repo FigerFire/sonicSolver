@@ -27,8 +27,9 @@ struct ContributionProviderRequirement {
 class SystemContribution {
 public:
     SystemContribution() = default;
-    void recordContribution(std::string id, std::string name) {
-        records.push_back({std::move(id),std::move(name),{}});
+    void recordContribution(std::string module, std::string name,std::string instance={}) {
+        const auto id=instance.empty()?module:module+"@"+instance;
+        records.push_back({id,std::move(name),{},std::move(module)});
     }
     void addState(StateSymbol value) { states.push_back(std::move(value)); }
     void requireState(std::string id) { requiredStates.push_back(std::move(id)); }
@@ -39,8 +40,8 @@ public:
     }
     void addConstraint(ConstraintDescriptor value) { constraints.push_back(std::move(value)); }
     void addBoundaryClosure(BoundaryClosureContract value) { boundaryClosures.push_back(std::move(value)); }
-    void addClosure(std::string value,std::vector<std::string> equations={},std::vector<std::string> states={}) {
-        closures.push_back({std::move(value),std::move(equations),std::move(states),{}});
+    void addClosure(std::string value,std::vector<std::string> equations={},std::vector<std::string> states={},std::vector<std::string> outputs={}) {
+        closures.push_back({std::move(value),std::move(equations),std::move(states),{},std::move(outputs)});
     }
     void requireProvider(std::string id,std::string responsibility) {
         providerRequirements.push_back({std::move(id),std::move(responsibility)});

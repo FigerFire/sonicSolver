@@ -55,7 +55,7 @@ void addEulerian(System::SystemContribution& system,const SystemContributionSpec
     };
     contributeCalls(closures,"EulerianTurbulenceClosure");
     if (transport) contributeCalls(inputs,"EulerianTurbulenceTransport");
-    system.addClosure("mu_t from "+spec.model,closures);
+    system.addClosure("mu_t from "+spec.model,closures,{},closures);
 }
 
 } // namespace
@@ -72,7 +72,7 @@ void contribute(
     const bool kOmega = spec.model == "kOmegaSST";
     if (!kEpsilon && !kOmega) {
         if (!spec.eulerian) system.addClosure(
-            spec.model.empty() ? "turbulence closure" : "turbulence: "+spec.model,{},spec.eulerian ? std::vector<std::string>{} : std::vector<std::string>{"mu_t"});
+            spec.model.empty() ? "turbulence closure" : "turbulence: "+spec.model,{},spec.eulerian ? std::vector<std::string>{} : std::vector<std::string>{"mu_t"},spec.model=="Smagorinsky" ? std::vector<std::string>{"mu_t"} : std::vector<std::string>{});
         if (spec.eulerian && spec.model=="Smagorinsky") {
             addEulerian(system,spec,false);
         } else if (!spec.eulerian && spec.model=="Smagorinsky") {
@@ -130,7 +130,7 @@ void contribute(
             system.addExecution(std::move(call));
             system.bindNumerics({id,spec.stageConservativeTransport?"SSTStageTransport":"TurbulenceTransport",{"k",second}});
         }
-        system.addClosure("mu_t from "+spec.model,{"k",second},{"mu_t"});
+        system.addClosure("mu_t from "+spec.model,{"k",second},{"mu_t"},{"mu_t"});
         return;
     }
     addEulerian(system,spec,true);

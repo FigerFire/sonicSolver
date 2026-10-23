@@ -71,7 +71,8 @@ int runConservative(
     std::function<void(int)> saveStep,
     std::function<void(double)> saveTime,
     std::function<bool(bool)> globallyFinished,
-        const FDM::ThermalEquationData* thermal = nullptr);
+    const FDM::ThermalEquationData* thermal,
+    const std::vector<FDM::ScalarInstanceData>& scalarInstances);
 
 } // namespace Detail
 

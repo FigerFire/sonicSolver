@@ -57,6 +57,12 @@ class ResourceView {
     void* object_=nullptr;
     std::function<void()> validate_;
 public:
+    const ResourceViewRequirement& requirement() const {return requirement_;}
+    /// @brief 不刷新或分配资源；仅验证实际 owner 仍存活和已声明 availability。
+    void requireAvailable() const {
+        if (!object_ || owner_.expired()) throw std::runtime_error("Unavailable resource owner: "+requirement_.id);
+        if (validate_) validate_();
+    }
     template<class T,class Owner>
     static ResourceView bind(ResourceViewRequirement requirement,
             const std::shared_ptr<Owner>& owner,T& object,std::string_view ownerId,

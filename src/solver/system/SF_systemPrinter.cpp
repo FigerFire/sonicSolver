@@ -285,14 +285,21 @@ void printContributions(
     }
     for (const auto& contribution : system.rawSystem.contributions) {
         output << "  " << toString(contribution.origin.kind) << ": "
-               << contribution.id;
+               << contribution.id << " module=" << contribution.module;
         if (!contribution.name.empty()) output << "  " << contribution.name;
         output << "\n";
+    }
+    for (const auto& symbol:system.rawSystem.state.symbols())
+        output << "  STATE " << symbol.id << " <- " << symbol.origin.source << "\n";
+    for (const auto& closure:system.rawSystem.closures) if (!closure.outputs.empty()) {
+        output << "  closure outputs:";
+        for (const auto& id:closure.outputs) output << " " << id;
+        output << " <- " << closure.origin.source << "\n";
     }
     for (const auto& modification : system.rawSystem.modifications) {
         output << "  modification: " << toString(modification.kind) << " "
                << modification.targetKind << " " << modification.targetId
-               << "  origin=" << toString(modification.origin.kind) << "\n";
+               << "  origin=" << toString(modification.origin.kind) << ":" << modification.origin.source << "\n";
     }
 }
 
@@ -381,8 +388,6 @@ void printPlanNode(
     }
     if (!node.operation.empty()) {
         output << "  operation=" << node.operation << " provider=" << node.provider;
-        output << " legacyAdapter=" << (node.legacyAdapter ? "true" : "false");
-        if (node.legacyAdapter) output << " [Legacy adapter]";
     }
     output << "\n";
     for (const CompiledMathRef& call:node.equationCalls) {
@@ -546,7 +551,7 @@ std::string describe(const ResolvedSimulationSystem& system) {
             output << "    " << binding.equation << "." << parameter.first << "=" << parameter.second << "\n";
         output << "  " << binding.equation;
         if (!binding.occurrence.empty()) output << "@" << binding.occurrence;
-        output << " -> " << binding.method << "\n";
+        output << " -> " << binding.method << " origin=" << toString(binding.origin.kind) << ":" << binding.origin.source << "\n";
     }
     if (system.numericalSelection.pressureOperator) {
         output << "  linear: HYPRE (selected pressure linear configuration)\n"
@@ -556,6 +561,11 @@ std::string describe(const ResolvedSimulationSystem& system) {
     for (const auto& call:system.solvePlan.compiledProgram.steps)
         output << "    " << call.source.equation << "@" << call.source.occurrence
                << " method=" << call.equationMethod << " provider=" << call.backendProvider << "\n";
+    output << "  compiled physical resource requirements (binding validated before execution):\n";
+    for (const auto& call:system.solvePlan.compiledProgram.steps)
+        for (const auto& resource:call.physicalResources)
+            output << "    " << resource.id << " owner=" << resource.owner
+                << " target=" << call.target.symbol << " access=" << (resource.writable?"write":"read") << "\n";
     output << "  explicit provider fusion contracts:\n";
     std::vector<std::string> shownFusion;
     for (const auto& call:system.solvePlan.compiledProgram.steps) {

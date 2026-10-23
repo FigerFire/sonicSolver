@@ -174,7 +174,7 @@ CompiledExecutionProgram compileExecutionProgram(
         const auto fragmentKey=[](const auto& self,const SolvePlanNode& node)->std::string {
             std::string key=std::to_string(static_cast<int>(node.kind))+":"+node.operation+":"+node.provider
                 +":"+std::to_string(node.repetitions)+":"+std::to_string(node.minimumIterations)
-                +":"+node.terminationSignal+":"+node.unsupportedReason+":"+std::to_string(node.legacyAdapter);
+                +":"+node.terminationSignal+":"+node.unsupportedReason;
             for (const auto& child:node.children) key+="["+self(self,child)+"]";
             return key;
         };

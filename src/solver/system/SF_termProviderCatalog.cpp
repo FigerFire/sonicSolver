@@ -5,7 +5,7 @@
 
 #include <algorithm>
 #include <stdexcept>
-#include "solver/discretization/source/SF_scalarFeedback.h"
+#include "SF_fusedSpatial.h"
 
 namespace SF::System {
 const FormulaOperatorBinding* selectFormulaBinding(
@@ -32,33 +32,6 @@ const FormulaOperatorBinding* selectFormulaBinding(
     return selected;
 }
 
-
-namespace {
-// The fused conservative kernels implement these specific mathematical
-// operands. Other symbols need their own provider, not the same flux kernel.
-bool fusedOperandsSupported(const TermMatchContext& context) {
-    if (context.equationMethod!="ConservativeResidual"
-        && context.equationMethod!="ConservativePressureMomentum") return true;
-    const auto& expression=context.expression;
-    const auto symbol=[&](std::size_t n,std::string_view expected) {
-        return n<expression.arguments().size()
-            && expression.arguments()[n].kind()==FormulaExpr::Kind::Symbol
-            && expression.arguments()[n].name()==expected;
-    };
-    if (expression.operation()==Math::Op::Div) {
-        return expression.arguments().size()==1
-            && ((context.output=="rho" && symbol(0,"massFlux"))
-                || (context.output=="rhoU" && symbol(0,"momentumFlux"))
-                || (context.output=="rhoE" && symbol(0,"energyFlux")));
-    }
-    if (expression.operation()==Math::Op::Diffusion) {
-        return expression.arguments().size()==2
-            && ((context.output=="rhoU" && symbol(0,"mu") && symbol(1,"U"))
-                || (context.output=="rhoE" && symbol(0,"conductivity") && symbol(1,"T")));
-    }
-    return true;
-}
-} // namespace
 
 void TermProviderCatalog::add(TermProviderDescriptor descriptor) {
     if (descriptor.id.empty() || !descriptor.match)
@@ -147,60 +120,7 @@ ResolvedTermProvider TermProviderCatalog::resolve(
 
 TermProviderCatalog TermProviderCatalog::builtIn() {
     TermProviderCatalog catalog;
-    const auto add=[&](Math::Op op,TermProviderDescriptor value){value.operations={op};catalog.add(std::move(value));};
-    for(bool work:{false,true}) {
-        TermProviderDescriptor p;p.id=work?"source.stage.scalar-work":"source.stage.scalar-force";
-        p.match=[work](const TermMatchContext& c) {
-            const auto& e=c.expression;
-            return c.equationMethod=="ConservativeResidual" && c.output==(work?"rhoE":"rhoU")
-                && e.operation()==Math::Op::Source && e.arguments().size()==4
-                && e.arguments()[0].kind()==FormulaExpr::Kind::Symbol
-                && e.arguments()[0].name()==(work?"linearScalarWork":"linearScalarForce");
-        };
-        p.compileStageSource=[work](const auto& c){
-            const auto& a=c.expression.arguments();using K=FormulaExpr::Kind;
-            if(a.size()!=4 || a[1].kind()!=K::Symbol || a[2].kind()!=K::Constant || !std::isfinite(a[2].constant())
-                || a[3].kind()!=K::Constant || a[3].constant()<0 || a[3].constant()>2 || a[3].constant()!=std::floor(a[3].constant()))
-                throw std::runtime_error("Scalar feedback requires Stage symbol, finite coefficient and axis 0/1/2.");
-            return Discretization::linearScalarFeedback(a[1].name(),a[2].constant(),static_cast<int>(a[3].constant()),work);
-        };
-        p.operations={Math::Op::Source};catalog.add(std::move(p));
-    }
-    add(Math::Op::Div,{ "convection.primitiveUpwind1",
-        [](const TermMatchContext& context) {
-            return context.expression.kind()==FormulaExpr::Kind::Operator
-                && context.expression.operation()==Math::Op::Div
-                && context.selectedRecipe
-                && context.selectedRecipe->id()==FDM::TermRecipeId::PrimitiveUpwind1
-                && context.output=="U";
-        },{},nullptr,
-        &Discretization::PressureMomentum::primitiveUpwind1});
-    add(Math::Op::Div,{ "convection.conservativeFlux",
-        [](const TermMatchContext& context) {
-            return context.expression.kind()==FormulaExpr::Kind::Operator
-                && context.expression.operation()==Math::Op::Div
-                && context.selectedRecipe
-                && context.selectedRecipe->role()==FDM::TermRole::Convection
-                && context.selectedRecipe->id()!=FDM::TermRecipeId::PrimitiveUpwind1
-                && fusedOperandsSupported(context);
-        },{}});
-    add(Math::Op::Diffusion,{ "diffusion.central2",
-        [](const TermMatchContext& context) {
-            return context.expression.kind()==FormulaExpr::Kind::Operator
-                && context.expression.operation()==Math::Op::Diffusion
-                && context.selectedRecipe
-                && context.selectedRecipe->id()==FDM::TermRecipeId::Central2Explicit
-                && fusedOperandsSupported(context);
-        },{},nullptr,
-        &Discretization::PressureMomentum::central2});
-    add(Math::Op::Diffusion,{ "diffusion.central4",
-        [](const TermMatchContext& context) {
-            return context.expression.kind()==FormulaExpr::Kind::Operator
-                && context.expression.operation()==Math::Op::Diffusion
-                && context.selectedRecipe
-                && context.selectedRecipe->id()==FDM::TermRecipeId::Central4Explicit
-                && fusedOperandsSupported(context);
-        },{}});
+    FusedSpatial::registerProviders(catalog);
     return catalog;
 }
 

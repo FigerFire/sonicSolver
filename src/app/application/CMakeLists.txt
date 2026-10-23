@@ -14,7 +14,7 @@ target_include_directories(SF_caseAdapter PRIVATE
     ${CMAKE_SOURCE_DIR}/src/infrastructure/mesh
     ${CMAKE_SOURCE_DIR}/src/infrastructure/mesh/createMesh
 )
-target_link_libraries(SF_caseAdapter PUBLIC SF_io SF_formula SF_physics SF_solverConfig SF_timeDriver SF_resultWriter)
+target_link_libraries(SF_caseAdapter PUBLIC SF_io SF_formula SF_physics SF_solverConfig SF_timeDriver SF_resultWriter SF_solverSystem)
 set_lib_output(SF_caseAdapter application)
 
 add_library(SF_application STATIC

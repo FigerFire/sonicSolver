@@ -22,43 +22,6 @@ void appendUnique(std::vector<std::string>& values,std::string value) {
         values.push_back(std::move(value));
 }
 
-struct SelectedFormula {
-    std::string formula;
-    std::string execution;
-    std::string output;
-    std::string method;
-    bool primitiveSourceRequired = false;
-    std::string residualWorkspace;
-};
-
-std::vector<SelectedFormula> selectFormulas(
-        const CompiledExecutionProgram& program) {
-    std::vector<SelectedFormula> selected;
-    for (const auto& step:program.steps) {
-        if (step.spatialTerms) {
-            for (const auto& call:step.calls)
-                selected.push_back({call.equation,step.source.equation,
-                                    call.target,step.equationMethod,step.primitiveSourceRequired,step.residualWorkspace});
-        } else if (!step.sourceMathInputs.empty()) {
-            for (const auto& formula:step.sourceMathInputs)
-                selected.push_back({formula,step.source.equation,
-                    step.source.target.symbol,step.equationMethod,step.primitiveSourceRequired,step.residualWorkspace});
-        }
-        // Other methods own their local numerical realization. The spatial
-        // compiler consumes the method's declared residual/source input set.
-    }
-    return selected;
-}
-
-std::string symbolAt(const FormulaExpr& expression,std::size_t index,
-                     const Equation& formula,const std::string& path) {
-    if (expression.arguments().size()<=index
-        || expression.arguments()[index].kind()!=FormulaExpr::Kind::Symbol)
-        throw std::runtime_error("Equation '"+formula.id+"' occurrence '"+path
-            +"' has an unsupported non-symbol operator operand.");
-    return expression.arguments()[index].name();
-}
-
 } // namespace
 
 CompiledNumericalSystem compile(
@@ -67,9 +30,8 @@ CompiledNumericalSystem compile(
         const FDM::NumericalRecipeSet& recipes,
         const TermProviderCatalog& catalog,
         const CompiledTimeRecipe& time,
+        const ProviderRegistry& providers,
         const std::vector<FormulaOperatorBinding>& bindings) {
-    if (recipes.time.topology()!=FDM::TimeTopology::ExplicitStages)
-        throw std::runtime_error("Current Equation numerical recipes require an explicit time topology.");
     CompiledNumericalSystem result;
     result.recipes=recipes;
     if (time.id()!=recipes.time.id())
@@ -80,155 +42,13 @@ CompiledNumericalSystem compile(
         for (const auto& workspace:call.numericalWorkspaces)
             appendUnique(result.workspaceRequirements,workspace);
     }
-    const auto selectedFormulas=selectFormulas(program);
-    const auto containsOperator=[](const FormulaExpr& expression,Math::Op op) {
-        const auto structure=inspectFormula(expression);
-        return std::find(structure.operations.begin(),structure.operations.end(),op)!=structure.operations.end();
-    };
-    if (recipes.diffusion) {
-        const bool equationConsumer=std::any_of(selectedFormulas.begin(),selectedFormulas.end(),[&](const auto& selected) {
-            const auto& equation=equations.registry.at(selected.formula);
-            return containsOperator(equation.lhs,Math::Op::Diffusion)
-                || containsOperator(equation.rhs,Math::Op::Diffusion);
-        });
-        const bool operationConsumer=std::any_of(equations.operations.begin(),equations.operations.end(),[](const auto& operation) {
-            return std::find(operation.consumedRecipes.begin(),operation.consumedRecipes.end(),OperationRecipeRole::Diffusion)
-                !=operation.consumedRecipes.end();
-        });
-        if (!equationConsumer && !operationConsumer)
-            throw std::runtime_error("A diffusion TermRecipe was selected without a consuming Equation occurrence.");
-    }
     const auto bindRecipe=[&](const FDM::TermRecipe& recipe,
                               RecipeConsumerKind kind,std::string consumer) {
         result.recipeBindings.push_back({recipe,kind,std::move(consumer)});
     };
-    for (const auto& selected:selectedFormulas) {
-        const auto& formula=equations.registry.at(selected.formula);
-        int transientCount=0;
-        const auto visit=[&](const auto& self,const FormulaExpr& expression,
-                             CompiledSpatialBinding::Side side,
-                             const std::string& path)->void {
-            if (expression.kind()==FormulaExpr::Kind::Subtract
-                || expression.kind()==FormulaExpr::Kind::Multiply
-                || expression.kind()==FormulaExpr::Kind::Divide
-                || expression.kind()==FormulaExpr::Kind::Negate)
-                throw std::runtime_error("Equation '"+formula.id
-                    +"' at '"+path+"' requires unsupported signed/coefficient "
-                    "lowering in the fused numerical backend.");
-            if (side==CompiledSpatialBinding::Side::Right && expression.kind()==FormulaExpr::Kind::Symbol)
-                throw std::runtime_error("Equation '"+formula.id+"' at '"+path
-                    +"' requires an explicit Source AST for RHS symbol '"+expression.name()+"'.");
-            const bool source=expression.kind()==FormulaExpr::Kind::Operator
-                && expression.operation()==Math::Op::Source;
-            const bool convection=expression.kind()==FormulaExpr::Kind::Operator
-                && expression.operation()==Math::Op::Div;
-            const bool diffusion=expression.kind()==FormulaExpr::Kind::Operator
-                && expression.operation()==Math::Op::Diffusion;
-            if (source
-                    && side!=CompiledSpatialBinding::Side::Right
-                || (convection || diffusion)
-                    && side!=CompiledSpatialBinding::Side::Left)
-                throw std::runtime_error("Equation '"+formula.id+"' at '"+path
-                    +"' requires unsupported term-side/sign lowering.");
-            if (source || convection || diffusion) {
-                const FormulaExpr* numerical=&expression;
-                const std::string occurrence=expression.occurrence().empty()
-                    ? path : expression.occurrence();
-                const auto opName=numerical->operation();
-                const std::string primary=symbolAt(*numerical,
-                    diffusion?1:0,formula,occurrence);
-                const std::string secondary=diffusion
-                    ? symbolAt(*numerical,0,formula,occurrence) : "";
-                const FDM::TermRecipe* requested=nullptr;
-                if (convection) {
-                    if (!recipes.convection)
-                        throw std::runtime_error("Equation '"+formula.id
-                            +"' occurrence '"+occurrence
-                            +"' has no convection TermRecipe.");
-                    requested=&*recipes.convection;
-                } else if (diffusion) {
-                    if (!recipes.diffusion)
-                        throw std::runtime_error("Equation '"+formula.id
-                            +"' occurrence '"+occurrence
-                            +"' has no diffusion TermRecipe.");
-                    requested=&*recipes.diffusion;
-                }
-                const auto provider=catalog.resolve({formula,*numerical,
-                    occurrence,selected.output,selected.method,requested},bindings);
-                const bool isSource=source;
-                const bool primitiveSource=isSource && selected.primitiveSourceRequired
-                    && provider.primitiveSource;
-                if (provider.status!=BindingStatus::Resolved
-                    || (!provider.recipe && !primitiveSource && !provider.stageSource.evaluate))
-                    throw std::runtime_error("Equation provider "
-                        +std::string(provider.status==BindingStatus::Invalid
-                            ? "Invalid: " : "Unsupported: ")
-                        +(provider.reason.empty()
-                            ? "missing recipe for '"+occurrence+"'"
-                            : provider.reason));
-                if (isSource && !selected.primitiveSourceRequired
-                    && !provider.conservativeSource && !provider.stageSource.evaluate)
-                    throw std::runtime_error("Conservative source provider '"
-                        +provider.id+"' has no compiled execution kernel.");
-                result.operators.emplace_back(formula.id,selected.execution,
-                    selected.output,selected.method,occurrence,opName,
-                    primary,secondary,side,provider.recipe,provider.id,
-                    provider.owner,provider.compiledDataAvailable,
-                    provider.primitiveSource,provider.conservativeSource,
-                    provider.primitiveSpatial);
-                result.operators.back().stageSource=provider.stageSource;
-                appendUnique(result.providerRequirements,provider.id);
-                if (requested) {
-                    bindRecipe(*requested,RecipeConsumerKind::EquationTerm,
-                        formula.id+"@"+occurrence);
-                    if (convection) {
-                        result.requiredHaloWidth=std::max(
-                            result.requiredHaloWidth,requested->haloWidth());
-                        appendUnique(result.workspaceRequirements,selected.residualWorkspace);
-                        if (requested->reconstruction()
-                            ==FDM::ReconstructionVariable::Characteristic)
-                            appendUnique(result.workspaceRequirements,
-                                         "characteristicReconstruction");
-                    } else {
-                        appendUnique(result.workspaceRequirements,
-                            selected.residualWorkspace);
-                    }
-                } else {
-                    if (provider.recipe)
-                        bindRecipe(*provider.recipe,RecipeConsumerKind::EquationTerm,
-                            formula.id+"@"+occurrence);
-                    appendUnique(result.workspaceRequirements,
-                        selected.residualWorkspace);
-                }
-                return;
-            }
-            if (expression.kind()==FormulaExpr::Kind::Operator
-                && expression.operation()!=Math::Op::Ddt)
-                throw std::runtime_error("Equation '"+formula.id
-                    +"' has unsupported numerical operator '"+expression.name()
-                    +"' at '"+path+"'.");
-            if (expression.kind()==FormulaExpr::Kind::Operator
-                && expression.operation()==Math::Op::Ddt) {
-                if (++transientCount!=1 || expression.arguments().size()!=1
-                    || side!=CompiledSpatialBinding::Side::Left
-                    || symbolAt(expression,0,formula,path)!=selected.output)
-                    throw std::runtime_error("Equation ddt does not match HOW Output.");
-                return;
-            }
-            if (expression.kind()==FormulaExpr::Kind::Symbol
-                || (expression.kind()==FormulaExpr::Kind::Constant
-                    && expression.constant()!=0.0))
-                throw std::runtime_error("Equation '"+formula.id+"' at '"+path
-                    +"' has unsupported unbound residual data.");
-            for (std::size_t i=0;i<expression.arguments().size();++i)
-                self(self,expression.arguments()[i],side,
-                    path+"/"+std::to_string(i));
-        };
-        visit(visit,formula.lhs,CompiledSpatialBinding::Side::Left,"lhs");
-        visit(visit,formula.rhs,CompiledSpatialBinding::Side::Right,"rhs");
-        if (transientCount!=1)
-            throw std::runtime_error("Fused transport Equation requires exactly one ddt(Output).");
-    }
+    for (const auto& call:program.steps)
+        if (call.spatialTerms || !call.sourceMathInputs.empty())
+            providers.at(call.equationMethod).lowerSpatial(equations,call,recipes,catalog,bindings,result);
     for (const auto& binding:bindings) {
         const bool addressed=std::any_of(result.operators.begin(),
             result.operators.end(),[&](const CompiledSpatialBinding& item) {
@@ -285,7 +105,7 @@ void compileSystem(ResolvedSimulationSystem& result,const ExecutionProgram& exec
     TermProviderCatalog termProviders=TermProviderCatalog::builtIn();
     for (const auto& descriptor:selected.termProviders) termProviders.addSource(descriptor);
     result.numericalSystem=compile(result.executableSystem,compiledExecution,
-        selected.recipes,termProviders,compiledTime,selected.operatorBindings);
+        selected.recipes,termProviders,compiledTime,builtinProviders(),selected.operatorBindings);
     result.numericalSystem.dt=selected.dt;
     result.numericalSystem.phaseTransport=selected.phaseTransport;
     result.numericalSystem.pressureFaceCoupling=selected.pressureFaceCoupling;

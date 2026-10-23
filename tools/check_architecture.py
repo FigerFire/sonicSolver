@@ -838,13 +838,25 @@ def main() -> int:
     if "requiredGhostLayersForConvection" in all_source_text:
         authority_errors.append(
             "scheme-name halo authority remains: requiredGhostLayersForConvection")
+    if "legacyAdapter" in (root/"src/core/system/SF_solveProgram.h").read_text(errors="replace"):
+        authority_errors.append("Retired legacyAdapter flag restored")
+    resource_binder=(root/"src/app/application/execution/SF_singleFluid.cpp").read_text(errors="replace")
+    scalar_binder=(root/"src/app/application/adapters/SF_scalarResources.cpp").read_text(errors="replace")
+    if "localBlockId,boundModelResources" not in resource_binder or "validatePhysicalResources(system.solvePlan.compiledProgram,completeBindings)" not in scalar_binder:
+        authority_errors.append("Physical model/scalar ports bypass compiled requirement validation")
     numerical_compiler = (
         root / "src/solver/system/SF_numericalCompiler.cpp"
     ).read_text(errors="replace")
-    if "selectedFormulas=selectFormulas(program)" not in numerical_compiler \
-            or "result.operators.emplace_back" not in numerical_compiler:
-        authority_errors.append(
-            "NumericalCompiler does not bind selected Formula occurrences")
+    fused_lowering=(root/"src/solver/system/SF_fusedSpatial.cpp").read_text(errors="replace")
+    if "providers.at(call.equationMethod).lowerSpatial(" not in numerical_compiler:
+        authority_errors.append("NumericalCompiler bypasses selected provider spatial lowering")
+    if any(token in numerical_compiler for token in ("symbolAt(","transientCount","fusedOperandsSupported", "unsupported signed/coefficient")):
+        authority_errors.append("Public NumericalCompiler owns fused-backend AST restrictions")
+    if "result.operators.emplace_back" not in fused_lowering or "selectFormulas(selection)" not in fused_lowering:
+        authority_errors.append("Selected fused provider lost mathematical lowering")
+    execution=(root/"src/app/application/execution/SF_execution.cpp").read_text(errors="replace")
+    if "executeScalarEquations" in execution or "ScalarOps::Provider" in execution:
+        authority_errors.append("Application dispatches scalar resource assembly by provider family")
     if "NumericalCompiler::compileSystem(" \
             not in builder_source:
         authority_errors.append(

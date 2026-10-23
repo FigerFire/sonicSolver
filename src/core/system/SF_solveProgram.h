@@ -161,8 +161,6 @@ struct SolvePlanNode {
     std::string occurrence;
     /// Final implementation identity from WHICH; runtime only looks it up.
     std::string provider;
-    /// Only explicitly lowered compatibility leaves may use the legacy adapter.
-    bool legacyAdapter = false;
 };
 
 /// @brief Provider 声明允许版本；compiler 冻结唯一 coefficient producer/resource。
@@ -260,6 +258,8 @@ struct CompiledEquationCall {
     std::vector<std::string> capabilities;
     std::vector<CapabilityBinding> boundCapabilities;
     std::vector<CapabilityRequirement> capabilityRequirements;
+    /// @brief 所选实现要求的具体运行端口；资源 owner 在 application 绑定，HOW 不分配。
+    std::vector<ResourceViewRequirement> physicalResources;
     std::any providerContract;
 };
 

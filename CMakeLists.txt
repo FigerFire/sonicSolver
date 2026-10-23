@@ -130,6 +130,18 @@ if(BUILD_TESTS)
         set_tests_properties(${name} PROPERTIES WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/test/mathWhatA1" TIMEOUT 5)
     endforeach()
 
+    add_executable(test_contributionA5 test/contributionA5/test_contribution.cpp)
+    target_link_libraries(test_contributionA5 PRIVATE SF_application)
+    set_target_properties(test_contributionA5 PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/test/contributionA5/bin")
+    add_test(NAME moduleContributionClosure COMMAND test_contributionA5)
+    set_tests_properties(moduleContributionClosure PROPERTIES WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/test/contributionA5" TIMEOUT 15)
+
+    add_executable(test_resourceA5 test/resourceA5/test_resources.cpp)
+    target_link_libraries(test_resourceA5 PRIVATE SF_application)
+    set_target_properties(test_resourceA5 PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/test/resourceA5/bin")
+    add_test(NAME compiledResourceComposition COMMAND test_resourceA5)
+    set_tests_properties(compiledResourceComposition PROPERTIES WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/test/resourceA5" TIMEOUT 15)
+
     add_executable(test_coreSinglePath test/coreSinglePath/test_closure.cpp)
     target_link_libraries(test_coreSinglePath PRIVATE SF_solverSystem SF_physics SF_ibm)
     set_target_properties(test_coreSinglePath PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/test/coreSinglePath/bin")

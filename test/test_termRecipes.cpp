@@ -108,7 +108,7 @@ int main() {
         (void)System::NumericalCompiler::compile(signedSystem,
             rusanov.solvePlan.compiledProgram,
             explicitConfig(rusanovRecipe).numerics.recipes,
-            System::TermProviderCatalog::builtIn(),rusanov.numericalSystem.time.recipe);
+            System::TermProviderCatalog::builtIn(),rusanov.numericalSystem.time.recipe,System::builtinProviders());
     },"unsupported signed/coefficient"),
         "Fused backend silently ignored a Equation sign.");
     auto unknownFluxSystem=rusanov.executableSystem;
@@ -119,7 +119,7 @@ int main() {
         (void)System::NumericalCompiler::compile(unknownFluxSystem,
             rusanov.solvePlan.compiledProgram,
             explicitConfig(rusanovRecipe).numerics.recipes,
-            System::TermProviderCatalog::builtIn(),rusanov.numericalSystem.time.recipe);
+            System::TermProviderCatalog::builtIn(),rusanov.numericalSystem.time.recipe,System::builtinProviders());
     },"Unsupported"),"Fused provider executed an unknown mathematical flux.");
     auto duplicateTimeSystem=rusanov.executableSystem;
     auto duplicateTime=duplicateTimeSystem.registry.at("continuity");
@@ -130,7 +130,7 @@ int main() {
         (void)System::NumericalCompiler::compile(duplicateTimeSystem,
             rusanov.solvePlan.compiledProgram,
             explicitConfig(rusanovRecipe).numerics.recipes,
-            System::TermProviderCatalog::builtIn(),rusanov.numericalSystem.time.recipe);
+            System::TermProviderCatalog::builtIn(),rusanov.numericalSystem.time.recipe,System::builtinProviders());
     },"ddt"),"Fused transport silently ignored a duplicate time derivative.");
     const auto steger = System::build(
         explicitConfig(stegerRecipe),inviscid);
@@ -220,7 +220,7 @@ int main() {
     const auto operationNumerics = System::NumericalCompiler::compile(
         operationSystem,rusanov.solvePlan.compiledProgram,operationRecipes,
         System::TermProviderCatalog::builtIn(),
-        rusanov.numericalSystem.time.recipe);
+        rusanov.numericalSystem.time.recipe,System::builtinProviders());
     require(std::any_of(operationNumerics.recipeBindings.begin(),
                         operationNumerics.recipeBindings.end(),
                         [](const System::CompiledRecipeBinding& binding) {
