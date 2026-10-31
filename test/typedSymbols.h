@@ -18,7 +18,7 @@ inline System::FormulaExpr symbol(const std::string& id) {
     if(id=="userFluxWithoutProvider")return System::FormulaExpr::symbol(id,Math::signature(1,{1,-2,-1,0,0,0,0}));
     if(id=="unimplementedFlux")return System::FormulaExpr::symbol(id,Math::signature(2,{1,-1,-2,0,0,0,0}));
     if(id=="S")return System::FormulaExpr::symbol(id,Math::signature(0,{0,0,-1,0,0,0,0}));
-    if(id=="pPrime")return System::PressureMathematics::symbol(id);
+    if(id=="deltaP")return System::PressureMathematics::symbol(id);
     if(id.rfind("SST.",0)==0 || id.rfind("k.",0)==0 || id.rfind("omega.",0)==0 || id.rfind("epsilon.",0)==0 || id.rfind("kOmegaSST.",0)==0 || id.rfind("kEpsilon.",0)==0)
         return Turbulence::mathematicalSymbol(id);
     if(id.find("eddyDynamicViscosity.")!=std::string::npos)return System::FormulaExpr::symbol(id,Math::signature(0,{1,-1,-1,0,0,0,0}));

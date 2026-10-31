@@ -253,10 +253,14 @@ int main() {
              sourceConfig.sources.rotating))
         sourceRequest.termProviders.push_back(std::move(descriptor));
     const auto sourced = System::build(sourceConfig,sourceRequest);
-    const auto sources =
-        System::NumericalCompiler::sourceKinds(sourced.numericalSystem);
-    require(sources == std::vector<FDM::SourceKind>{FDM::SourceKind::MRF},
-            "MRF equation source was not compiled into one source binding");
+    bool hasMrf = false;
+    for (const auto& binding : sourced.numericalSystem.operators) {
+        if (!binding.recipe || binding.recipe->role() != FDM::TermRole::Source) continue;
+        require(binding.recipe->source() == FDM::SourceKind::MRF,
+                "Unexpected source recipe in the MRF equation");
+        hasMrf = true;
+    }
+    require(hasMrf, "MRF equation source has no compiled source binding");
 
     require(FDM::resolveDiffusionTermRecipe("central2Explicit").id()
                 == FDM::TermRecipeId::Central2Explicit,

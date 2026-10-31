@@ -7,7 +7,7 @@
 namespace SF::SolverAlgorithm {
 class SingleFluidStepper : public FDM::INavierStokesStepper {
 public:
-    SingleFluidStepper(FDM::SolverConfig,const System::ExecutableEquationSystem&,
+    SingleFluidStepper(const FDM::SolverConfig&,const System::ExecutableEquationSystem&,
         const System::CompiledNumericalSystem&,const System::CompiledSolvePlan&,
         const System::RuntimeRequirements&);
     // Callback captures require a stable host address for the entire binding lifetime.
@@ -22,7 +22,9 @@ public:
     double physicalTime() const;
     double timeStep() const;
 private:
-    FDM::SolverConfig config_;
+    FDM::BoundaryConfig boundaries_;
+    FDM::PressureCorrectionConfig pressure_;
+    double pressureGamma_;
     const System::ExecutableEquationSystem& executable_;
     const System::CompiledNumericalSystem& numerics_;
     const System::CompiledSolvePlan& solve_;

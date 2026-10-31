@@ -74,7 +74,7 @@ int main() {
     rejects([&]{(void)multiple.singlePatch();});
     Turbulence::EquationSystem model(config);model.initialize(system);
     EulerianEulerian::PhaseSolverWorkspace workspace;workspace.setupLike(system);
-    FDM::PressureCorrectionConfig pressure;
+    System::PhaseNumericalConfig pressure;
     EulerianEulerian::PhaseEquationAssembler assembler(system,pressure,workspace);assembler.attachTurbulence(&model);
     require(workspace.turbulenceOldTime.size()==4,"Missing unique old-time workspace.");
     require(workspace.turbulenceOldTime[0].phaseIndex==1 && workspace.turbulenceOldTime[2].phaseIndex==0,"Selected order became phase storage order.");

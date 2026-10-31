@@ -1,12 +1,10 @@
 /// @file SF_solvePlan.cpp
 /// @brief 冻结已编译 method/temporal 控制流，不推断旧策略或数学 target。
 #include "SF_solvePlan.h"
-#include "SF_methodObjects.h"
 #include <algorithm>
 #include <stdexcept>
 namespace SF::System {
 CompiledSolvePlan SolvePlanner::compile(
-        const ExecutableEquationSystem& system,
         const CompiledTimeRecipe& timeRecipe,
         const CompiledExecutionProgram& compiledExecution) {
     if (compiledExecution.steps.empty())
@@ -14,7 +12,7 @@ CompiledSolvePlan SolvePlanner::compile(
     if (timeRecipe.stageCount()<1) throw std::runtime_error("Invalid configured time recipe.");
     CompiledSolvePlan result;
     result.root=compiledExecution.hasTemporalRoot
-        ? compiledExecution.temporalRoot : compileMethodProgram(compiledExecution);
+        ? compiledExecution.temporalRoot : compiledExecution.loweredRoot;
     return result;
 }
 

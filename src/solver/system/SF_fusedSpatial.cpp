@@ -1,6 +1,7 @@
 /// @brief 既有融合后端的操作数限制、term 能力和 lowering；保留原数学及执行顺序。
 #include "SF_fusedSpatial.h"
 #include "solver/discretization/source/SF_scalarFeedback.h"
+#include "SF_formulaCompiler.h"
 #include <algorithm>
 #include <stdexcept>
 namespace SF::System::FusedSpatial {
@@ -76,6 +77,39 @@ bool fusedOperandsSupported(const TermMatchContext& context) {
 
 void registerProviders(TermProviderCatalog& catalog) {
     const auto add=[&](Math::Op op,TermProviderDescriptor value){value.operations={op};catalog.add(std::move(value));};
+    TermProviderDescriptor field;field.id="source.field";field.operations={Math::Op::Source};
+    field.match=[](const TermMatchContext& c) {
+        if(!c.state || c.expression.arguments().size()!=1
+            || (c.output!="rhoU" && c.output!="rhoE" && c.output!="U"))return false;
+        const auto symbols=inspectFormula(c.expression.arguments()[0]).symbols;
+        return !symbols.empty() && std::all_of(symbols.begin(),symbols.end(),[&](const auto& id){
+            if(!c.state->contains(id))return false;
+            const auto& state=c.state->at(id);
+            return state.constantValue || (!state.signature.callable && state.location==VariableLocation::EulerianCell
+                && state.storageBinding!=StorageBinding::SpecializedExecutor && !state.producer);
+        });
+    };
+    field.compileFieldSource=[](const TermMatchContext& c) {
+        FieldSource source;auto slots=inspectFormula(c.expression.arguments()[0]).symbols;
+        slots.erase(std::remove_if(slots.begin(),slots.end(),[&](const auto& id){return c.state->at(id).constantValue.has_value();}),slots.end());
+        for(const auto& id:slots) {
+            if(!c.inputs)throw std::runtime_error("Field source has no STATE input contract: "+id);
+            const auto use=std::find_if(c.inputs->begin(),c.inputs->end(),[&](const auto& read){return read.symbol==id;});
+            if(use==c.inputs->end())throw std::runtime_error("Field source missing STATE version: "+id+" occurrence="+std::string(c.occurrence));
+            source.inputs.push_back(*use);
+        }
+        std::vector<std::string> used;
+        auto kernel=compileFormulaValue(c.formula,c.expression.arguments()[0],{},used,slots,c.state,&source.evaluation);
+        source.bind=[kernel=std::move(kernel)](std::vector<FieldSource::Reader> reads) {
+            FormulaValues values;values.boundReads=std::move(reads);
+            return [kernel,values=std::move(values)](int cell,int component) {
+                const double value=kernel(values,cell,component);
+                if(!std::isfinite(value))throw std::runtime_error("Nonfinite bound field source");return value;
+            };
+        };
+        return source;
+    };
+    catalog.add(std::move(field));
     for(bool work:{false,true}) {
         TermProviderDescriptor p;p.id=work?"source.stage.scalar-work":"source.stage.scalar-force";
         p.match=[work](const TermMatchContext& c) {
@@ -142,7 +176,7 @@ void lower(const ExecutableEquationSystem& equations,const CompiledEquationCall&
     };
     for (const auto& selected:selectedFormulas) {
         const auto& formula=equations.registry.at(selected.formula);
-        int transientCount=0;
+        int transientCount=0,convectionCount=0,diffusionCount=0;
         const auto visit=[&](const auto& self,const FormulaExpr& expression,
                              CompiledSpatialBinding::Side side,
                              const std::string& path)->void {
@@ -169,12 +203,18 @@ void lower(const ExecutableEquationSystem& equations,const CompiledEquationCall&
                 throw std::runtime_error("Equation '"+formula.id+"' at '"+path
                     +"' requires unsupported term-side/sign lowering.");
             if (source || convection || diffusion) {
+                if(selected.method=="ConservativeResidual") {
+                    if(convection && (expression.arguments().size()!=1 || ++convectionCount!=1))
+                        throw std::runtime_error("ConservativeResidual requires one unscaled convection occurrence: "+formula.id+"@"+path);
+                    if(diffusion && (expression.arguments().size()!=2 || ++diffusionCount!=1))
+                        throw std::runtime_error("ConservativeResidual cannot accumulate repeated/scaled diffusion: "+formula.id+"@"+path);
+                }
                 const FormulaExpr* numerical=&expression;
                 const std::string occurrence=expression.occurrence().empty()
                     ? path : expression.occurrence();
                 const auto opName=numerical->operation();
-                const std::string primary=symbolAt(*numerical,
-                    diffusion?1:0,formula,occurrence);
+                const std::string primary=source && numerical->arguments().size()==1 && numerical->arguments()[0].kind()!=FormulaExpr::Kind::Symbol
+                    ? "expression" : symbolAt(*numerical,diffusion?1:0,formula,occurrence);
                 const std::string secondary=diffusion
                     ? symbolAt(*numerical,0,formula,occurrence) : "";
                 const FDM::TermRecipe* requested=nullptr;
@@ -192,12 +232,12 @@ void lower(const ExecutableEquationSystem& equations,const CompiledEquationCall&
                     requested=&*recipes.diffusion;
                 }
                 const auto provider=catalog.resolve({formula,*numerical,
-                    occurrence,selected.output,selected.method,requested},bindings);
+                    occurrence,selected.output,selected.method,requested,&equations.state,&call.stateUses},bindings);
                 const bool isSource=source;
                 const bool primitiveSource=isSource && selected.primitiveSourceRequired
                     && provider.primitiveSource;
                 if (provider.status!=BindingStatus::Resolved
-                    || (!provider.recipe && !primitiveSource && !provider.stageSource.evaluate))
+                    || (!provider.recipe && !primitiveSource && !provider.stageSource.evaluate && !provider.fieldSource.bind))
                     throw std::runtime_error("Equation provider "
                         +std::string(provider.status==BindingStatus::Invalid
                             ? "Invalid: " : "Unsupported: ")
@@ -205,7 +245,7 @@ void lower(const ExecutableEquationSystem& equations,const CompiledEquationCall&
                             ? "missing recipe for '"+occurrence+"'"
                             : provider.reason));
                 if (isSource && !selected.primitiveSourceRequired
-                    && !provider.conservativeSource && !provider.stageSource.evaluate)
+                    && !provider.conservativeSource && !provider.stageSource.evaluate && !provider.fieldSource.bind)
                     throw std::runtime_error("Conservative source provider '"
                         +provider.id+"' has no compiled execution kernel.");
                 result.operators.emplace_back(formula.id,selected.execution,
@@ -215,6 +255,7 @@ void lower(const ExecutableEquationSystem& equations,const CompiledEquationCall&
                     provider.primitiveSource,provider.conservativeSource,
                     provider.primitiveSpatial);
                 result.operators.back().stageSource=provider.stageSource;
+                result.operators.back().fieldSource=provider.fieldSource;
                 appendUnique(result.providerRequirements,provider.id);
                 if (requested) {
                     bindRecipe(*requested,RecipeConsumerKind::EquationTerm,
@@ -264,6 +305,8 @@ void lower(const ExecutableEquationSystem& equations,const CompiledEquationCall&
         };
         visit(visit,formula.lhs,CompiledSpatialBinding::Side::Left,"lhs");
         visit(visit,formula.rhs,CompiledSpatialBinding::Side::Right,"rhs");
+        if(selected.method=="ConservativeResidual" && convectionCount!=1)
+            throw std::runtime_error("ConservativeResidual requires exactly one convection occurrence: "+formula.id);
         if (transientCount!=1)
             throw std::runtime_error("Fused transport Equation requires exactly one ddt(Output).");
     }

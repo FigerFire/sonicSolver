@@ -78,6 +78,16 @@ FormulaValueKernel valueKernel(
             };
         }
         case Kind::Operator: {
+            if(expression.operation()==Math::Op::Component) {
+                auto vector=valueKernel(formula,expression.arguments()[0],catalog,bindings,used,slots,state,trace,path+"/0");
+                const int index=static_cast<int>(expression.arguments()[1].constant());record("local.component");
+                return [vector=std::move(vector),index](const FormulaValues& values,int cell,int){return vector(values,cell,index);};
+            }
+            if(expression.operation()==Math::Op::Vector) {
+                std::vector<FormulaValueKernel> components;
+                for(std::size_t i=0;i<3;++i)components.push_back(valueKernel(formula,expression.arguments()[i],catalog,bindings,used,slots,state,trace,path+"/"+std::to_string(i)));
+                record("local.vector");return [components=std::move(components)](const FormulaValues& values,int cell,int c){return components.at(c)(values,cell,0);};
+            }
             if(expression.operation()==Math::Op::Pow) {
                 record("local.pow");
                 auto base=valueKernel(formula,expression.arguments()[0],catalog,bindings,used,slots,state,trace,path+"/0");
@@ -149,8 +159,9 @@ FormulaExpr explicitFormulaRhs(const Equation& equation,std::string_view target)
 
 FormulaValueKernel compileFormulaValue(const Equation& equation,const FormulaExpr& expression,
         const FormulaOperatorCatalog& providers,std::vector<std::string>& used,
-        const std::vector<std::string>& boundSymbols,const StateRegistry* state,std::vector<std::string>* trace) {
-    return valueKernel(equation,expression,providers,{},used,boundSymbols.empty()?nullptr:&boundSymbols,state,trace,"rhs");
+        const std::vector<std::string>& boundSymbols,const StateRegistry* state,std::vector<std::string>* trace,
+        const std::vector<FormulaOperatorBinding>& bindings) {
+    return valueKernel(equation,expression,providers,bindings,used,boundSymbols.empty()?nullptr:&boundSymbols,state,trace,"rhs");
 }
 
 void FormulaOperatorCatalog::add(FormulaOperatorProvider provider) {
@@ -227,11 +238,15 @@ inline std::pair<std::string,std::string> central2Symbols(
 
 
 }
-System::FormulaOperatorProvider central2ScalarDiffusion(const System::StateRegistry& state,const std::vector<std::string>& slots) {
-    System::FormulaOperatorProvider p;p.id="scalar.central2.diffusion";p.mathematicalOperator=Math::Op::Diffusion;
+System::FormulaOperatorProvider central2ScalarDiffusion(const System::StateRegistry& state,const std::vector<std::string>& slots,bool arithmeticFaces) {
+    System::FormulaOperatorProvider p;p.id=arithmeticFaces?"scalar.central2.arithmetic-faces":"scalar.central2.diffusion";p.mathematicalOperator=Math::Op::Diffusion;
     p.matches=[](const auto& e){return e.arguments().size()==2 && e.arguments()[1].kind()==System::FormulaExpr::Kind::Symbol;};
-    p.compileValue=[&state,&slots](const auto& e) {
+    p.compileValue=[&state,&slots,arithmeticFaces](const auto& e) {
         const auto& coefficient=e.arguments()[0];
+        if(arithmeticFaces && coefficient.kind()==System::FormulaExpr::Kind::Symbol && !state.at(coefficient.name()).constantValue) {
+            const auto find=[&](const std::string& id){auto it=std::find(slots.begin(),slots.end(),id);if(it==slots.end())throw std::runtime_error("Missing diffusion input: "+id);return static_cast<std::size_t>(it-slots.begin());};
+            return central2ArithmeticKernel(find(coefficient.name()),find(e.arguments()[1].name()),e.arguments()[1].signature().rank==0);
+        }
         const double D=coefficient.kind()==System::FormulaExpr::Kind::Constant?coefficient.constant():state.at(coefficient.name()).constantValue.value();
         const auto slot=std::find(slots.begin(),slots.end(),e.arguments()[1].name());
         if(slot==slots.end())throw std::runtime_error("Missing Central2 Stage operand: "+e.arguments()[1].name());

@@ -28,7 +28,7 @@ namespace SolverAlgorithm {
 /// Registered operations retain this owner; services and compiled products are borrowed.
 class FlowOperations : public std::enable_shared_from_this<FlowOperations> {
 public:
-    FlowOperations(FDM::SolverConfig,
+    FlowOperations(FDM::BoundaryConfig,FDM::PressureCorrectionConfig,double pressureGamma,
         const System::ExecutableEquationSystem&, const System::CompiledNumericalSystem&,
         const System::CompiledSolvePlan&, const System::RuntimeRequirements&,
         State::StateBundle&, const FDM::SolverServices&, System::StateRealization&,
@@ -38,12 +38,14 @@ public:
     Time::TemporalCallbacks temporalParticipant();
     /// @brief 同 patch/stage 的只读 canonical flux；owner 仍是本对象的 workspace。
     StageMassFluxView stageMassFlux(StageFluxIdentity stamp) const;
-    void bindStageSources();
+    void bindFieldSources();
     void prepareBoundaryState(const std::vector<Field*>& fields,double time,double dt);
     FDM::ImmersedConstraintResult& correctionResult() { return immersedCorrection_; }
 
 private:
-    FDM::SolverConfig config_;
+    // Only the legacy pressure corrector still consumes these inputs.
+    FDM::PressureCorrectionConfig pressureConfig_;
+    double pressureGamma_;
     const System::ExecutableEquationSystem& executable_;
     const System::CompiledNumericalSystem& numerics_;
     std::unique_ptr<System::CompiledNumericalSystem> stageNumerics_;

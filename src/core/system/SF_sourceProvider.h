@@ -12,6 +12,7 @@
 #include <string>
 
 namespace SF::System {
+class StateRegistry;
 
 struct TermMatchContext {
     const Equation& formula;
@@ -20,6 +21,8 @@ struct TermMatchContext {
     std::string_view output;
     std::string_view equationMethod;
     const FDM::TermRecipe* selectedRecipe = nullptr;
+    const StateRegistry* state=nullptr;
+    const std::vector<StateUse>* inputs=nullptr;
 };
 
 /// @brief A model supplies a matcher, recipe, and value-owning kernel factories.

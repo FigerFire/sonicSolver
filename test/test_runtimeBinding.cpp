@@ -3,7 +3,7 @@
 #include "solver/algorithm/SF_singleFluidStepper.h"
 #include <type_traits>
 #include "solver/algorithm/interface/SF_levelSetBinding.h"
-#include "solver/system/SF_providerResolver.h"
+#include "solver/system/SF_methodObjects.h"
 #include "solver/system/SF_systemBuilder.h"
 #include "core/system/SF_operationIds.h"
 #include <map>
@@ -121,6 +121,8 @@ int main() {
     };
     corrupt(corrupt,compiled.solvePlan.root);
     require(!System::validateCompiledConservativeStage(compiled.executableSystem,compiled.solvePlan).empty(),"Runtime/compiler shared guard missed corrupted fusion");
-    auto bindings=System::compileOperationBindings(compiled.executableSystem,compiled.numericalSystem,compiled.solvePlan,false);
-    require(System::reportOperationBindings(compiled.solvePlan,bindings).status==System::RuntimeStatus::Unsupported,"Static report falsely advertised corrupted fusion as Runnable");
+    rejected=false;
+    try {System::validateDirectProgram(compiled.executableSystem,compiled.numericalSystem,compiled.solvePlan);}
+    catch(const std::runtime_error&) {rejected=true;}
+    require(rejected,"Numerical process guard accepted corrupted fusion before operation binding");
 }

@@ -1,4 +1,5 @@
 #pragma once
+#include "core/system/SF_numericalBinding.h"
 
 /// @file SF_termProviderCatalog.h
 /// @brief Deterministic numerical-provider selection for compiled equation terms.
@@ -11,20 +12,7 @@
 
 namespace SF::System {
 
-struct FormulaOperatorBinding {
-    FormulaOperatorBinding()=default;
-    FormulaOperatorBinding(std::string equation,std::string address,std::string implementation)
-        :formula(std::move(equation)),occurrence(std::move(address)),provider(std::move(implementation)) {
-        if(formula.empty() && !occurrence.empty())operation=Math::resolveOperator(occurrence);
-    }
-    std::optional<Math::Op> operation;
-    /// Empty formula with an operator name selects the global default;
-    /// empty occurrence selects a formula-level default. Both set selects
-    /// one stable operator occurrence. More specific bindings win.
-    std::string formula;
-    std::string occurrence;
-    std::string provider;
-};
+
 
 /// @brief Resolve occurrence > formula default > global operator default.
 const FormulaOperatorBinding* selectFormulaBinding(
@@ -43,6 +31,7 @@ struct TermProviderDescriptor {
     std::function<StageConservativeSource(const TermMatchContext&)> compileStageSource;
     /// @brief 数值实现支持的数学身份；matcher继续校验布局/系数/具体结构。
     std::vector<Math::Op> operations;
+    std::function<FieldSource(const TermMatchContext&)> compileFieldSource;
 };
 
 struct ResolvedTermProvider {
@@ -56,6 +45,7 @@ struct ResolvedTermProvider {
     PrimitiveMomentumSpatialTerm primitiveSpatial = nullptr;
     std::string owner;
     bool compiledDataAvailable = false;
+    FieldSource fieldSource;
 };
 
 /// @brief Open registrations; zero/one/multiple matches have explicit outcomes.

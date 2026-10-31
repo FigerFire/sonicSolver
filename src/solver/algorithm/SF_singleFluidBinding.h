@@ -3,7 +3,7 @@
 #include "solver/run/SF_planExecutor.h"
 #include "solver/system/SF_stateRealizer.h"
 namespace SF::SolverAlgorithm {
-void bindSingleFluidOperations(Run::OpRegistry&,const FDM::SolverConfig&,
+void bindSingleFluidOperations(Run::OpRegistry&,const FDM::BoundaryConfig&,const FDM::PressureCorrectionConfig&,double pressureGamma,
     const System::ExecutableEquationSystem&,const System::CompiledNumericalSystem&,
     const System::CompiledSolvePlan&,const System::RuntimeRequirements&,
     State::StateBundle&,const FDM::SolverServices&,System::StateRealization&,const double& maximumTimeStep);

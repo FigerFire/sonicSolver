@@ -53,11 +53,14 @@ public:
     /// @brief Modules contribute scope-local calls and numerical defaults independently.
     void addExecution(ExecutionScope value) { execution.push_back(std::move(value)); }
     void bindNumerics(NumericalBinding value) { numerics.push_back(std::move(value)); }
+    /// @brief 模块与用户通过相同 STATE 调用契约声明版本，不改变 HOW 顺序。
+    void bindInputs(CallInputs value) { callInputs.push_back(std::move(value)); }
     /// @brief Migration boundary: declarations whose legacy backend still owns local topology.
     std::optional<FDM::ImmersedAlgorithmDescriptor> immersed;
     std::vector<PlacementRequirement> placement;
     std::vector<ExecutionScope> execution;
     std::vector<NumericalBinding> numerics;
+    std::vector<CallInputs> callInputs;
 
     std::vector<ContributionRecord> records;
     std::vector<StateSymbol> states;

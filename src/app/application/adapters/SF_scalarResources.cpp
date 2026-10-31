@@ -8,7 +8,6 @@
 #include "core/state/SF_state.h"
 #include "core/interfaces/SF_log.h"
 #include "infrastructure/io/SF_caseConfig.h"
-#include "solver/system/SF_scalarMethod.h"
 #include <algorithm>
 #include <cmath>
 #include <memory>
@@ -86,8 +85,14 @@ ScalarResources bindScalarResources(Field& geometry,State::StateBundle& state,
             if (previous->second!=id) throw std::runtime_error("Conflicting native initialization owners for storage: "+symbol.storageKey);
             return;
         }
-        if (!state.distributed.select(symbol.storageKey,State::HaloSyncStage::None).empty())
-            throw std::runtime_error("Native resource already has a physical owner: "+symbol.storageKey);
+        const auto existing=state.distributed.select(symbol.storageKey,State::HaloSyncStage::None);
+        State::DistributedFieldView* backing=nullptr;
+        for(auto* view:existing)if(view->blockId==block) {
+            if(backing || view->geometry!=&geometry || view->components!=symbol.components || !view->read || !view->write)
+                throw std::runtime_error("Conflicting existing STATE backing shape/layout/owner: "+id);
+            view->validate();if(view->requireReadable)view->requireReadable();backing=view;
+        }
+        if(backing)return;
         const auto& found=descriptor(id);
         const auto initial=fieldValue(found.initial,symbol.components,"fields/"+found.name+"/initial");
         std::vector<ScalarField*> components;
@@ -108,26 +113,49 @@ ScalarResources bindScalarResources(Field& geometry,State::StateBundle& state,
         pending.push_back(State::scalarComponentsView(symbol.storageKey,block,geometry,components,geometry.NG(),State::HaloSyncStage::None));
     };
     for(const auto& call:system.solvePlan.compiledProgram.steps) for(const auto& required:call.physicalResources) {
-        if (required.owner!="native.scalar") continue;
-        if(required.owner!="native.scalar" || required.type!=typeid(FDM::ScalarEquationData)
-            || required.writable || required.id!=call.source.occurrence || !occurrences.insert(required.id).second)
+        if (required.owner!="native.scalar" && required.owner!="model.scalar") continue;
+        if(required.type!=typeid(FDM::ScalarEquationData)
+            || required.writable || !occurrences.insert(required.id).second)
             throw std::runtime_error("Unsupported/duplicate physical resource contract: "+required.id+" owner="+required.owner);
-        const auto* scalarContract=std::any_cast<System::CompiledScalarEquation>(&call.providerContract);
-        if (!scalarContract) throw std::runtime_error("Physical scalar resource lacks its compiled implementation contract: "+required.id);
-        const auto& contract=*scalarContract;
-        if(!contract.sources.empty())throw std::runtime_error("Native scalar known-source callback binding is Unsupported: "+required.id);
-        allocate(call.target.symbol);
-        for (const auto& id:contract.stageReads)
-            if (system.executableSystem.state.at(id).storageBinding==System::StorageBinding::NamedDistributed) allocate(id);
-        const bool stencil=std::any_of(system.solvePlan.compiledProgram.steps.begin(),system.solvePlan.compiledProgram.steps.end(),[&](const auto& consumer){
-            const auto* c=std::any_cast<System::CompiledScalarEquation>(&consumer.providerContract);
-            return c && ((c->conservativeTransport && c->target==call.target.symbol)
-                || std::any_of(c->diffusions.begin(),c->diffusions.end(),[&](const auto& d){return d.input==call.target.symbol;}));
-        });
-        auto port=std::make_shared<FDM::ScalarEquationData>();port->target=call.target.symbol;
-        if(stencil)*port=boundaryData(geometry,descriptor(call.target.symbol),contract.components);
-        resources.views.push_back(System::ResourceView::bind(required,port,*port,required.owner));
-        resources.instances.push_back({required.id,port});resources.ports.push_back(std::move(port));
+        if(!required.fields)throw std::runtime_error("Missing compiled field resource requirements: "+required.id);
+        const auto& need=*required.fields;
+        for(const auto& id:need.states) {
+            const auto& symbol=system.executableSystem.state.at(id);
+            if(!symbol.producer && symbol.storageBinding==System::StorageBinding::NamedDistributed)allocate(id);
+        }
+        std::vector<const System::ResourceView*> provided;
+        for(const auto& view:alreadyBound)if(view.requirement().id==required.id)provided.push_back(&view);
+        if(provided.size()>1)throw std::runtime_error("Duplicate field resource backing: "+required.id);
+        std::shared_ptr<const FDM::ScalarEquationData> port;
+        if(!provided.empty()) {
+            const auto& actual=provided.front()->requirement();
+            if(actual.owner!=required.owner || actual.type!=required.type || actual.writable!=required.writable)
+                throw std::runtime_error("Field port type/owner/access conflict: "+required.id);
+            provided.front()->requireAvailable();port=provided.front()->read<FDM::ScalarEquationData>();
+        } else {
+            if(required.owner=="model.scalar")throw std::runtime_error("Missing model scalar boundary resource: "+required.id+" target="+need.target);
+            auto created=std::make_shared<FDM::ScalarEquationData>();created->target=need.target;
+            if(need.localOnly && !descriptor(need.target).boundaries.empty())
+                throw std::runtime_error("Unsupported local boundary/halo resource: "+required.id);
+            if(need.boundaryRequired)*created=boundaryData(geometry,descriptor(need.target),system.executableSystem.state.at(need.target).components);
+            resources.views.push_back(System::ResourceView::bind(required,created,*created,required.owner));
+            resources.ports.push_back(created);port=std::move(created);
+        }
+        if(port->target!=need.target)throw std::runtime_error("Field port target binding mismatch: "+required.id+" requires "+need.target);
+        for(const auto& source:need.sources)if(!port->sources.count(source) || !port->sources.at(source))
+            throw std::runtime_error("Missing known-source port binding: occurrence="+required.id+" target="+need.target+" source="+source);
+        if(need.boundaryRequired)for(int axis=0;axis<3;++axis) {
+            const int size=axis==0?geometry.NX():axis==1?geometry.NY():geometry.NZ();
+            if(size<=1)continue;
+            for(int side=0;side<2;++side) {
+                const auto& bc=port->boundary[2*axis+side];
+                if(bc.kind!=FDM::ScalarBoundaryKind::FixedValue && bc.kind!=FDM::ScalarBoundaryKind::ZeroGradient)
+                    throw std::runtime_error("Missing scalar boundary backing: "+need.target);
+                if(bc.kind==FDM::ScalarBoundaryKind::FixedValue && !(system.executableSystem.state.at(need.target).components==1?bool(bc.value):bool(bc.componentValue)))
+                    throw std::runtime_error("Missing component-correct fixedValue callback: "+need.target);
+            }
+        }
+        resources.instances.push_back({required.id,port});
     }
     auto completeBindings=alreadyBound;
     completeBindings.insert(completeBindings.end(),resources.views.begin(),resources.views.end());

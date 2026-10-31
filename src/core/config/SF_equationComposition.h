@@ -98,6 +98,10 @@ struct EquationCompositionConfig {
     int outerCorrectors = 1;
     int pressureCorrectors = 1;
     int nonOrthogonalCorrectors = 0;
+    /// @brief 内置套餐选择；仅组装期使用，不传给 runtime dispatch。
+    std::string equationPreset;
+    /// @brief 显式 HOW 完全替换套餐 HOW，禁止自动混合两个循环。
+    bool replacePresetHow = false;
     std::vector<EquationSystemInstanceConfig> instances;
 };
 

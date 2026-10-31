@@ -8,10 +8,6 @@
 #include "solver/system/SF_solvePlan.h"
 #include "solver/run/SF_planExecutor.h"
 
-#include "SF_phaseGravity.h"
-#include "SF_phaseMRF.h"
-#include "SF_phaseWallHeat.h"
-#include "SF_phaseChange.h"
 
 #include <algorithm>
 #include <array>
@@ -21,34 +17,6 @@
 namespace SF::EulerianEulerian {
 
 namespace {
-struct PhaseSourceRegistration {
-    FDM::SourceKind kind;
-    bool wallHeat;
-    std::unique_ptr<Physics::PhaseSystems::PhaseEquationSource> (*make)(
-        const FDM::SourceConfig&);
-};
-
-const std::array<PhaseSourceRegistration,3>& phaseSourceContributions() {
-    static const std::array<PhaseSourceRegistration,3> registry{{
-        {FDM::SourceKind::Gravity,false,
-         [](const FDM::SourceConfig& config) {
-             return Physics::PhaseSystems::makePhaseGravitySource(
-                 config.gravity);
-         }},
-        {FDM::SourceKind::MRF,false,
-         [](const FDM::SourceConfig& config) {
-             return Physics::PhaseSystems::makePhaseMRFSource(
-                 config.rotating);
-         }},
-        {FDM::SourceKind::WallHeat,true,
-         [](const FDM::SourceConfig& config) {
-             return Physics::PhaseSystems::makePhaseWallHeatSource(
-                 config.wallHeat);
-         }}
-    }};
-    return registry;
-}
-
 State::VariableDescriptor distributedScalar(
         const std::string& name, int depth,
         State::UpdatePolicy policy = State::UpdatePolicy::LocalImplicit,
@@ -67,24 +35,21 @@ State::VariableDescriptor distributedScalar(
 
 EulerianStepper::EulerianStepper(
         Physics::PhaseSystems::PhaseSystem& system,
-        FDM::SolverConfig config,
+        Turbulence::EquationSystem& turbulence,
+        Physics::PhaseSystems::PhaseSourceRegistry& sources,
+        Physics::PhaseSystems::PhaseBoundaryApplicator& boundary,
         const System::ExecutableEquationSystem& equations,
         const System::CompiledNumericalSystem& numerics,
         const System::CompiledSolvePlan& solvePlan,
         const System::RuntimeRequirements& requirements)
     : system_(system), executable_(equations), numerics_(numerics),
       solve_(solvePlan),
-      runtime_(requirements), config_(std::move(config)),
-      turbulence_(config_.turbulence),
-      equations_(system_, config_.pressure, workspace_) {
-    FDM::validatePressureCorrectionConfig(config_.pressure);
-    // compiled HOW 与 raw config 必须一致（runtime 只执行 compiled policy）。
-    if (numerics_.dt.cfl != config_.numerics.cfl
-        || numerics_.dt.maxDeltaT != config_.numerics.maxDeltaT) {
-        throw std::runtime_error(
-            "EulerianStepper received a compiled dt policy that disagrees "
-            "with its solver configuration.");
-    }
+      runtime_(requirements),inputs_([&]() -> const System::PhaseNumericalConfig& {
+          const auto* inputs=System::requiredPhaseInputs({equations,numerics,solvePlan,requirements});
+          if(!inputs)throw std::runtime_error("Eulerian operations have no compiled phase resource contract.");
+          return *inputs;
+      }()),turbulence_(turbulence),boundary_(boundary),sourceRegistry_(sources),
+      equations_(system_,inputs_,workspace_) {
     if (numerics_.phaseTransport.convection
         != FDM::PhaseConvectionScheme::Upwind) {
         throw std::runtime_error(
@@ -98,35 +63,11 @@ EulerianStepper::EulerianStepper(
             "EulerianStepper requires the shared-pressure constraint "
             "formulation in its executable equation system.");
     }
-    bool wallHeatEnabled = false;
-    for (FDM::SourceKind kind : config_.sources.enabled) {
-        const auto found = std::find_if(
-            phaseSourceContributions().begin(),
-            phaseSourceContributions().end(),
-            [kind](const PhaseSourceRegistration& item) {
-                return item.kind == kind;
-            });
-        if (found == phaseSourceContributions().end()) {
-            throw std::runtime_error(
-                "No Eulerian equation contribution is registered for SourceKind.");
-        }
-        wallHeatEnabled = wallHeatEnabled || found->wallHeat;
-        sourceRegistry_.add(found->make(config_.sources));
-    }
-    if (system_.config().phaseChange.enabled
-        && Physics::PhaseChange::normalizeModel(
-            system_.config().phaseChange.model) == "rpi"
-        && !wallHeatEnabled) {
-        throw std::runtime_error(
-            "Eulerian RPI requires a wallHeatFlux boundary so the unified "
-            "wall-boiling ledger can assemble mass, momentum and enthalpy.");
-    }
     std::vector<std::string> phaseNames;
     for (const auto& phase:system_.phases()) phaseNames.push_back(phase.name);
     System::validateEulerianAssemblyBindings(solve_.compiledProgram,phaseNames,system_.referencePhaseIndex());
     workspace_.setupLike(system_);
-    turbulence_.initialize(system_);
-    System::validateEulerianTurbulenceBindings(solve_.compiledProgram,phaseNames,config_.turbulence);
+    System::validateEulerianTurbulenceBindings(solve_.compiledProgram,phaseNames,turbulence_.config());
     equations_.attachTurbulence(&turbulence_);
 }
 
@@ -226,7 +167,7 @@ void EulerianStepper::registerState(State::StateBundle& state) {
 void EulerianStepper::applyBoundaryAndSynchronize() {
     boundary_.applySharedPressure(
         system_.geometry(), system_.sharedPressure(),
-        config_.boundaries.pressure);
+        inputs_.pressureBoundary);
     for (size_t phase = 0; phase < system_.phases().size(); ++phase) {
         boundary_.apply(system_.geometry(), system_.phaseProperties(phase),
                         system_.phases()[phase]);
@@ -443,8 +384,7 @@ FDM::StepResult EulerianStepper::advance(FDM::SolverState& state) {
     // solver-owned registry 跨 timestep 复用；绑定顺序不变。
     operations_.clear();
     registerOperations(operations_,state,dt);
-    operations_.retain(System::assignedOperations(
-        runtime_,{"flow.eulerian-pressure","flow.eulerian-turbulence"}));
+    operations_.retain(System::SolvePlanner::requiredOperations(solve_));
     const Run::PlanTraceContext trace{state_->step,state_->time,&dt};
     Run::PlanExecutor::execute(solve_,operations_,&trace);
     return {true,dt,state_->time,state_->step,false,false,{}};
@@ -616,7 +556,7 @@ void EulerianStepper::registerOperations(
             lastSummary_.maxAlphaSumError, std::abs(sum - 1.0));
     }
     });
-    operations.bind(System::OpIds::EeTimeCommit,"flow.eulerian-pressure",[&] {
+    operations.bind(System::OpIds::TimeCommit,"flow.eulerian-pressure",[&] {
         if (pendingPressureCorrection_) {
             throw std::runtime_error(
                 "Eulerian timestep cannot commit with an unpublished "

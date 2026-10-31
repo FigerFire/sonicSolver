@@ -1,4 +1,5 @@
 #pragma once
+#include <optional>
 
 /// @file SF_stateViews.h
 /// @brief Compiler output: lazily requested versions of base STATE symbols.
@@ -43,11 +44,19 @@ struct CompiledStateView {
     bool haloRequired=false;
 };
 
+/// @brief 已有字段端口的实际 backing 需求；数值方法声明，binder不再反推方程数学。
+struct FieldDataRequirement {
+    std::string target;
+    std::vector<std::string> states,boundaries,sources;
+    bool localOnly=false,boundaryRequired=false;
+};
+
 /// @brief 非数学资源的编译需求；不伪装成 Field 或 STATE symbol。
 struct ResourceViewRequirement {
     std::string id,owner;
     std::type_index type{typeid(void)};
     bool writable=false;
+    std::optional<FieldDataRequirement> fields;
 };
 
 /// @brief 借用真实 owner 的资源；访问时核验类型、权限及 owner lifetime。

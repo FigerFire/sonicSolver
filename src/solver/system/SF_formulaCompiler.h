@@ -59,14 +59,15 @@ private:
 FormulaValueKernel compileFormulaValue(const Equation& equation,const FormulaExpr& expression,
     const FormulaOperatorCatalog& providers,std::vector<std::string>& used,
     const std::vector<std::string>& boundSymbols={},
-    const StateRegistry* state=nullptr,std::vector<std::string>* trace=nullptr);
+    const StateRegistry* state=nullptr,std::vector<std::string>* trace=nullptr,
+    const std::vector<FormulaOperatorBinding>& bindings={});
 
 } // namespace SF::System
 
 namespace SF::Discretization {
 struct FormulaCartesianGrid;
 // AST binding is compiler-side. Kernels and geometry stay in discretization.
-System::FormulaOperatorProvider central2ScalarDiffusion(const System::StateRegistry&,const std::vector<std::string>& slots);
+System::FormulaOperatorProvider central2ScalarDiffusion(const System::StateRegistry&,const std::vector<std::string>& slots,bool arithmeticFaces=false);
 System::FormulaOperatorProvider conservativeScalarCentral2(double D,int coefficientSlot=-1,bool primitive=false);
 System::FormulaOperatorProvider central2FormulaDiffusion(FormulaCartesianGrid grid);
 }

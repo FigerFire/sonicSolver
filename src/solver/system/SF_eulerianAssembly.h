@@ -33,6 +33,8 @@ inline const CompiledEulerianAssemblyContract* eulerianAssemblyContract(const Co
 const char* toString(EulerianAssemblyRelation relation);
 const char* toString(EulerianSourceExtension extension);
 /// @brief 启动时把冻结相槽与实际 PhaseSystem 对齐；不解释 AST，也不进入数值循环。
+/// @brief 专用过程能力的只读检查；不补节点、不改变 HOW。
+void validateEulerianHow(const CompiledExecutionProgram&);
 void validateEulerianAssemblyBindings(const CompiledExecutionProgram& program,
     const std::vector<std::string>& phaseNames,std::size_t referencePhase);
 }

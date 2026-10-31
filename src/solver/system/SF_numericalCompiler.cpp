@@ -2,17 +2,10 @@
 /// @brief Bind selected Equation AST occurrences to spatial numerical providers.
 
 #include "SF_numericalCompiler.h"
-#include "SF_formulaCompiler.h"
-#include "SF_executionContract.h"
-#include "SF_methodObjects.h"
-#include "SF_solvePlan.h"
-#include "SF_providerResolver.h"
-#include "SF_stateRealization.h"
+#include "SF_config.h"
 
 #include <algorithm>
-#include <functional>
 #include <stdexcept>
-#include <tuple>
 
 namespace SF::System::NumericalCompiler {
 namespace {
@@ -23,6 +16,22 @@ void appendUnique(std::vector<std::string>& values,std::string value) {
 }
 
 } // namespace
+
+void resolveConservativeInputs(const FDM::SolverConfig& config,CompiledNumericalSystem& system) {
+    config.validateThermophysicalProjection();
+    const auto* thermo=config.thermophysical.get();
+    system.thermophysical=config.thermophysical;
+    system.conservative=ConservativeExecutionInputs{config.numerics.ibmBoundary,config.numerics.interfaceFlux,config.numerics.ilwOrder,
+        thermo?thermo->dynamicViscosity:config.numerics.dynamicViscosity,
+        thermo?thermo->prandtl:config.numerics.prandtl,
+        thermo?thermo->gamma:config.numerics.idealGasGamma,
+        thermo?thermo->gasConstant:config.numerics.idealGasConstant,
+        thermo?thermo->source:"explicit low-level numerics parameters"};
+}
+const ConservativeExecutionInputs& requireConservativeInputs(const CompiledNumericalSystem& system) {
+    if(!system.conservative)throw std::runtime_error("Conservative execution inputs were not resolved at composition");
+    return *system.conservative;
+}
 
 CompiledNumericalSystem compile(
         const ExecutableEquationSystem& equations,
@@ -47,8 +56,15 @@ CompiledNumericalSystem compile(
         result.recipeBindings.push_back({recipe,kind,std::move(consumer)});
     };
     for (const auto& call:program.steps)
-        if (call.spatialTerms || !call.sourceMathInputs.empty())
-            providers.at(call.equationMethod).lowerSpatial(equations,call,recipes,catalog,bindings,result);
+        if (call.spatialTerms || !call.sourceMathInputs.empty()) {
+            auto selected=bindings;
+            for(const auto& op:call.numericalOperators) {
+                selected.erase(std::remove_if(selected.begin(),selected.end(),[&](const auto& other){return other.formula==op.formula && other.occurrence==op.occurrence && other.operation==op.operation;}),selected.end());
+                selected.push_back(op);
+            }
+            if(!lowerDirectSpatial(equations,call,recipes,catalog,selected,result))
+                providers.at(call.equationMethod).lowerSpatial(equations,call,recipes,catalog,selected,result);
+        }
     for (const auto& binding:bindings) {
         const bool addressed=std::any_of(result.operators.begin(),
             result.operators.end(),[&](const CompiledSpatialBinding& item) {
@@ -81,79 +97,6 @@ CompiledNumericalSystem compile(
     return result;
 }
 
-void compileSystem(ResolvedSimulationSystem& result,const ExecutionProgram& executionProgram,
-        const NumericalSelection& selected,
-        bool additionalContributions) {
-    result.realization=compileStateRealization(result.executableSystem.state,result.executableSystem.constraints);
-    const auto temporalMethods=builtinTemporalMethods();
-    const auto& temporalMethod=temporalMethods.at(selected.recipes.time.id());
-    const auto compiledTime=temporalMethod.compile(selected.recipes.time);
-    auto compiledExecution=compileExecutionProgram(result.executableSystem,result.executableSystem.state,executionProgram,
-        selected.bindings,builtinProviders(),&compiledTime,&temporalMethod);
-    for (const auto& id:result.executableSystem.state.solutionVariables()) {
-        const auto& symbol=result.executableSystem.state.at(id);
-        const bool owned=std::any_of(compiledExecution.steps.begin(),compiledExecution.steps.end(),[&](const auto& step) {
-            if (std::find(step.writes.begin(),step.writes.end(),id)!=step.writes.end()) return true;
-            return std::any_of(step.target.resources.begin(),step.target.resources.end(),[&](const auto& resource) {
-                return resource.storage==symbol.storageKey && resource.access!=ResourceAccessMode::Read
-                    && resource.componentOffset<=symbol.componentOffset
-                    && resource.componentOffset+resource.components>=symbol.componentOffset+symbol.components;
-            });
-        });
-        if (!owned) throw std::runtime_error("No compiled HOW output owns selected solution STATE '"+id+"'.");
-    }
-    TermProviderCatalog termProviders=TermProviderCatalog::builtIn();
-    for (const auto& descriptor:selected.termProviders) termProviders.addSource(descriptor);
-    result.numericalSystem=compile(result.executableSystem,compiledExecution,
-        selected.recipes,termProviders,compiledTime,builtinProviders(),selected.operatorBindings);
-    result.numericalSystem.dt=selected.dt;
-    result.numericalSystem.phaseTransport=selected.phaseTransport;
-    result.numericalSystem.pressureFaceCoupling=selected.pressureFaceCoupling;
-    result.numericalSystem.pressureOperator=selected.pressureOperator;
-    // Compiled operation/resource declarations originate in selected providers.
-    for (const auto& call:compiledExecution.steps) {
-        for (const auto& operation:call.operations) {
-            const auto duplicate=std::find_if(result.executableSystem.operations.begin(),result.executableSystem.operations.end(),
-                [&](const auto& existing) { return existing.operation==operation.operation; });
-            if (duplicate==result.executableSystem.operations.end()) result.executableSystem.operations.push_back(operation);
-        }
-    }
-    for (auto& step:compiledExecution.steps) {
-        for (const auto& call:step.calls) {
-            for (const auto& term:result.numericalSystem.operators) {
-                if ((term.formulaId!=call.equation
-                        && std::find(step.sourceMathInputs.begin(),
-                            step.sourceMathInputs.end(),term.formulaId)
-                           ==step.sourceMathInputs.end())
-                    || term.provider.empty()) continue;
-                if (std::find(step.operatorBindings.begin(),
-                        step.operatorBindings.end(),term.provider)
-                    ==step.operatorBindings.end())
-                    step.operatorBindings.push_back(term.provider);
-            }
-        }
-        if (step.temporalResidual && step.spatialTerms) {
-            if (step.spatialTerms && step.operatorBindings.empty())
-                throw std::runtime_error("ConservativeResidual has no bound spatial provider.");
-            step.requirements.push_back("halo depth="
-                +std::to_string(result.numericalSystem.requiredHaloWidth));
-            step.requirements.push_back("canonical face COPY before residual assembly");
-        }
-    }
-    result.solvePlan = SolvePlanner::compile(
-        result.executableSystem,
-        result.numericalSystem.time.recipe,
-        compiledExecution);
-    result.solvePlan.sourceProgram=executionProgram;
-    result.solvePlan.sourceProgram.root=compiledExecution.root;
-    result.solvePlan.compiledProgram=std::move(compiledExecution);
-    result.runtime.capabilities=compileExecutionCapabilities(
-        result.executableSystem,&result.solvePlan);
-    result.runtime.operationBindings=compileOperationBindings(result.executableSystem,
-        result.numericalSystem,result.solvePlan,additionalContributions);
-    result.runtime.report=reportOperationBindings(result.solvePlan,result.runtime.operationBindings);
-    validateMathematicalCoverage(result.executableSystem,result.solvePlan,result.runtime.report.status==RuntimeStatus::Runnable);
-}
 
 const FDM::TermRecipe* findUniqueRecipe(const CompiledNumericalSystem& system,
                                        FDM::TermRole role) {
@@ -172,18 +115,6 @@ const FDM::TermRecipe& requireUniqueRecipe(const CompiledNumericalSystem& system
     if (const auto* recipe=findUniqueRecipe(system,role)) return *recipe;
     throw std::runtime_error(std::string("Compiled numerical system has no bound ")
                              +FDM::toString(role)+" recipe.");
-}
-
-std::vector<FDM::SourceKind> sourceKinds(const CompiledNumericalSystem& system) {
-    std::vector<FDM::SourceKind> result;
-    for (const auto& binding:system.operators) {
-        if (!binding.recipe
-            || binding.recipe->role()!=FDM::TermRole::Source) continue;
-        const auto source=binding.recipe->source();
-        if (std::find(result.begin(),result.end(),source)==result.end())
-            result.push_back(source);
-    }
-    return result;
 }
 
 } // namespace SF::System::NumericalCompiler

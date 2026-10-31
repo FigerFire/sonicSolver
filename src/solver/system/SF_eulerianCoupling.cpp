@@ -50,7 +50,7 @@ void applyEulerianExecution(ExecutionProgram& program,std::vector<NumericalBindi
     outer.children.push_back(group("phase.momentum",momentum));
     auto pressure=scope(ExecutionKind::Loop,"EE.pressure",request.pressureCorrectors);
     auto nonOrth=scope(ExecutionKind::Loop,"EE.nonOrthogonal",request.nonOrthogonalCorrectors+1);
-    nonOrth.children.push_back(call("E_SHARED_PRESSURE",{"p",TargetKind::Correction},"EulerianSharedPressureCorrection"));
+    nonOrth.children.push_back(call("E_SHARED_PRESSURE",{"deltaP",TargetKind::Correction},"EulerianSharedPressureCorrection"));
     std::vector<ExecutionScope> corrections,fluxes;
     for (const auto& item:momentum) {
         const auto suffix=item.step.equation.substr(std::string("momentum").size());

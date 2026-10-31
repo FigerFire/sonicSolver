@@ -2,7 +2,7 @@
 
 /// @file SF_stateRegistry.h
 /// @brief STATE — base variables and their physical storage/closure contracts.
-/// No equation destinations, execution order, loops or numerical recipes live here.
+/// Call input versions do not choose equation destinations, order or numerical recipes.
 
 #include "core/system/SF_formula.h"
 #include "core/system/SF_dataContract.h"
@@ -16,6 +16,15 @@
 
 namespace SF::System {
 struct StateProducer;
+/// @brief 跨轴身份显式区分命名空间，不根据名字或前缀猜测引用类别。
+enum class ReferenceKind { Equation, Step };
+/// @brief STATE 按 HOW 调用身份声明读取；唯一方程调用可用方程 ID 简写。
+struct CallInputs {
+    std::string call;
+    std::vector<StateUse> reads;
+    Provenance origin;
+    ReferenceKind reference=ReferenceKind::Equation;
+};
 enum class VariableLocation {
     EulerianCell,
     EulerianFace,
@@ -41,6 +50,9 @@ enum class StorageBinding {
     TransientWorkspace,
     SpecializedExecutor
 };
+
+/// @brief 物化 workspace 的明确边界准备；不是物理 BC 或 MPI halo。
+enum class WorkspaceBoundary { None, NearestInterior };
 
 /// @brief A base symbol; Working/Correction/Stage are compiler-created views.
 struct StateSymbol {
@@ -70,6 +82,8 @@ struct StateSymbol {
     std::vector<std::string> dependencies;
     /// @brief 模块提供的不可变生产者；不持有物理数组、不选择更新顺序。
     std::shared_ptr<const StateProducer> producer;
+    /// @brief 仅选定数值 workspace 请求；先求内部最终值，再准备空间读取区域。
+    WorkspaceBoundary workspaceBoundary=WorkspaceBoundary::None;
     bool readOnly() const { return constantValue.has_value() || producer; }
 };
 
@@ -77,6 +91,19 @@ struct StateSymbol {
 /// Registration neither allocates runtime arrays nor schedules equations.
 class StateRegistry {
 public:
+    void bindInputs(CallInputs value) {
+        if(value.call.empty())throw std::runtime_error("Empty STATE call input binding.");
+        if(std::any_of(callInputs_.begin(),callInputs_.end(),[&](const auto& previous){return previous.call==value.call && previous.reference==value.reference;}))
+            throw std::runtime_error("Duplicate STATE call input binding: "+value.call+" from "+value.origin.source);
+        for(const auto& read:value.reads) {
+            if(read.symbol.empty() || read.symbol.find_first_of("*'")!=std::string::npos)
+                throw std::runtime_error("Invalid STATE input symbol: "+read.symbol);
+            if(std::count_if(value.reads.begin(),value.reads.end(),[&](const auto& other){return other.symbol==read.symbol;})!=1)
+                throw std::runtime_error("Duplicate input read declaration: "+read.symbol+" at "+value.call);
+        }
+        callInputs_.push_back(std::move(value));
+    }
+    const std::vector<CallInputs>& callInputs() const {return callInputs_;}
     void add(StateSymbol symbol) {
         Math::requireKnown(symbol.signature);
         const int rank=symbol.shape==ValueShape::Scalar?0:symbol.shape==ValueShape::Vector?1:2;
@@ -90,6 +117,12 @@ public:
             || symbol.components<=0
             || (symbol.shape==ValueShape::Scalar && symbol.components!=1))
             throw std::runtime_error("Invalid base STATE symbol: "+symbol.id);
+        if(symbol.workspaceBoundary!=WorkspaceBoundary::None &&
+            (symbol.workspaceBoundary!=WorkspaceBoundary::NearestInterior
+                || symbol.storageBinding!=StorageBinding::TransientWorkspace
+                || symbol.evaluation!=StateEvaluation::Materialized
+                || symbol.producer || symbol.constantValue))
+            throw std::runtime_error("Invalid explicit workspace boundary preparation: "+symbol.id);
         if (contains(symbol.id)) throw std::runtime_error("Duplicate STATE symbol: "+symbol.id);
         symbols_.push_back(std::move(symbol));
     }
@@ -122,6 +155,7 @@ public:
     const std::string& selectionOrigin() const { return selectionOrigin_; }
     std::size_t size() const { return symbols_.size(); }
 private:
+    std::vector<CallInputs> callInputs_;
     std::vector<StateSymbol> symbols_;
     std::vector<std::string> solutionVariables_;
     std::string selectionOrigin_;

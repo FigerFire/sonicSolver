@@ -46,6 +46,17 @@ PressureOperators::PressureOperators(
         const System::CompiledNumericalSystem& numerics)
     : config_(std::move(config)), numerics_(numerics) {}
 
+void PressureOperators::bindFieldSources() {
+    for(auto& term:momentumTerms_)if(term.fieldSource.bind) {
+        if(term.primitiveSource)throw std::runtime_error("Duplicate pressure source binding: "+term.occurrence);
+        std::vector<System::FieldSource::Reader> reads;
+        for(const auto& use:term.fieldSource.inputs)reads.push_back(stateViews_->reader(use,numerics_.time.recipe.stageCount()));
+        term.primitiveSource=[value=term.fieldSource.bind(std::move(reads))](const Field& field,int i,int j,int k,const Vector3&) {
+            const int cell=field.getIdx(i,j,k);return Vector3(value(cell,0),value(cell,1),value(cell,2));
+        };
+    }
+}
+
 void PressureOperators::bind(System::StateRealization& state,
                              FDM::IExecutionRuntime& runtime) {
     runtime_=&runtime;
@@ -77,49 +88,11 @@ void PressureOperators::bind(System::StateRealization& state,
             "Constant-density pressure requires compiled RhieChow face coupling.");
     if (velocity_->blockId!=pressure_->blockId)
         throw std::runtime_error("U/p pressure realization block differs.");
-    int convectionCount=0;
-    int diffusionCount=0;
+    if(!numerics_.pressureMomentum)
+        throw std::runtime_error("Pressure operations require the compiled momentum term contract.");
     momentumTerms_.clear();
-    for (const auto& term:numerics_.operators) {
-        if (term.output!="U" || term.equationMethod!="PressureMomentum") continue;
-        if (term.operation==Math::Op::Div) {
-            ++convectionCount;
-            if (!term.recipe
-                || term.recipe->id()!=FDM::TermRecipeId::PrimitiveUpwind1
-                || term.primary!="momentumFlux"
-                || !term.primitiveSpatial) {
-                throw std::runtime_error(
-                    "Constant-density Momentum requires compiled "
-                    "div(momentumFlux) -> primitiveUpwind1.");
-            }
-        } else if (term.operation==Math::Op::Diffusion) {
-            ++diffusionCount;
-            if (!term.recipe
-                || term.recipe->id()!=FDM::TermRecipeId::Central2Explicit
-                || term.primary!="U" || term.secondary!="nu"
-                || !term.primitiveSpatial) {
-                throw std::runtime_error(
-                    "Constant-density Momentum diffusion requires "
-                    "compiled diffusion(nu,U) -> central2Explicit.");
-            }
-        } else if (term.operation==Math::Op::Source) {
-            if (term.side!=System::CompiledSpatialBinding::Side::Right
-                || !term.primitiveSource) {
-                throw std::runtime_error(
-                    "Constant-density Momentum source '"+term.primary
-                    +"' has no right-hand primitive-velocity provider.");
-            }
-        } else {
-            throw std::runtime_error(
-                "No constant-density numerical provider is bound for a "
-                "compiled Momentum term.");
-        }
-        momentumTerms_.push_back(term);
-    }
-    if (convectionCount!=1 || diffusionCount>1)
-        throw std::runtime_error(
-            "Constant-density Momentum requires exactly one compiled "
-            "primitiveUpwind1 convection and at most one central2 diffusion term.");
+    for(const auto index:numerics_.pressureMomentum->terms)
+        momentumTerms_.push_back(numerics_.operators.at(index));
     const int total=geometry_->TotalSize();
     cells_.clear();
     rowOfCell_.assign((size_t)total,-1);
@@ -225,7 +198,7 @@ void PressureOperators::bind(System::StateRealization& state,
     fluxView_.write=[this](int face,int,double value) { correctedFlux_.at((size_t)face)=value; };
     if (stateViews_->requestsView("U",System::StateViewKind::Working))
         stateViews_->bindView("U",System::StateViewKind::Working,workingVelocityView_);
-    stateViews_->bindView("p",System::StateViewKind::Correction,correctionView_);
+    stateViews_->bindView("deltaP",System::StateViewKind::Correction,correctionView_);
     stateViews_->bindView("phi",System::StateViewKind::Physical,fluxView_);
     initializeNumbering();
 }

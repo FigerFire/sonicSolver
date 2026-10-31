@@ -1,6 +1,5 @@
 cmake_minimum_required(VERSION 3.15)
 project(sonicFluid LANGUAGES C CXX)
-
 # ============================================================
 #  1. 编译器设置
 # ============================================================
@@ -84,6 +83,12 @@ if(BUILD_TESTS)
         PRIVATE SF_flux SF_weno3 SF_weno5 SF_teno5 SF_weno7 SF_physics)
     add_test(NAME numericalFluxContract COMMAND test_numericalFlux)
 
+    add_executable(test_builtinDeclarations test/templates/test_templates.cpp)
+    target_link_libraries(test_builtinDeclarations PRIVATE SF_solverSystem)
+    set_target_properties(test_builtinDeclarations PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/test/templates/bin")
+    add_test(NAME builtinDeclarationContract COMMAND test_builtinDeclarations)
+    set_tests_properties(builtinDeclarationContract PROPERTIES WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/test/templates")
+
     add_executable(test_pisoArchitecture test/test_pisoArchitecture.cpp)
     target_link_libraries(test_pisoArchitecture PRIVATE SF_solverSystem SF_physics)
     add_test(NAME pisoArchitecture COMMAND test_pisoArchitecture)
@@ -129,6 +134,38 @@ if(BUILD_TESTS)
         add_test(NAME ${name} COMMAND $<TARGET_FILE:${target}>)
         set_tests_properties(${name} PROPERTIES WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/test/mathWhatA1" TIMEOUT 5)
     endforeach()
+
+    add_executable(test_howA9 test/howA9/test_how.cpp)
+    target_link_libraries(test_howA9 PRIVATE SF_application)
+    set_target_properties(test_howA9 PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/test/howA9/bin")
+    add_executable(test_lowering test/lowering/test_lowering.cpp)
+    target_link_libraries(test_lowering PRIVATE SF_application)
+    add_executable(test_scopeResources test/scopes/test_resources.cpp)
+    target_link_libraries(test_scopeResources PRIVATE SF_application)
+    add_test(NAME scopeResources COMMAND test_scopeResources)
+    set_tests_properties(scopeResources PROPERTIES WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/test/scopes" TIMEOUT 30)
+    add_test(NAME loweringContracts COMMAND test_lowering)
+    set_tests_properties(loweringContracts PROPERTIES WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/test/lowering" TIMEOUT 30)
+    add_test(NAME howStateContracts COMMAND test_howA9)
+    set_tests_properties(howStateContracts PROPERTIES WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/test/howA9" TIMEOUT 30)
+
+    add_executable(test_linearA8 test/linearA8/test_linear.cpp)
+    target_link_libraries(test_linearA8 PRIVATE SF_application)
+    set_target_properties(test_linearA8 PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/test/linearA8/bin")
+    add_test(NAME linearBlockStateResources COMMAND test_linearA8)
+    set_tests_properties(linearBlockStateResources PROPERTIES WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/test/linearA8" TIMEOUT 60)
+
+    add_executable(test_equationBinding test/equationBinding/test_binding.cpp)
+    target_link_libraries(test_equationBinding PRIVATE SF_application)
+    set_target_properties(test_equationBinding PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/test/equationBinding/bin")
+    add_test(NAME equationTargetBinding COMMAND test_equationBinding)
+    set_tests_properties(equationTargetBinding PROPERTIES WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/test/equationBinding" TIMEOUT 15)
+
+    add_executable(test_coefficientA7 test/coefficientA7/test_coefficient.cpp)
+    target_link_libraries(test_coefficientA7 PRIVATE SF_application)
+    set_target_properties(test_coefficientA7 PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/test/coefficientA7/bin")
+    add_test(NAME coefficientStateExecution COMMAND test_coefficientA7)
+    set_tests_properties(coefficientStateExecution PROPERTIES WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/test/coefficientA7" TIMEOUT 60)
 
     add_executable(test_explicitA6 test/explicitA6/test_equations.cpp)
     target_link_libraries(test_explicitA6 PRIVATE SF_application)
@@ -306,6 +343,14 @@ if(BUILD_TESTS)
 
     find_package(Python3 QUIET COMPONENTS Interpreter)
     if(TARGET sonicSolver AND Python3_Interpreter_FOUND)
+        add_test(NAME nativeHowStateContracts COMMAND ${Python3_EXECUTABLE} -B ${CMAKE_SOURCE_DIR}/test/howA9/native.py)
+        set_tests_properties(nativeHowStateContracts PROPERTIES WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/test/howA9" TIMEOUT 120)
+        add_test(NAME nativeDiffusionGhostBoundary COMMAND ${Python3_EXECUTABLE} -B ${CMAKE_SOURCE_DIR}/test/linearA8/boundary.py)
+        set_tests_properties(nativeDiffusionGhostBoundary PROPERTIES WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/test/linearA8" TIMEOUT 180)
+        add_test(NAME nativeLinearBlock COMMAND ${Python3_EXECUTABLE} -B ${CMAKE_SOURCE_DIR}/test/linearA8/cases.py)
+        set_tests_properties(nativeLinearBlock PROPERTIES WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/test/linearA8" TIMEOUT 180)
+        add_test(NAME nativeEquationTargets COMMAND ${Python3_EXECUTABLE} -B ${CMAKE_SOURCE_DIR}/test/equationBinding/cases.py)
+        set_tests_properties(nativeEquationTargets PROPERTIES WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/test/equationBinding" TIMEOUT 60)
         add_test(NAME builtinCompositionClosure COMMAND ${Python3_EXECUTABLE} -B ${CMAKE_SOURCE_DIR}/test/builtinComposition/run_suite.py)
         set_tests_properties(builtinCompositionClosure PROPERTIES WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/test/builtinComposition" TIMEOUT 180)
         add_test(NAME nativeEquationClosure COMMAND ${Python3_EXECUTABLE} -B ${CMAKE_SOURCE_DIR}/test/nativeEquationClosure/run_suite.py)
@@ -372,6 +417,10 @@ if(BUILD_TESTS)
     endif()
 
     if(Python3_Interpreter_FOUND)
+        add_test(NAME nativeScopes COMMAND ${Python3_EXECUTABLE} -B ${CMAKE_SOURCE_DIR}/test/scopes/native.py)
+        set_tests_properties(nativeScopes PROPERTIES WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/test/scopes" TIMEOUT 60)
+        add_test(NAME nativeLowering COMMAND ${Python3_EXECUTABLE} -B ${CMAKE_SOURCE_DIR}/test/lowering/native.py)
+        set_tests_properties(nativeLowering PROPERTIES WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/test/lowering" TIMEOUT 60)
         add_test(NAME resolvedSystemConsumerScope
             COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_SOURCE_DIR}/tools/check_program_decomposition.py

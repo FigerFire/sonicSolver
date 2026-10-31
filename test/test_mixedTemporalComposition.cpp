@@ -1,3 +1,4 @@
+#include "solver/system/SF_lowering.h"
 #include "test/typedSymbols.h"
 #include "solver/system/SF_methodObjects.h"
 #include "solver/run/SF_planExecutor.h"
@@ -9,26 +10,20 @@ namespace {
 void require(bool condition,const char* message) { if (!condition) throw std::runtime_error(message); }
 class Independent final : public IProvider {
 public:
-    explicit Independent(bool rootDecoration=false): rootDecoration_(rootDecoration) {}
+    explicit Independent(bool invalidClock=false): invalidClock_(invalidClock) {}
     std::string_view id() const override { return "Independent"; }
     std::string_view runtimeProvider() const override { return "test.independent"; }
-    void lowerLifecycle(const ExecutionScope&,bool root,const std::vector<CompiledEquationCall>&,
-                        SolvePlanNode& node) const override {
-        if (root && rootDecoration_) {
-            SolvePlanNode extra;extra.kind=PlanNodeKind::Update;extra.operation="test.extra";
-            extra.provider=runtimeProvider();node.children.push_back(extra);
-        }
-    }
     CompiledEquationCall compile(const ExecutableEquationSystem&,const EquationCall& call,
                                 const NumericalBinding&) const override {
         CompiledEquationCall result;
         result.source=call;result.target.symbol=call.target.symbol;result.target.kind=call.target.kind;
         result.equationMethod=std::string(id());result.backendOperation="test.once";
         result.calls={{call.equation,call.target.symbol}};
+        if(invalidClock_)result.stepInputs={{OpIds::TimeCommit,std::string(runtimeProvider())}};
         return result;
     }
 private:
-    bool rootDecoration_;
+    bool invalidClock_;
 };
 }
 int main() {
@@ -45,7 +40,7 @@ int main() {
     auto temporal=builtinTemporalMethods();const auto& method=temporal.at(SF::FDM::TimeRecipeId::ClassicalRK4);
     const auto recipe=method.compile(SF::FDM::builtInTimeRecipe(method.id()));
     const auto compile=[&](const ExecutionProgram& program) {
-        return compileExecutionProgram(system,program,{{"refresh","Independent"},{"advance","ConservativeResidual"}},
+        return Lowering::compileProgram(system,system.state,program,{{"refresh","Independent"},{"advance","ConservativeResidual"}},
             providers,&recipe,&method);
     };
     const auto compiled=compile(source);
@@ -88,10 +83,10 @@ int main() {
     auto decoratedProviders=builtinProviders();Independent decorated(true);decoratedProviders.add(decorated);
     rejected=false;
     try {
-        (void)compileExecutionProgram(system,source,{{"refresh","Independent"},{"advance","ConservativeResidual"}},
+        (void)Lowering::compileProgram(system,system.state,source,{{"refresh","Independent"},{"advance","ConservativeResidual"}},
             decoratedProviders,&recipe,&method);
     } catch (const std::runtime_error& error) {
-        rejected=std::string(error.what()).find("root lifecycle decorations")!=std::string::npos;
+        rejected=std::string(error.what()).find("Invalid numerical input/output action")!=std::string::npos;
     }
-    require(rejected,"Mixed lowering silently discarded a provider root lifecycle operation.");
+    require(rejected,"Numerical input contract was allowed to inject a physical clock operation.");
 }

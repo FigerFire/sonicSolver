@@ -1,0 +1,13 @@
+{
+  "SonicFile": {
+    "object": "solver",
+    "type": "numerics"
+  },
+  "time": {
+    "default": "forwardEuler"
+  },
+  "terms": {
+    "convection": "primitiveUpwind1",
+    "diffusion": "central2Explicit"
+  }
+}

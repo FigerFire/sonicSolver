@@ -53,7 +53,7 @@ LinearAlgebra::DistributedRowMap makePhaseRowMap(
 
 PhaseEquationAssembler::PhaseEquationAssembler(
         Physics::PhaseSystems::PhaseSystem& system,
-        const FDM::PressureCorrectionConfig& config,
+        const System::PhaseNumericalConfig& config,
         PhaseSolverWorkspace& workspace)
     : system_(system), config_(config), workspace_(workspace),
       rowMap_(makePhaseRowMap(system, nullptr)),
@@ -217,12 +217,12 @@ void PhaseEquationAssembler::solveMomentumPredictors(double dt) {
                 const int cell = rowMap_.localCells[row];
                 const double old = predicted[(size_t)cell];
                 predicted[(size_t)cell] = old
-                    + config_.coupling.momentumRelaxation
+                    + config_.momentumRelaxation
                     * (result.solution[row] - old);
             }
         }
         for (double& value : workspace_.momentumDiagonal[phase].values()) {
-            value /= config_.coupling.momentumRelaxation;
+            value /= config_.momentumRelaxation;
         }
     }
 }

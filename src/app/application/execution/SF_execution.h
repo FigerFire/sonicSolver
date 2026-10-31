@@ -74,16 +74,18 @@ int execute(const System::ResolvedSimulationSystem& system,
 
 namespace Detail {
 
-/// @brief conservative single-field 方程装配入口。
-int executeConservativeEquations(
+/// @brief 装配资源并在其 owner 存活期内借给公共执行入口；不绑定操作或推进时间。
+int withSingleFieldResources(
     Field&, ResultWriter&, Parallel::ParallelContext&, IBM::IB&,
     const FDM::SolverConfig&, const System::ResolvedSimulationSystem&,
     const System::CompiledSolvePlan&,
     const CaseConfig&, bool ibmEnabled, bool initialOutputOnly,
-    int localBlockId);
+    int localBlockId,
+    const std::function<int(State::StateBundle&,FDM::SolverServices,
+        const Time::DriverCallbacks&)>& consume);
 
-/// @brief Eulerian pressure 方程装配入口。
-int executeEulerianEquations(
+/// @brief 按冻结 phase 契约提供物理资源；数值绑定与公共驱动在独立函数中完成。
+int withPhaseResources(
     Field&, ResultWriter&, Parallel::ParallelContext&,
     const FDM::SolverConfig&, const System::ResolvedSimulationSystem&,
     const System::CompiledSolvePlan&,

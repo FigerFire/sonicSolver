@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <stdexcept>
 #include <map>
+#include <set>
 
 namespace SF::System {
 namespace {
@@ -34,6 +35,55 @@ void append(std::vector<RealizedRoleGroup>& target,
 }
 
 } // namespace
+
+int requiredPackedComponents(const StateRegistry& state,const CompiledExecutionProgram& program,std::string_view storage) {
+    int components=0;
+    std::set<std::string> visited;
+    const auto inspect=[&](const auto& self,const std::string& id)->void {
+        if(!visited.insert(id).second)return;
+        const auto& symbol=state.at(id);
+        if(symbol.storageBinding==StorageBinding::PackedDistributed && symbol.storageKey==storage) {
+            if(symbol.componentOffset<0 || symbol.components<=0)
+                throw std::runtime_error("Unsupported packed STATE backing: "+id+" storage="+symbol.storageKey);
+            components=std::max(components,symbol.componentOffset+symbol.components);
+        }
+        if(symbol.producer)for(const auto& dependency:symbol.dependencies)self(self,dependency);
+    };
+    for(const auto& view:program.stateViews) {
+        if(state.contains(view.symbol))inspect(inspect,view.symbol);
+        else if(view.kind!=StateViewKind::Workspace || view.owner==StateViewOwner::PhysicalState)
+            throw std::runtime_error("Unregistered physical STATE backing: "+view.symbol);
+        // Numerical face/block workspace targets need no physical-state symbol.
+    }
+    return components;
+}
+
+void resolveCallInputs(const StateRegistry& state,const std::vector<EquationCall*>& steps) {
+    std::set<std::string> configured;
+    for(const auto& binding:state.callInputs()) {
+        std::vector<EquationCall*> matches;
+        for(auto* step:steps)if((binding.reference==ReferenceKind::Step?step->occurrence:step->equation)==binding.call)matches.push_back(step);
+        if(matches.size()!=1)throw std::runtime_error("STATE call input binding is missing or ambiguous: "+binding.call+"; use one occurrence ID.");
+        auto* step=matches.front();
+        if(!configured.insert(step->occurrence).second || !step->inputs.empty())
+            throw std::runtime_error("Duplicate STATE input binding for occurrence: "+step->occurrence);
+        step->inputs=binding.reads;
+    }
+}
+
+void compileFieldResources(const StateRegistry& state,CompiledExecutionProgram& program) {
+    std::set<std::string> boundaries;
+    for(const auto& call:program.steps)for(const auto& resource:call.physicalResources)if(resource.fields) {
+        const auto& field=*resource.fields;state.at(field.target);
+        for(const auto& id:field.states)state.at(id);
+        for(const auto& id:field.boundaries){state.at(id);boundaries.insert(id);}
+    }
+    for(auto& call:program.steps)for(auto& resource:call.physicalResources)if(resource.fields) {
+        auto& field=*resource.fields;field.boundaryRequired=boundaries.count(field.target)!=0;
+        if(field.localOnly && field.boundaryRequired)
+            throw std::runtime_error("Unsupported local boundary/halo resource: occurrence="+call.source.occurrence+" equation="+call.source.equation+" method="+call.equationMethod+" target="+field.target);
+    }
+}
 
 void compileDerivedViews(const StateRegistry& state,std::vector<CompiledStateView>& views) {
     std::map<std::string,int> color;
@@ -179,6 +229,7 @@ CompiledStateView realizeTarget(const StateRegistry& state,CompiledTarget& targe
             view.componentOffset=symbol.componentOffset;
             view.owner=update || symbol.storageBinding==StorageBinding::SpecializedExecutor
                 || symbol.storageBinding==StorageBinding::ProviderDistributed
+                || symbol.storageBinding==StorageBinding::TransientWorkspace
                 || symbol.location!=VariableLocation::EulerianCell
                 ? StateViewOwner::NumericalProvider : StateViewOwner::PhysicalState;
         }
@@ -198,8 +249,14 @@ CompiledStateView realizeTarget(const StateRegistry& state,CompiledTarget& targe
 
 void realizeTemporalViews(const StateRegistry& state,CompiledExecutionProgram& program,
         int stages) {
-    for(const auto& participant:program.temporalParticipants)for(const auto& name:participant.coefficientStates) {
+    for(const auto& participant:program.steps)if(participant.coefficientVersion==StateVersion::Stage)for(const auto& name:participant.coefficientStates) {
         const auto& symbol=state.at(name);
+        if(symbol.storageBinding==StorageBinding::TransientWorkspace && std::none_of(program.stateViews.begin(),program.stateViews.end(),[&](const auto& v){return v.symbol==name && v.kind==StateViewKind::Physical;})) {
+            CompiledStateView physical;physical.symbol=name;physical.kind=StateViewKind::Physical;
+            physical.storage=symbol.storageKey;physical.components=symbol.components;physical.componentOffset=symbol.componentOffset;
+            physical.location=symbol.location;physical.ownership=symbol.ownership;physical.owner=StateViewOwner::NumericalProvider;
+            program.stateViews.push_back(std::move(physical));
+        }
         for(int stage=0;stage<stages;++stage) {
             CompiledStateView view;view.symbol=name;view.kind=StateViewKind::Stage;view.stage=stage;
             view.storage=symbol.storageKey+".stage-coefficient";view.components=symbol.components;view.componentOffset=symbol.componentOffset;
@@ -233,6 +290,30 @@ void realizeTemporalViews(const StateRegistry& state,CompiledExecutionProgram& p
             program.stateViews.push_back(std::move(view));
         }
     }
+    for(const auto& call:program.steps)if(call.stageLocal && call.coefficientProvides.empty())for(int stage=0;stage<stages;++stage){const auto& s=state.at(call.target.symbol);CompiledStateView v;v.symbol=s.id;v.kind=StateViewKind::Stage;v.stage=stage;v.storage=call.stageWorkspace;v.components=s.components;v.location=s.location;v.ownership=s.ownership;v.owner=StateViewOwner::NumericalProvider;program.stateViews.push_back(std::move(v));}
+    for(const auto& call:program.steps)for(const auto& read:call.stateUses)
+        if(read.version==StateVersion::Stage && !state.at(read.symbol).producer && !state.at(read.symbol).constantValue)
+            for(int stage=0;stage<stages;++stage)
+                if(std::none_of(program.stateViews.begin(),program.stateViews.end(),[&](const auto& v){return v.symbol==read.symbol && v.kind==StateViewKind::Stage && v.stage==stage;}))
+                    throw std::runtime_error("Missing Stage publisher: step="+call.source.occurrence+" equation="+call.source.equation+" target="+call.target.symbol+" input="+read.symbol+" stage="+std::to_string(stage));
+    const auto stageDependency=[&](const auto& self,const std::string& id,int stage)->void {
+        if(std::any_of(program.stateViews.begin(),program.stateViews.end(),[&](const auto& v){return v.symbol==id && v.kind==StateViewKind::Stage && v.stage==stage;}))return;
+        const auto& s=state.at(id);
+        if(!s.producer)throw std::runtime_error("Missing Stage publisher for input: "+id);
+        // Dependency cycles are validated by compileDerivedViews; this traversal has a local visiting guard.
+        CompiledStateView v;v.symbol=id;v.kind=StateViewKind::Stage;v.stage=stage;v.storage=s.storageKey;
+        v.components=s.components;v.owner=StateViewOwner::NumericalProvider;v.location=s.location;v.ownership=s.ownership;
+        program.stateViews.push_back(std::move(v));
+        for(const auto& dep:s.dependencies)self(self,dep,stage);
+    };
+    for(const auto& call:program.steps) {
+        const auto inputs=[&](const auto& reads){for(const auto& read:reads)
+            if(read.version==StateVersion::Stage && state.contains(read.symbol) && state.at(read.symbol).producer)
+                for(int stage=0;stage<stages;++stage)stageDependency(stageDependency,read.symbol,stage);
+        };
+        inputs(call.stateUses);inputs(call.coefficientInputs);
+    }
+
 }
 
 } // namespace SF::System

@@ -1,3 +1,4 @@
+#include "solver/system/SF_lowering.h"
 #include "test/typedSymbols.h"
 #include "models/turbulence/SF_turbulenceSystemContribution.h"
 #include "solver/system/SF_systemBuilder.h"
@@ -71,7 +72,7 @@ int main() {
             require(unsupported.runtime.report.status==RuntimeStatus::Unsupported,"Serial phase transport advertised MPI capability.");
             const auto reject=[&](const ExecutionProgram& program,const ExecutableEquationSystem& equations,const std::vector<NumericalBinding>& numerics) {
                 auto declared=program;declared.explicitOrder=true;
-                bool failed=false;try {(void)compileExecutionProgram(equations,declared,numerics,builtinProviders());} catch (const std::exception&) {failed=true;}
+                bool failed=false;try {(void)Lowering::compileProgram(equations,equations.state,declared,numerics,builtinProviders());} catch (const std::exception&) {failed=true;}
                 require(failed,"Invalid native Eulerian turbulence inherited a runnable kernel.");
             };
             auto duplicateCommit=resolved.solvePlan.sourceProgram;

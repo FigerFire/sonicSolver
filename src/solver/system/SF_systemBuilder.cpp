@@ -1,3 +1,4 @@
+#include "solver/system/SF_lowering.h"
 #include "core/system/SF_operationIds.h"
 /// @file SF_systemBuilder.cpp
 /// @brief Compile built-in equations and neutral model/user contribution values.
@@ -112,15 +113,16 @@ void deriveExecutionComposition(
             system.executableSystem.operations.end(),
             [&](const ExecutableOperation& operation) {
                 return hasOperation(system.runtime.report,operation.operation)
-                    && std::find(operation.requirements.begin(),
+                    && (std::find(operation.requirements.begin(),
                                  operation.requirements.end(),
                                  OperationCapability::PressureLinearSolve)
-                        != operation.requirements.end();
+                        != operation.requirements.end()
+                        || std::find(operation.requirements.begin(),operation.requirements.end(),OperationCapability::SparseLinearSolve)!=operation.requirements.end());
             })
         || hasOperation(system.runtime.report,OpIds::IbmKktSolve);
     if (needsHypre) {
         requireProvider(system,"linear.hypre",
-                        "bind pressure or monolithic distributed linear solve");
+                        "bind selected sparse linear solve");
         requireRuntimeService(system,"mpi.initialized",
                               "HYPRE requires an initialized MPI context");
     }
@@ -207,6 +209,17 @@ ResolvedSimulationSystem build(
          request.templateOrigin==PhysicsTemplateKind::EulerianEulerian ? "Eulerian PhaseSystem" : "default system"});
 
     const auto& selection=request.composition;
+    if(!selection.equationPreset.empty() && selection.equationPreset!="conservativeExplicit")
+        throw std::runtime_error("Unknown built-in equation package: "+selection.equationPreset);
+    if(!selection.equationPreset.empty()
+        && static_cast<bool>(request.authoredExecution)!=selection.replacePresetHow)
+        throw std::runtime_error("Built-in package plus authored HOW requires explicit replacement; two schedules cannot be merged.");
+    if(!selection.equationPreset.empty() && (!request.includeDefaultFluidPreset
+        || request.homogeneousThermodynamics || request.templateOrigin==PhysicsTemplateKind::EulerianEulerian
+        || request.pressureConstraint || selection.compatibilityPressureConstraint
+        || usesEquation(selection,"PressureConstraint")
+        || std::find(selection.solutionVariables.begin(),selection.solutionVariables.end(),"U")!=selection.solutionVariables.end()))
+        throw std::runtime_error("Selected built-in equation package has no applicable current composition binding; use explicit equations and method references for this system.");
     result.rawSystem.state.setSelectionOrigin(selection.stateSelectionOrigin);
     if (selection.declared && request.templateOrigin!=PhysicsTemplateKind::SingleFluid
         && request.templateOrigin!=PhysicsTemplateKind::OneFluidInterface)
@@ -363,16 +376,9 @@ ResolvedSimulationSystem build(
     requireTargetStates(result.executableSystem.state,executionProgram.root);
     auto explicitBindings=request.authoredNumerics;
     for (std::size_t i=0;i<explicitBindings.size();++i) {
-        auto& binding=explicitBindings[i];binding.origin.kind=OriginKind::User;
+        auto& binding=explicitBindings[i];binding.origin.kind=OriginKind::User;binding.explicitChoice=true;
         if (binding.origin.source.empty()) binding.origin.source="explicit WHICH["+std::to_string(i)+"]";
     }
-    const auto sameKey=[](const NumericalBinding& a,const NumericalBinding& b) {
-        return a.equation==b.equation && a.occurrence==b.occurrence;
-    };
-    for (std::size_t i=0;i<explicitBindings.size();++i)
-        for (std::size_t j=0;j<i;++j) if (sameKey(explicitBindings[i],explicitBindings[j]))
-            throw std::runtime_error("Conflicting explicit WHICH for '"+explicitBindings[i].equation+"@"+explicitBindings[i].occurrence
-                +"': "+explicitBindings[j].origin.source+" and "+explicitBindings[i].origin.source);
     if (request.authoredExecution) {
         if (explicitBindings.empty()) throw std::runtime_error("Authored HOW requires explicit WHICH bindings.");
         const auto requirements=executionProgram.requirements;
@@ -381,24 +387,10 @@ ResolvedSimulationSystem build(
         executionProgram.requirements.insert(executionProgram.requirements.end(),requirements.begin(),requirements.end());
         equationMethods.clear();
     }
-    for (auto binding:explicitBindings) {
-        binding.origin.kind=OriginKind::User;
-        if (binding.origin.source.empty()) binding.origin.source="explicit WHICH";
-        equationMethods.erase(std::remove_if(equationMethods.begin(),equationMethods.end(),[&](const auto& previous) {
-            const bool overrides=previous.equation==binding.equation
-                && (binding.occurrence.empty() || previous.occurrence==binding.occurrence);
-            if (overrides) binding.origin.source+="; overrides default "+previous.method+" from "+previous.origin.source;
-            return overrides;
-        }),equationMethods.end());
-        equationMethods.push_back(std::move(binding));
-    }
-    for (std::size_t i=0;i<equationMethods.size();++i)
-        for (std::size_t j=0;j<i;++j) if (sameKey(equationMethods[i],equationMethods[j]))
-            throw std::runtime_error("Ambiguous default WHICH for '"+equationMethods[i].equation+"@"+equationMethods[i].occurrence
-                +"': "+equationMethods[j].origin.source+" and "+equationMethods[i].origin.source);
+    equationMethods.insert(equationMethods.end(),explicitBindings.begin(),explicitBindings.end());
     result.numericalSelection=selectNumerics(config,request,result.executableSystem,std::move(equationMethods));
     // Source composition is complete; the compiler receives immutable WHAT/HOW/WHICH.
-    NumericalCompiler::compileSystem(result,executionProgram,result.numericalSelection,
+    Lowering::compileSystem(result,executionProgram,result.numericalSelection,
         request.additionalExecutionContributions);
     for (const auto& provider:result.numericalSystem.providerRequirements)
         requireProvider(result,provider,"execute a compiled mathematical term binding");
@@ -492,12 +484,12 @@ ResolvedSimulationSystem build(
     }
     deriveExecutionComposition(result,request);
     if (std::any_of(result.solvePlan.compiledProgram.steps.begin(),result.solvePlan.compiledProgram.steps.end(),
-        [](const auto& call) {return call.backendProvider=="equation.thermal" || call.backendProvider==ScalarOps::Provider || call.backendProvider==ScalarOps::TransportProvider || call.backendProvider==ScalarOps::SharedFluxProvider || call.backendProvider==ScalarOps::StageTransportProvider;})) {
+        [](const auto& call) {return call.backendProvider=="equation.thermal" || call.backendProvider==ScalarOps::Provider || call.backendProvider==ScalarOps::TransportProvider || call.backendProvider==ScalarOps::SharedFluxProvider || call.backendProvider==ScalarOps::CapacityProvider;})) {
         if (request.parallel) throw std::runtime_error("Unsupported: scalar provider is serial single patch; MPI execution unavailable.");
         if (!std::isfinite(config.numerics.maxDeltaT) || config.numerics.maxDeltaT<=0)
             throw std::runtime_error("Scalar explicit fixed dt must be finite and positive.");
     }
-    result.numericalSystem.thermophysical=config.thermophysical;
+    NumericalCompiler::resolveConservativeInputs(config,result.numericalSystem);
     return result;
 }
 

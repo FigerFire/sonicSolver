@@ -1,0 +1,10 @@
+{
+  "SonicFile": {
+    "object": "solver",
+    "type": "equationRegistry"
+  },
+  "use": [
+    "Momentum",
+    "Continuity"
+  ]
+}

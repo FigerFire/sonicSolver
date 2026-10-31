@@ -4,6 +4,7 @@
 #include "SF_systemValidator.h"
 #include "SF_solvePlan.h"
 #include "SF_executionContract.h"
+#include "core/system/SF_operationIds.h"
 
 #include <set>
 #include <stdexcept>
@@ -26,11 +27,7 @@ void validateComposition(const RawEquationSystem& raw) {
             throw std::runtime_error(
                 "Raw equation system has an invalid/duplicate unknown.");
         }
-        if (unknown.id == "pPrime") {
-            throw std::runtime_error(
-                "Raw equation system contains algorithmic pressure-correction "
-                "workspace 'pPrime'.");
-        }
+
     }
 }
 
@@ -85,6 +82,37 @@ void validateTransformations(const ResolvedSimulationSystem& system) {
     }
 }
 
+void validateStageStorage(const StateRegistry& state,const CompiledExecutionProgram& program,
+                          const SolvePlanNode& node) {
+    if(node.kind==PlanNodeKind::StageLoop) {
+        std::set<OpId> stageOperations;
+        const auto collect=[&](const auto& self,const SolvePlanNode& item)->void {
+            if(!item.operation.empty())stageOperations.insert(item.operation);
+            for(const auto& child:item.children)if(child.kind!=PlanNodeKind::StageLoop)self(self,child);
+        };
+        collect(collect,node);
+        std::vector<const TemporalParticipant*> participants;
+        std::set<std::string> publications;
+        for(const auto& participant:program.temporalParticipants)if(stageOperations.count(participant.rhs)) {
+            for(const auto& other:participants) {
+                if(other->rhs==participant.rhs || other->advance==participant.advance)
+                    throw std::runtime_error("Duplicate stage RHS/advance ownership in scope "+node.id+": "+participant.identity+" and "+other->identity);
+                for(const auto& a:participant.targets)for(const auto& b:other->targets) {
+                    const auto& x=state.at(a);const auto& y=state.at(b);
+                    if(x.storageBinding==y.storageBinding && !x.storageKey.empty() && x.storageKey==y.storageKey
+                        && x.location==y.location && x.componentOffset<y.componentOffset+y.components
+                        && y.componentOffset<x.componentOffset+x.components)
+                        throw std::runtime_error("Overlapping temporal STATE writers in scope "+node.id+": "+a+" and "+b+" storage="+x.storageKey);
+                }
+            }
+            for(const auto& output:participant.stageProvides)if(!publications.insert(output).second)
+                throw std::runtime_error("Duplicate stage resource publication in scope "+node.id+": "+output);
+            participants.push_back(&participant);
+        }
+    }
+    for(const auto& child:node.children)validateStageStorage(state,program,child);
+}
+
 void validatePlanNode(const SolvePlanNode& node) {
     if (node.id.empty()) {
         throw std::runtime_error("Compiled solve plan contains an unnamed node.");
@@ -107,6 +135,7 @@ void validate(const ResolvedSimulationSystem& system) {
     validatePlanNode(system.solvePlan.root);
     const auto& executable = system.executableSystem;
     validateCompiledEquations(executable);
+    validateStageStorage(executable.state,system.solvePlan.compiledProgram,system.solvePlan.root);
     validateMathematicalCoverage(executable,system.solvePlan,system.runtime.report.status==RuntimeStatus::Runnable);
     std::set<std::string> providers;
     for (const auto& provider : system.runtime.providerRequirements) {
@@ -124,16 +153,30 @@ void validate(const ResolvedSimulationSystem& system) {
                 "Resolved system has an invalid/duplicate runtime-service requirement.");
         }
     }
-    const bool hasEulerianProvider =
-        providers.count("flow.eulerian-pressure") != 0;
-    const bool hasConservativeProvider =
-        providers.count("flow.conservative") != 0;
-    const bool hasPressureProvider=providers.count("flow.pressure-operators")!=0;
-    if ((int)hasEulerianProvider+(int)hasConservativeProvider+(int)hasPressureProvider>1
-        || (providers.count("flow.rhie-chow") && !hasPressureProvider)) {
-        throw std::runtime_error(
-            "Resolved system cannot bind two flow operation provider groups.");
+    const int packed=requiredPackedComponents(executable.state,system.solvePlan.compiledProgram,"conservative");
+    const auto* pressure=requiredPressureInputs(programOf(system));
+    const auto* phase=requiredPhaseInputs(programOf(system));
+    if(packed || pressure || phase) {
+        int commits=0;
+        const auto clock=[&](const auto& self,const SolvePlanNode& node,bool repeated)->void {
+            repeated=repeated || node.repetitions>1 || node.kind==PlanNodeKind::StageLoop;
+            if((node.operation==OpIds::TimeCommit) && (++commits>1 || repeated))
+                throw std::runtime_error("Physical clock commit must occur once outside repeated scopes: "+node.id);
+            for(const auto& child:node.children)self(self,child,repeated);
+        };
+        clock(clock,system.solvePlan.root,false);
     }
+    // Phase and single-field storage/publication contracts are not composable yet.
+    // Ordinary packed/named/closure composition is checked by actual operations
+    // and STATE lifetimes, not by how many provider names are present.
+    if (phase && (packed || pressure))
+        throw std::runtime_error("Unsupported resource assembly: phase old-time/shared-pressure layout cannot yet share the single-field packed or pressure-correction workspace and clock binding.");
+    if (pressure && packed)
+        throw std::runtime_error("Unsupported resource assembly: constant-density U/p correction storage and packed conservative storage require distinct, not yet composable pressure publication bindings.");
+    for(const auto& binding:system.runtime.operationBindings)
+        if(binding.operation==OpIds::FluxCorrect && binding.status==BindingStatus::Resolved
+            && binding.provider=="flow.rhie-chow" && !pressure)
+            throw std::runtime_error("Rhie-Chow operation has no declared persistent pressureFaceFlux owner/resource contract.");
     std::set<OpId> resolvedBindings;
     std::set<OpId> missingBindings;
     for (const auto& binding : system.runtime.operationBindings) {

@@ -11,10 +11,12 @@
 
 #include <algorithm>
 #include <cstdlib>
+#include <cmath>
 #include <iomanip>
 #include <iostream>
 #include <stdexcept>
 #include <utility>
+#include <map>
 
 namespace SF::Run {
 namespace {
@@ -53,7 +55,8 @@ void executeNode(
         const OpRegistry& operations,
         const PlanTraceContext* trace,
         std::vector<LoopFrame>& loops,
-        ExecutionContext& execution) {
+        ExecutionContext& execution,
+        std::map<System::OpId,std::size_t>& revisions) {
     if (node.repetitions <= 0) throw std::runtime_error("Compiled solve-plan node '"+node.id+"' has a non-positive repetition count.");
     if (node.kind == System::PlanNodeKind::Sequence || node.kind == System::PlanNodeKind::Loop) {
         if (node.kind == System::PlanNodeKind::Loop && node.children.empty()) throw std::runtime_error("Compiled solve-plan loop '"+node.id+"' is empty.");
@@ -64,18 +67,64 @@ void executeNode(
                 throw std::runtime_error("Invalid loop termination contract for '"+node.id+"'.");
             execution.signals->reset(node.terminationSignal);
         }
+        struct Metric { std::vector<double> previous; double initial=0; bool initialized=false; };
+        std::vector<Metric> metrics(node.residuals.size());
+        for(std::size_t i=0;i<node.residuals.size();++i)
+            if(node.residuals[i].kind==System::ResidualKind::StateChange) {
+                metrics[i].previous=operations.sampleResidual(node.residuals[i].id,node.residuals[i].provider,execution);
+                if(metrics[i].previous.empty() || std::any_of(metrics[i].previous.begin(),metrics[i].previous.end(),[](double value){return !std::isfinite(value);}))
+                    throw std::runtime_error("Invalid initial residual reference: "+node.residuals[i].id);
+            }
+        int completed=0;
+        bool converged=node.residuals.empty();
         for (int repeat = 0; repeat < node.repetitions; ++repeat) {
+            const auto before=revisions;
+            if(!node.terminationSignal.empty()) execution.signals->reset(node.terminationSignal);
             if (node.kind == System::PlanNodeKind::Loop) {
                 loops.push_back({node.id,{repeat+1,node.repetitions}});
             }
             for (const auto& child : node.children) {
-                executeNode(child,operations,trace,loops,execution);
+                executeNode(child,operations,trace,loops,execution,revisions);
             }
             if (node.kind == System::PlanNodeKind::Loop) loops.pop_back();
+            completed=repeat+1;
+            if(!node.residuals.empty()) {
+                converged=node.residualAll;
+                for(std::size_t i=0;i<node.residuals.size();++i) {
+                    const auto& definition=node.residuals[i];auto& metric=metrics[i];
+                    const auto old=before.find(definition.producerOperation);
+                    if(revisions[definition.producerOperation]==(old==before.end()?0:old->second))
+                        throw std::runtime_error("Residual '"+definition.id+"' was not updated in Loop '"+node.id+"'.");
+                    auto sample=operations.sampleResidual(definition.id,definition.provider,execution);
+                    if(sample.empty() || (definition.kind==System::ResidualKind::StateChange && sample.size()!=metric.previous.size()))
+                        throw std::runtime_error("Residual sampler changed layout or returned no values: "+definition.id);
+                    double norm=0;
+                    for(std::size_t j=0;j<sample.size();++j) {
+                        const double value=definition.kind==System::ResidualKind::StateChange?sample[j]-metric.previous[j]:sample[j];
+                        if(!std::isfinite(value) || !std::isfinite(sample[j]))throw std::runtime_error("Non-finite residual: "+definition.id);
+                        if(definition.norm==System::ResidualNorm::Maximum) norm=std::max(norm,std::abs(value));
+                        else norm=std::hypot(norm,value);
+                    }
+                    if(!metric.initialized){metric.initial=norm;metric.initialized=true;}
+                    if(definition.kind==System::ResidualKind::StateChange)metric.previous=std::move(sample);
+                    const double scale=definition.normalization==System::ResidualNormalization::Initial?metric.initial:definition.scale;
+                    const bool relative=definition.normalization!=System::ResidualNormalization::None
+                        && (scale==0?norm==0:norm/scale<=definition.relativeTolerance);
+                    const bool accepted=norm<=definition.absoluteTolerance || relative;
+                    converged=node.residualAll ? converged && accepted : converged || accepted;
+                    if(traceEnabled())std::cout<<std::setprecision(17)<<"[SF RES] loop="<<node.id<<" iteration="<<repeat+1
+                        <<" metric="<<definition.id<<" norm="<<norm<<" reference="<<scale<<" accepted="<<accepted<<'\n';
+                }
+                if(repeat+1>=node.minimumIterations && converged)break;
+            }
             if (!node.terminationSignal.empty()
                 && repeat+1 >= node.minimumIterations
                 && execution.signals->value(node.terminationSignal)) break;
         }
+        if(!node.residuals.empty())std::cout<<"[SF RES EXIT] loop="<<node.id<<" iterations="<<completed
+            <<" reason="<<(converged?"converged":node.failOnMaximum?"maximum-failed":"maximum-continue-explicit")<<'\n';
+        if(!node.residuals.empty() && !converged && node.failOnMaximum)
+            throw std::runtime_error("Loop '"+node.id+"' reached maximum iterations without residual convergence.");
         return;
     }
     if (node.kind == System::PlanNodeKind::StageLoop) {
@@ -88,7 +137,7 @@ void executeNode(
         for (int stage = 0; stage < node.repetitions; ++stage) {
             execution.stageIndex = stage;
             for (const auto& child : node.children) {
-                executeNode(child,operations,trace,loops,execution);
+                executeNode(child,operations,trace,loops,execution,revisions);
             }
         }
         execution = previous;
@@ -102,12 +151,21 @@ void executeNode(
     const auto* previousTarget=execution.target;
     execution.target=node.target ? &*node.target : nullptr;
     operations.invoke(node.operation,execution,node.provider);
+    ++revisions[node.operation];
     execution.target=previousTarget;
 }
 
 void validateNode(
         const System::SolvePlanNode& node,
         const OpRegistry& operations) {
+    if(!node.residuals.empty()) {
+        if(node.kind!=System::PlanNodeKind::Loop || !node.terminationSignal.empty()
+            || node.minimumIterations<1 || node.minimumIterations>node.repetitions)
+            throw std::runtime_error("Typed residual control requires one ordinary Loop without a second termination signal: "+node.id);
+        for(const auto& residual:node.residuals)
+            if(!operations.containsResidual(residual.id,residual.provider))
+                throw std::runtime_error("Residual '"+residual.id+"' has no sampler from its frozen numerical provider.");
+    }
     if (node.children.empty()) {
         if (node.operation.empty()) {
             throw std::runtime_error(
@@ -170,6 +228,19 @@ bool OpRegistry::contains(const System::OpId& id,std::string_view provider) cons
         return entry.id==id && (provider.empty() || entry.provider==provider);
     });
 }
+void OpRegistry::bindResidual(std::string id,std::string provider,ResidualOperation operation) {
+    if(id.empty() || !operation || std::any_of(residuals_.begin(),residuals_.end(),[&](const auto& r){return r.id==id;}))
+        throw std::runtime_error("Empty or duplicate residual sampler: "+id);
+    residuals_.push_back({std::move(id),std::move(provider),std::move(operation)});
+}
+bool OpRegistry::containsResidual(std::string_view id,std::string_view provider) const {
+    return std::any_of(residuals_.begin(),residuals_.end(),[&](const auto& r){return r.id==id && r.provider==provider;});
+}
+std::vector<double> OpRegistry::sampleResidual(std::string_view id,std::string_view provider,const ExecutionContext& context) const {
+    const auto at=std::find_if(residuals_.begin(),residuals_.end(),[&](const auto& r){return r.id==id && r.provider==provider;});
+    if(at==residuals_.end())throw std::runtime_error("Missing frozen residual sampler: "+std::string(id));
+    return at->operation(context);
+}
 void OpRegistry::retain(const std::vector<System::OpId>& assigned) {
     entries_.erase(std::remove_if(entries_.begin(),entries_.end(),
         [&](const Entry& entry) {
@@ -196,7 +267,8 @@ void PlanExecutor::execute(
     ExecutionContext execution;
     LoopSignalState signals;
     execution.signals=&signals;
-    executeNode(plan.root,operations,trace,loops,execution);
+    std::map<System::OpId,std::size_t> revisions;
+    executeNode(plan.root,operations,trace,loops,execution,revisions);
 }
 
 void PlanExecutor::validateBindings(

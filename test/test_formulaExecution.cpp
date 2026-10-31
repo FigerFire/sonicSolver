@@ -1,3 +1,4 @@
+#include "solver/system/SF_lowering.h"
 #include "solver/system/SF_scalarMethod.h"
 #include "test/typedSymbols.h"
 #include "core/system/SF_formula.h"
@@ -121,9 +122,10 @@ int main(int argc,char** argv) {
         rejected=false;try{System::builtinProviders().at("LinearEquation").compile(system,{"reaction",{"C"}},{"reaction","LinearEquation"});}catch(const std::runtime_error& e){rejected=std::string(e.what()).find("Unsupported")!=std::string::npos;}
         require(rejected,"Nonlinear explicit equation masqueraded as implemented implicit solve");
         system.registry.add({"spoof",FormulaExpr::symbol("C",SF::Test::symbol("p").signature()),FormulaExpr::symbol("C",SF::Test::symbol("p").signature())});
-        rejected=false;try{System::compileExecutionProgram(system,System::ExecutionProgram{System::EquationCall{"spoof",{"C"}}},{{"spoof","DirectEvaluation"}},System::builtinProviders());}catch(const std::runtime_error&){rejected=true;}
+        rejected=false;try{System::Lowering::compileProgram(system,system.state,System::ExecutionProgram{System::EquationCall{"spoof",{"C"}}},{{"spoof","DirectEvaluation"}},System::builtinProviders());}catch(const std::runtime_error&){rejected=true;}
         require(rejected,"Same-name logical symbol overrode STATE signature");
         auto other=state;other.id=other.storageKey="partner";system.state.add(other);
+        system.state.selectSolution("C");system.state.selectSolution("partner");
         auto otherDiffusion=FormulaExpr::op(Math::Op::Diffusion,{FormulaExpr::constantValue(.03,Math::signature(0,{0,2,-1,0,0,0,0})),other.expression()});
         system.registry.add({"wrongDiffusion",nonlinear.lhs,rhs+otherDiffusion});
         const auto cross=System::builtinProviders().at("ScalarDiffusionCentral2").compile(system,{"wrongDiffusion",{"C"}},{"wrongDiffusion","ScalarDiffusionCentral2"});

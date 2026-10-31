@@ -1,0 +1,10 @@
+{
+  "SonicFile": {
+    "object": "models",
+    "type": "registry"
+  },
+  "thermoDynamics": {
+    "type": "thermoDynamics",
+    "file": "models/thermoDynamics.yaml"
+  }
+}

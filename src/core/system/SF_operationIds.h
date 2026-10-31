@@ -70,6 +70,5 @@ inline constexpr const char* EeTurbulenceRefresh = "ee.turbulence.refresh";
 inline constexpr const char* EeBoundaryFinal = "ee.boundary.final";
 inline constexpr const char* EeOuterValidate = "ee.outer.validate";
 inline constexpr const char* EeStepCommit = "ee.step.commit";
-inline constexpr const char* EeTimeCommit = "ee.time.commit";
 
 } // namespace SF::System::OpIds

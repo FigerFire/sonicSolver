@@ -5,6 +5,7 @@
 /// 默认 equation calls 与 numerical bindings 随数学贡献声明；全局 coupling/time
 /// 仍来自独立显式请求，Equation pack 不选择 loop topology。
 
+#include "SF_presets.h"
 #include "SF_systemBuilder.h"
 #include "SF_equationContribution.h"
 #include "SF_singleFluidPreset.h"
@@ -20,6 +21,16 @@
 
 namespace SF::System {
 namespace Compose {
+ExecutionProgram explicitProgram(std::vector<ExecutionScope> calls) {
+    ExecutionProgram program;program.recipeScopes=true;
+    program.root.children=std::move(calls);
+    ExecutionScope commit;commit.kind=ExecutionKind::Commit;
+    commit.id="physicalStep.commit";commit.order=1000000;
+    commit.origin={OriginKind::BuiltinPreset,"builtin explicit"};
+    program.root.children.push_back(std::move(commit));
+    return program;
+}
+
 namespace {
 
 void addState(
@@ -42,6 +53,8 @@ void addState(
     unknown.storageKey = std::move(storageKey);
     unknown.componentOffset = componentOffset;
     unknown.nameSpace = std::move(nameSpace);
+    if(binding==StorageBinding::TransientWorkspace)
+        unknown.initializationRequired=unknown.boundaryRequired=unknown.outputEligible=unknown.runtimeStorageRequired=unknown.restartEligible=false;
     unknown.signature=EulerianMathematics::signature(unknown.id);
     system.addState(std::move(unknown));
 }
@@ -159,6 +172,7 @@ void addEulerianEulerianTemplate(
         "preset.eulerianEulerian","Eulerian-Eulerian equation preset");
     addState(system,"p","shared pressure",1,StateRole::Algebraic,
                StorageBinding::ProviderDistributed,"pressure",0,"pressure");
+    addState(system,"deltaP","shared pressure increment",1,StateRole::Algebraic,StorageBinding::TransientWorkspace,"pressureCorrection");
     for (std::size_t phase = 0; phase < names.size(); ++phase) {
         addPhaseEquationPack(system,names[phase],phase,names[phase]==referencePhase);
         for (const auto& item:std::vector<std::tuple<std::string,std::string,int>>{
@@ -189,7 +203,7 @@ void addEulerianEulerianTemplate(
         phaseStressAndHeat.push_back("E_ENTHALPY."+name);
         phaseHeat.push_back("E_ENTHALPY."+name);
     }
-    system.addClosure("pressure reference row: pPrime(referenceCell)=0; homogeneous correction boundary closure follows existing pressure matrix",{"E_SHARED_PRESSURE"});
+    system.addClosure("pressure reference row: deltaP(referenceCell)=0; homogeneous correction boundary closure follows existing pressure matrix",{"E_SHARED_PRESSURE"});
     system.addClosure("referencePhaseRemainder = 1 - sum(non-reference alpha); existing recovery guards and EOS remain unchanged",phaseBalances);
     system.addClosure("sumFaceAlphaSquaredOverDiagonal = sum_phase faceAverage(alpha^2 / momentumDiagonal)",{"E_SHARED_PRESSURE"});
     system.addClosure("mixtureCompressibilityOverDt = sum(perfectGas alpha/p) / dt; pressureHistory = sum(perfectGas alpha/p)*(p-pOld)/dt",{"E_SHARED_PRESSURE"});

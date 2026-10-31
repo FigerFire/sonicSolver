@@ -29,8 +29,8 @@ std::vector<double> sst(FDM::TimeRecipeId id,bool active,bool diffusion=true,dou
     FDM::SolverConfig config;config.numerics.maxDeltaT=dt;config.numerics.cfl=2;
     config.numerics.timeRecipe=FDM::builtInTimeRecipe(id);config.numerics.viscousEnabled=diffusion;config.numerics.dynamicViscosity=mu;
     auto r=fluidRequest(false,false);r.singleFluidPreset=System::SingleFluidPresetSpec{diffusion};
-    if(active){System::SystemContribution c;Turbulence::contribute(c,{"kOmegaSST",{},false,{},true});r.modelContributions.push_back(c);}
-    if(manufactured)for(auto& equation:r.modelContributions.front().registeredEquations){using E=System::FormulaExpr;equation.rhs=E::op("diffusion",{E::multiply(SF::Test::symbol("rho"),E::constantValue(0,Math::signature(0,{0,2,-1,0,0,0,0}))),SF::Test::symbol(equation.id)});}
+    if(active){System::SystemContribution c;Turbulence::contribute(c,{"kOmegaSST",{},false,{},true,mu});r.modelContributions.push_back(c);}
+    if(manufactured)for(auto& equation:r.modelContributions.front().registeredEquations)if(equation.id=="k" || equation.id=="omega"){using E=System::FormulaExpr;equation.rhs=E::op("diffusion",{E::multiply(SF::Test::symbol("rho"),E::constantValue(0,Math::signature(0,{0,2,-1,0,0,0,0}))),SF::Test::symbol(equation.id)});}
     auto system=System::build(config,r);System::validate(system);
     require(std::find(system.runtime.report.requiredOperations.begin(),system.runtime.report.requiredOperations.end(),System::OpIds::TurbulenceAdvance)==system.runtime.report.requiredOperations.end(),"Native SST retained old advance authority");
     Field mesh;mesh.setup(n,1,1,g,5);auto model=Physics::FluidStateModel::makeSingleFluidPerfectGas(1.4,287.05,mu,.72);mesh.setStateModel(model);
@@ -54,7 +54,7 @@ std::vector<double> sst(FDM::TimeRecipeId id,bool active,bool diffusion=true,dou
     state.time=.3;state.step=17;
     auto realized=System::realizeState(system.executableSystem.state,system.runtime,state,system.solvePlan.compiledProgram.stateViews);
     const double limit=dt;
-    auto flow=std::make_shared<SolverAlgorithm::FlowOperations>(config,system.executableSystem,system.numericalSystem,system.solvePlan,system.runtime,state,services,realized,limit);
+    auto flow=std::make_shared<SolverAlgorithm::FlowOperations>(config.boundaries,config.pressure,config.numerics.idealGasGamma,system.executableSystem,system.numericalSystem,system.solvePlan,system.runtime,state,services,realized,limit);
     runtime.attachState(state);flow->prepare();Run::OpRegistry ops;flow->bindOperations(ops);
     auto f=flow->temporalParticipant();
     if(fault=="wrongProvidedSet") {
@@ -91,7 +91,7 @@ std::vector<double> sst(FDM::TimeRecipeId id,bool active,bool diffusion=true,dou
         if(cb.coefficients) {
             auto original=cb.coefficients;cb.coefficients=[&,original](const auto& c) {
                 original(c);trace<<"coefficients "<<state.step<<' '<<c.stageIndex<<' '<<state.time+system.numericalSystem.time.recipe.stage(c.stageIndex).abscissa*state.dt<<'\n';
-                for(const auto* name:{"mu_t","SST.nu.k","SST.nu.omega","SST.production.k","SST.production.omega","SST.sink.k","SST.sink.omega","SST.cross"}) {
+                for(const auto* name:{"mu_t","SST.F1","SST.production.k","SST.production.omega","SST.cross"}) {
                     auto read=realized.stageReader(name,c.stageCount);trace<<name;
                     for(int i=g;i<g+n;++i)trace<<' '<<read(mesh.getIdx(i,g,g),0);trace<<'\n';
                 }
@@ -107,7 +107,8 @@ std::vector<double> sst(FDM::TimeRecipeId id,bool active,bool diffusion=true,dou
         };
         callbacks.push_back(std::move(cb));
     }
-    Time::bindStageGroup(ops,system.solvePlan,system.numericalSystem,state,realized,limit,std::move(callbacks));
+    auto algebraic=SolverAlgorithm::bindAlgebraicOperations(ops,system.numericalSystem,system.solvePlan,state,services,realized);
+    Time::bindStageGroup(ops,system.solvePlan,system.numericalSystem,state,realized,limit,std::move(callbacks),std::move(algebraic));
     for(const auto& b:system.runtime.operationBindings)if(b.operation==System::OpIds::TimeCommit)ops.bind(b.operation,b.provider,[&]{state.time+=state.dt;++state.step;});
     Run::PlanExecutor::validateBindings(system.solvePlan,ops);
     if(fault=="unpublished" || fault=="staleStage" || fault=="staleStep") {

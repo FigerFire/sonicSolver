@@ -1,0 +1,30 @@
+{
+  "SonicFile": {
+    "object": "fields",
+    "type": "boundaries"
+  },
+  "U": {
+    "left": "zeroGradient",
+    "right": "zeroGradient",
+    "bottom": "zeroGradient",
+    "top": "zeroGradient",
+    "front": "empty",
+    "back": "empty"
+  },
+  "p": {
+    "left": "zeroGradient",
+    "right": "zeroGradient",
+    "bottom": "zeroGradient",
+    "top": "zeroGradient",
+    "front": "empty",
+    "back": "empty"
+  },
+  "rho": {
+    "left": "zeroGradient",
+    "right": "zeroGradient",
+    "bottom": "zeroGradient",
+    "top": "zeroGradient",
+    "front": "empty",
+    "back": "empty"
+  }
+}

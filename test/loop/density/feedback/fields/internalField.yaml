@@ -1,0 +1,19 @@
+{
+  "SonicFile": {
+    "object": "fields",
+    "type": "internalField"
+  },
+  "U": {
+    "uniform": [
+      0.25,
+      0,
+      0
+    ]
+  },
+  "p": {
+    "uniform": 1.0
+  },
+  "rho": {
+    "uniform": 1.2
+  }
+}

@@ -1,0 +1,48 @@
+{
+  "SonicFile": {
+    "object": "solver",
+    "type": "how"
+  },
+  "root": {
+    "kind": "Sequence",
+    "id": "HOW",
+    "children": [
+      {
+        "kind": "Sequence",
+        "id": "explicit.stage",
+        "frequency": "Stage",
+        "children": [
+          {
+            "equation": "drag",
+            "target": "F",
+            "id": "drag.update"
+          },
+          {
+            "equation": "power",
+            "target": "P",
+            "id": "work.update"
+          },
+          {
+            "equation": "continuity",
+            "target": "rho",
+            "id": "mass.rhs"
+          },
+          {
+            "equation": "momentum",
+            "target": "rhoU",
+            "id": "momentum.rhs"
+          },
+          {
+            "equation": "energy",
+            "target": "rhoE",
+            "id": "energy.rhs"
+          }
+        ]
+      },
+      {
+        "kind": "Commit",
+        "id": "physical.accept"
+      }
+    ]
+  }
+}

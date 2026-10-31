@@ -1,23 +1,22 @@
 #include "SF_singleFluidStepper.h"
 #include "SF_singleFluidBinding.h"
 #include "core/system/SF_operationIds.h"
-#include "core/config/SF_numericsPolicy.h"
 #include <sstream>
 #include <stdexcept>
 #include <utility>
 namespace SF::SolverAlgorithm {
-SingleFluidStepper::SingleFluidStepper(FDM::SolverConfig config,
+SingleFluidStepper::SingleFluidStepper(const FDM::SolverConfig& config,
     const System::ExecutableEquationSystem& equations,const System::CompiledNumericalSystem& numerics,
     const System::CompiledSolvePlan& plan,const System::RuntimeRequirements& runtime)
-    :config_(std::move(config)),executable_(equations),numerics_(numerics),solve_(plan),runtime_(runtime) {
-    if (System::requiresProvider(runtime_,"flow.conservative")
-        || System::requiresProvider(runtime_,"flow.pressure-operators"))
-        FDM::validateNumericsConfig(config_.numerics);
-    if (numerics_.time.recipe.id()!=config_.numerics.timeRecipe.id()
-        || numerics_.dt.cfl!=config_.numerics.cfl
-        || numerics_.dt.maxDeltaT!=config_.numerics.maxDeltaT)
-        throw std::runtime_error("SingleFluidStepper received a compiled numerical system whose time/step policy disagrees with its solver configuration.");
+    :pressureGamma_(0.0),executable_(equations),numerics_(numerics),solve_(plan),runtime_(runtime) {
+    // Constant-density boundaries belong to the selected PressureOperators;
+    // the conservative Applicator/corrector inputs have no consumer there.
+    if(!System::requiredPressureInputs({equations,numerics,plan,runtime})) {
+        boundaries_=config.boundaries;pressure_=config.pressure;
+        pressureGamma_=config.numerics.idealGasGamma;
+    }
 }
+
 void SingleFluidStepper::bindServices(FDM::SolverServices services) {
     if (servicesBound_) throw std::runtime_error("SingleFluidStepper services are already bound for this lifecycle.");
     services_=services;servicesBound_=true;
@@ -35,7 +34,7 @@ void SingleFluidStepper::prepare(FDM::SolverState& state) {
     maximumTimeStep_=state.maximumTimeStep;
     if (services_.executionRuntime) services_.executionRuntime->attachState(*state_);
     realizedState_=System::realizeState(executable_.state,runtime_,*state_,solve_.compiledProgram.stateViews);
-    bindSingleFluidOperations(operations_,config_,executable_,numerics_,solve_,runtime_,
+    bindSingleFluidOperations(operations_,boundaries_,pressure_,pressureGamma_,executable_,numerics_,solve_,runtime_,
                              *state_,services_,realizedState_,maximumTimeStep_);
     for (const auto& binding:runtime_.operationBindings) {
         if (binding.operation!=System::OpIds::TimeCommit) continue;

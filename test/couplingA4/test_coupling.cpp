@@ -1,3 +1,4 @@
+#include "solver/system/SF_lowering.h"
 #include "solver/system/SF_systemBuilder.h"
 #include "solver/system/SF_systemValidator.h"
 #include "solver/system/SF_systemPrinter.h"
@@ -144,7 +145,7 @@ void genericIteration() {
         ExecutionScope node;node.kind=ExecutionKind::EquationCall;node.step=call;loop.children.push_back(node);
     }
     how.root.children={loop};
-    auto compiled=compileExecutionProgram(system,how,{{"update-a","DirectEvaluation"},{"update-b","DirectEvaluation"}},builtinProviders());
+    auto compiled=Lowering::compileProgram(system,system.state,how,{{"update-a","DirectEvaluation"},{"update-b","DirectEvaluation"}},builtinProviders());
     // Bind existing generic value kernels to two scalar resources. No CFD/time loop or pressure callback.
     double av=0,bv=0;FormulaValues values;values.boundReads={ [&](int,int){return av;},[&](int,int){return bv;} };
     FormulaOperatorCatalog catalog;Run::OpRegistry ops;
@@ -156,7 +157,7 @@ void genericIteration() {
         call.stateUses={{first ? "b" : "a"}};call.stateEffects={{first ? "a" : "b"}};
     }
     validateDataFlow(system.state,compiled);
-    CompiledSolvePlan plan;plan.root=compileMethodProgram(compiled);
+    CompiledSolvePlan plan;plan.root=compiled.loweredRoot;
     Run::PlanExecutor::execute(plan,ops);
     double expectedA=0,expectedB=0;
     for(int i=0;i<12;++i){expectedA=.5*(expectedB+1);expectedB=.5*(expectedA+1);}

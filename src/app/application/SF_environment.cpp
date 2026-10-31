@@ -53,6 +53,7 @@ bool build(ExecutionEnvironment& env,
     const FDM::SolverConfig& solverConfig = caseConfig.solver;
     const MeshRuntimeConfig& meshConfig = inspection.mesh;
     const IBM::IBMRuntimeConfig& ibmConfig = inspection.ibm;
+    const auto* pressureInputs=System::requiredPressureInputs(System::programOf(inspection.system));
 
     // Pressure-based HYPRE backend 直接使用 MPI_COMM_WORLD 并调用
     // HYPRE_Initialize；即使 parallel.enabled=false，单 rank 也必须先
@@ -144,7 +145,7 @@ bool build(ExecutionEnvironment& env,
         // ConstraintGlobalDof ownership；多 patch forcing 仍明确拒绝而非伪装。
         const bool singleFieldLayout =
             resolveSingleFieldLayout(env.parallelMesh, *env.parallel);
-        if (System::requiresProvider(requirements,"flow.pressure-operators")) {
+        if (pressureInputs) {
             const int source=env.parallelMesh.blocks().front().sourceZoneId;
             const bool singleZone=std::all_of(env.parallelMesh.blocks().begin(),
                 env.parallelMesh.blocks().end(),[&](const MeshBlockField& block) {
@@ -212,8 +213,8 @@ bool build(ExecutionEnvironment& env,
     Boundary::Geometry::configureEmptyDimensions(
         *env.activeField,
         solverConfig.boundaries.density,
-        solverConfig.boundaries.velocity,
-        solverConfig.boundaries.pressure,
+        pressureInputs?pressureInputs->velocityBoundary:solverConfig.boundaries.velocity,
+        pressureInputs?pressureInputs->pressureBoundary:solverConfig.boundaries.pressure,
         solverConfig.boundaries.thermal,
         solverConfig.turbulence.scalars.kBoundary,
         solverConfig.turbulence.scalars.epsilonBoundary,

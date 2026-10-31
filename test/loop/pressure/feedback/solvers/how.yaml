@@ -1,0 +1,62 @@
+{
+  "SonicFile": {
+    "object": "solver",
+    "type": "how"
+  },
+  "root": {
+    "kind": "Sequence",
+    "id": "HOW",
+    "children": [
+      {
+        "equation": "damping",
+        "target": "acceleration",
+        "id": "damping.update",
+        "frequency": "Step"
+      },
+      {
+        "equation": "momentum",
+        "target": "U",
+        "id": "predictor"
+      },
+      {
+        "kind": "Loop",
+        "id": "pressure",
+        "repetitions": 2,
+        "children": [
+          {
+            "kind": "Loop",
+            "id": "nonOrthogonal",
+            "repetitions": 1,
+            "children": [
+              {
+                "equation": "pSimple",
+                "target": "deltaP",
+                "id": "pressure.solve",
+                "targetKind": "Correction"
+              }
+            ]
+          },
+          {
+            "equation": "correctU",
+            "target": "U",
+            "id": "velocity.correct"
+          },
+          {
+            "equation": "correctP",
+            "target": "p",
+            "id": "pressure.correct"
+          },
+          {
+            "equation": "correctFluxp",
+            "target": "phi",
+            "id": "flux.correct"
+          }
+        ]
+      },
+      {
+        "kind": "Commit",
+        "id": "physical.accept"
+      }
+    ]
+  }
+}

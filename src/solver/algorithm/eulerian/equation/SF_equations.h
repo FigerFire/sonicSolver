@@ -4,6 +4,7 @@
 /// @brief Eulerian 每相方程、Rhie–Chow 面通量和共享压力方程装配。
 
 #include "solver/linearAlgebra/SF_linearAlgebra.h"
+#include "solver/system/SF_numericalSystem.h"
 #include "solver/linearAlgebra/SF_distributedRowMap.h"
 #include "solver/algorithm/eulerian/equation/SF_workspace.h"
 #include "solver/discretization/eulerian/SF_eulerian.h"
@@ -21,7 +22,7 @@ class PhaseEquationAssembler {
 public:
     PhaseEquationAssembler(
         Physics::PhaseSystems::PhaseSystem& system,
-        const FDM::PressureCorrectionConfig& config,
+        const System::PhaseNumericalConfig& config,
         PhaseSolverWorkspace& workspace);
 
     void setExecutionRuntime(FDM::IExecutionRuntime* runtime) {
@@ -67,7 +68,7 @@ public:
 
 private:
     Physics::PhaseSystems::PhaseSystem& system_;
-    const FDM::PressureCorrectionConfig& config_;
+    const System::PhaseNumericalConfig& config_;
     PhaseSolverWorkspace& workspace_;
     LinearAlgebra::DistributedRowMap rowMap_;
     std::vector<std::unique_ptr<LinearAlgebra::SolverSession>>

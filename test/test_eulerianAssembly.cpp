@@ -1,3 +1,4 @@
+#include "solver/system/SF_lowering.h"
 #include "test/typedSymbols.h"
 #include "solver/system/SF_systemBuilder.h"
 #include "solver/system/SF_methodObjects.h"
@@ -83,7 +84,7 @@ int main() {
         StateSymbol unrelated;unrelated.id="unrelated";unrelated.storageKey="unrelated";changed.state.add(SF::Test::state(unrelated));
         const auto& symbols=resolved.executableSystem.state.symbols();
         for (auto it=symbols.rbegin();it!=symbols.rend();++it) changed.state.add(*it);
-        auto compile=[&](const auto& equations) {return compileExecutionProgram(equations,resolved.solvePlan.sourceProgram,resolved.numericalSelection.bindings,builtinProviders());};
+        auto compile=[&](const auto& equations) {return Lowering::compileProgram(equations,equations.state,resolved.solvePlan.sourceProgram,resolved.numericalSelection.bindings,builtinProviders());};
         require(signature(compile(changed))==signature(program),"Registry insertion changed frozen phase slots.");
         const auto mutation=[&](const std::string& id,const std::function<void(Equation&)>& edit,bool sameCategories) {
             auto equations=resolved.executableSystem;auto formula=equations.registry.at(id);

@@ -1,0 +1,57 @@
+{
+  "SonicFile": {
+    "object": "solver",
+    "type": "state"
+  },
+  "use": [
+    "rho",
+    "rhoU",
+    "rhoE"
+  ],
+  "calls": [
+    {
+      "call": "drag.update",
+      "reads": [
+        {
+          "symbol": "rhoU",
+          "version": "Stage"
+        }
+      ]
+    },
+    {
+      "call": "work.update",
+      "reads": [
+        {
+          "symbol": "F",
+          "version": "Stage"
+        },
+        {
+          "symbol": "rhoU",
+          "version": "Stage"
+        },
+        {
+          "symbol": "rho",
+          "version": "Stage"
+        }
+      ]
+    },
+    {
+      "call": "momentum.rhs",
+      "reads": [
+        {
+          "symbol": "F",
+          "version": "Stage"
+        }
+      ]
+    },
+    {
+      "call": "energy.rhs",
+      "reads": [
+        {
+          "symbol": "P",
+          "version": "Stage"
+        }
+      ]
+    }
+  ]
+}

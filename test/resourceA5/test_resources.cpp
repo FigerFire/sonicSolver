@@ -76,13 +76,14 @@ void resourceBinding() {
     Application::Execution::executeEquations(config,system,explicitState,explicitServices,control);
     require(bound.time==explicitState.time && bound.dt==explicitState.dt && bound.step==10,"Resource binding changed clock");
     require(resources.arrays[0]->values()==a.values() && resources.arrays[1]->values()==b.values(),"Binder vs manual physical storage changed numerical result");
-    rejects([&]{Application::Execution::Detail::bindScalarResources(geometry,bound,system,input);});
+    auto reused=Application::Execution::Detail::bindScalarResources(geometry,bound,system,input);
+    require(reused.arrays.empty() && reused.ports.size()==2,"Existing STATE was allocated a second owner");
     for(int mode=0;mode<5;++mode) {
         auto wrong=system;auto& requirement=wrong.solvePlan.compiledProgram.steps.front().physicalResources.front();
         if(mode==0)requirement.owner="other.owner";
         if(mode==1)requirement.type=typeid(double);
         if(mode==2)requirement.writable=true;
-        if(mode==3)requirement.id="wrong.occurrence";
+        if(mode==3)requirement.fields.reset();
         if(mode==4)wrong.solvePlan.compiledProgram.steps.front().physicalResources.push_back(requirement);
         State::StateBundle candidate;candidate.patches={&geometry};
         rejects([&]{auto result=Application::Execution::Detail::bindScalarResources(geometry,candidate,wrong,input);

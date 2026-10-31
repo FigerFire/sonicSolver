@@ -172,7 +172,7 @@ CaseInspection inspectCase(const CaseConfig& config) {
             config.solver.turbulence.phaseNames,
             systemRequest.templateOrigin
                 == System::PhysicsTemplateKind::EulerianEulerian,
-            systemRequest.phaseNames,config.solver.turbulence.stageConservativeTransport});
+            systemRequest.phaseNames,config.solver.turbulence.stageConservativeTransport,config.solver.turbulence.laminarDynamicViscosity});
         systemRequest.modelContributions.push_back(std::move(contribution));
     }
     systemRequest.modelRequiresDiffusion =
@@ -250,11 +250,14 @@ CaseInspection inspectCase(const CaseConfig& config) {
     }
     result.mesh = Runtime::makeMeshRuntimeConfig(
         config,config.solver,result.system.numericalSystem.requiredHaloWidth);
-    result.mesh.initializeConservativeState=System::requiresProvider(result.system,"flow.conservative")
-        || System::requiresProvider(result.system,"flow.pressure-operators") || System::requiresProvider(result.system,"flow.eulerian-pressure");
+    const auto* pressureInputs=System::requiredPressureInputs(System::programOf(result.system));
+    result.mesh.initializeConservativeState=System::requiredPackedComponents(result.system.executableSystem.state,
+        result.system.solvePlan.compiledProgram,"conservative")>0
+        || System::requiredPhaseInputs(System::programOf(result.system))!=nullptr;
     if(config.modelDescription)for(const auto& field:config.modelDescription->fields) {
         if(!result.system.executableSystem.state.contains(field.symbol))continue;
-        if(result.mesh.initializeConservativeState && result.system.executableSystem.state.at(field.symbol).storageBinding!=System::StorageBinding::NamedDistributed)continue;
+        if((result.mesh.initializeConservativeState || pressureInputs)
+            && result.system.executableSystem.state.at(field.symbol).storageBinding!=System::StorageBinding::NamedDistributed)continue;
         // A declared scalar default initializes the entire geometry, unlike a fluid set-only IC.
         if(field.initial.is_number())result.mesh.configuredSetNames.push_back("all");
         for(const auto& item:field.sets.items())result.mesh.configuredSetNames.push_back(item.key());
@@ -283,6 +286,11 @@ std::string describeCase(const CaseInspection& inspection) {
     out << "  actual source contributors: gravity=" << config.sources.gravity.size()
         << " MRF=" << config.sources.rotating.size() << " wallHeat=" << config.sources.wallHeat.size() << "\n";
     out << "  inactive model parameters/field files may remain authored; compiled consumers determine resources.\n";
+    if(inspection.config.modelDescription) {
+        out<<"REGISTERED FIELD BOUNDARY INPUTS (runtime resources validated on run)\n";
+        for(const auto& field:inspection.config.modelDescription->fields)if(inspection.system.executableSystem.state.contains(field.symbol))
+            for(const auto& item:field.boundaries.items())out<<"  "<<field.symbol<<" / "<<item.key()<<" : "<<item.value().dump()<<"\n";
+    }
     return out.str()+System::describe(inspection.system)+IBM::renderExplain(inspection.ibmExplain);
 }
 

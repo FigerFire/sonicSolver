@@ -1,3 +1,4 @@
+#include "solver/system/SF_lowering.h"
 #include "SF_stageGroup.h"
 #include "solver/system/SF_methodObjects.h"
 #include "solver/system/SF_executionContract.h"
@@ -29,9 +30,10 @@ struct Epoch {
 }
 void bindStageGroup(Run::OpRegistry& ops,const System::CompiledSolvePlan& plan,
         const System::CompiledNumericalSystem& numerical,State::StateBundle& state,
-        System::StateRealization& views,const double& limit,std::vector<TemporalCallbacks> callbacks) {
+        System::StateRealization& views,const double& limit,std::vector<TemporalCallbacks> callbacks,
+        std::vector<std::function<void()>> inputBindings) {
     System::validateCoefficientContracts(plan.compiledProgram);
-    const auto reason=System::validateTemporalPlan(plan,numerical.time.recipe.stageCount());
+    const auto reason=System::Lowering::validateTemporalPlan(plan,numerical.time.recipe.stageCount());
     if(!reason.empty())throw std::runtime_error(reason);
     const auto& participants=plan.compiledProgram.temporalParticipants;
     if (callbacks.size()!=participants.size() || callbacks.empty())
@@ -43,6 +45,9 @@ void bindStageGroup(Run::OpRegistry& ops,const System::CompiledSolvePlan& plan,
             || !callbacks[i].prepare || !callbacks[i].rhs || !callbacks[i].advance
             || !callbacks[i].stepSize || !callbacks[i].validatePublish || !callbacks[i].publish)
             throw std::runtime_error("Missing/mismatched temporal participant binding.");
+    views.bindDerivedViews();
+    for(auto& bind:inputBindings)bind();
+    for (auto& callback:callbacks) if (callback.bindReads) callback.bindReads();
     auto epoch=std::make_shared<Epoch>(Epoch{state,views,numerical.time.recipe,std::move(callbacks),
         std::vector<int>(participants.size())});
     epoch->coefficientsReady.resize(participants.size());
@@ -56,6 +61,7 @@ void bindStageGroup(Run::OpRegistry& ops,const System::CompiledSolvePlan& plan,
         }
         if (!std::isfinite(dt) || dt<=0) throw std::runtime_error("Invalid common temporal dt.");
         epoch->state.dt=dt;epoch->active=true;epoch->next=0;
+        epoch->views.beginOldTime();
         epoch->snapshots=epoch->publications=0;epoch->publicationReady=false;
         std::fill(epoch->status.begin(),epoch->status.end(),0);
     });
@@ -65,6 +71,7 @@ void bindStageGroup(Run::OpRegistry& ops,const System::CompiledSolvePlan& plan,
             if (!epoch->active || epoch->status[i]!=0 || epoch->next!=0)
                 throw std::runtime_error("Duplicate/out-of-order temporal snapshot.");
             epoch->callbacks[i].snapshot();epoch->status[i]=1;++epoch->snapshots;
+            if(epoch->snapshots==(int)epoch->callbacks.size())epoch->views.publishOldTime();
         });
         ops.bind(p.prepareStage,p.provider,[epoch,i](const Run::ExecutionContext& c) {
             epoch->context(c);

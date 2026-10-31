@@ -1,4 +1,6 @@
 add_library(SF_solverSystem STATIC
+    SF_declarations.cpp
+    SF_declarations.h
     SF_scalarMethod.cpp
     SF_systemBuilder.cpp
     SF_eulerianRelations.cpp
@@ -38,6 +40,8 @@ add_library(SF_solverSystem STATIC
     SF_executionComposition.cpp
     SF_builtinNumerics.cpp
     SF_builtinProviders.cpp
+    SF_lowering.cpp
+    SF_lowering.h
     SF_methodObjects.cpp
     SF_methodObjects.h
     SF_providerResolver.cpp

@@ -45,8 +45,10 @@ const char* toString(OperationStage stage) {
 
 const char* toString(OperationCapability capability) {
     switch (capability) {
+        case OperationCapability::PhysicalTimeCommit:return "physical.time.commit";
         case OperationCapability::LevelSetExecution: return "interface.levelSet";
         case OperationCapability::ScalarExplicit: return "scalar.explicit";
+        case OperationCapability::StatePublication: return "state.publication";
         case OperationCapability::TemporalSynchronization: return "temporal.synchronization";
         case OperationCapability::ConservativeExplicit: return "conservative.explicit";
         case OperationCapability::SingleFluidTurbulenceClosure: return "singleFluid.turbulence.algebraicClosure";

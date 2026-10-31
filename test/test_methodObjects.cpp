@@ -1,3 +1,4 @@
+#include "solver/system/SF_lowering.h"
 #include "test/typedSymbols.h"
 #include "solver/system/SF_methodObjects.h"
 #include "solver/run/SF_planExecutor.h"
@@ -67,7 +68,7 @@ void checkGenericFusion() {
         }
         SyntheticGroup other=method;other.name="OtherGroup";other.owner="test.other";
         ProviderRegistry providers;providers.add(method);providers.add(other);
-        const auto compiled=compileExecutionProgram(system,program,bindings,providers);
+        const auto compiled=Lowering::compileProgram(system,system.state,program,bindings,providers);
         require(compiled.steps.size()==static_cast<std::size_t>(size)
             && compiled.loweredRoot.children.size()==1,
             "Generic explicit group lost source calls or duplicated a numerical fragment.");
@@ -81,7 +82,7 @@ void checkGenericFusion() {
         }
         const auto reject=[&](ExecutionProgram candidate,std::vector<NumericalBinding> selected) {
             bool rejected=false;
-            try { (void)compileExecutionProgram(system,candidate,selected,providers); }
+            try { (void)Lowering::compileProgram(system,system.state,candidate,selected,providers); }
             catch (const std::runtime_error&) { rejected=true; }
             require(rejected,"Generic compiler accepted an invalid explicit fusion group.");
         };
@@ -123,7 +124,7 @@ int main() {
     const std::vector<NumericalBinding> binding{
         {"MyScalar","ConservativeResidual"}};
     const auto methods=builtinProviders();
-    const auto compiled=compileExecutionProgram(system,program,binding,methods);
+    const auto compiled=Lowering::compileProgram(system,system.state,program,binding,methods);
     require(compiled.steps.size()==1
             && compiled.steps.front().calls.size()==1
             && compiled.steps.front().calls.front().equation=="MyScalar"
@@ -140,11 +141,11 @@ int main() {
             && compiled.steps.front().calls.front().target=="C",
             "TemporalMethod selection changed WHAT or HOW.");
     const ExecutionProgram assignment{EquationCall{"UpdateC",{"C"}}};
-    const auto direct=compileExecutionProgram(system,assignment,
+    const auto direct=Lowering::compileProgram(system,system.state,assignment,
         {{"UpdateC","DirectEvaluation"}},methods);
     require(direct.steps.front().equationMethod=="DirectEvaluation",
             "DirectEvaluation did not lower its own numerical mode.");
-    const auto linear=compileExecutionProgram(system,
+    const auto linear=Lowering::compileProgram(system,system.state,
         ExecutionProgram{EquationCall{"DiffuseC",{"C"}}},
         {{"DiffuseC","LinearEquation"}},methods);
     require(linear.steps.front().equationMethod=="LinearEquation"
@@ -157,7 +158,7 @@ int main() {
     require(qualifiedRegistrationRejected,"STATE accepted a HOW-qualified base symbol.");
     const auto& rkMethod=temporalMethods.at(SF::FDM::TimeRecipeId::ClassicalRK4);
     const auto rk=rkMethod.compile(SF::FDM::builtInTimeRecipe(SF::FDM::TimeRecipeId::ClassicalRK4));
-    const auto staged=compileExecutionProgram(system,program,binding,methods,&rk,&rkMethod);
+    const auto staged=Lowering::compileProgram(system,system.state,program,binding,methods,&rk,&rkMethod);
     require(std::count_if(staged.stateViews.begin(),staged.stateViews.end(),[](const auto& view) {
                 return view.kind==StateViewKind::Stage;
             })==4 && staged.stateViews.size()==7 && system.state.size()==1,
@@ -166,21 +167,21 @@ int main() {
     // Pressure methods lower five explicit HOW outputs to validated numerical
     // fragments. Only the existing callbacks execute gauge/boundary/face math.
     ExecutableEquationSystem pressureSystem;
-    for (const auto* id:{"U","p","pPrime","phi"})
+    for (const auto* id:{"U","p","deltaP","phi"})
         pressureSystem.state.add(stored(id));
     pressureSystem.registry.add({"momentum",SF::Test::symbol("U"),
                                  SF::Test::symbol("U"),{}});
     pressureSystem.registry.add({"pSimple",
-        Expr::op("grad",{SF::Test::symbol("pPrime")}),Expr::constantValue(0),{}});
+        Expr::op("grad",{SF::Test::symbol("deltaP")}),Expr::constantValue(0),{}});
     pressureSystem.registry.add({"correctU",SF::Test::symbol("U"),
-                                 Expr::subtract(SF::Test::symbol("U"),Expr::multiply(Expr::constantValue(1,SF::Math::signature(0,{-1,3,1,0,0,0,0})),Expr::op(SF::Math::Op::Grad,{SF::Test::symbol("pPrime")}))),{}});
+                                 Expr::subtract(SF::Test::symbol("U"),Expr::multiply(Expr::constantValue(1,SF::Math::signature(0,{-1,3,1,0,0,0,0})),Expr::op(SF::Math::Op::Grad,{SF::Test::symbol("deltaP")}))),{}});
     pressureSystem.registry.add({"correctP",SF::Test::symbol("p"),
-                                 SF::Test::symbol("pPrime"),{}});
+                                 SF::Test::symbol("deltaP"),{}});
     pressureSystem.registry.add({"correctFluxp",SF::Test::symbol("phi"),
-                                 SF::System::PressureMathematics::op("pressureFlux",{SF::System::PressureMathematics::symbol("faceResponse"),SF::Test::symbol("pPrime")}),{}});
+                                 SF::System::PressureMathematics::op("pressureFlux",{SF::System::PressureMathematics::symbol("faceResponse"),SF::Test::symbol("deltaP")}),{}});
     ExecutionProgram pressureProgram{{
         {"momentum",{"U"}},
-        {"pSimple",{"p",TargetKind::Correction}},
+        {"pSimple",{"deltaP",TargetKind::Correction}},
         {"correctU",{"U"}},
         {"correctP",{"p"}},
         {"correctFluxp",{"phi",TargetKind::Physical}}}};
@@ -190,8 +191,8 @@ int main() {
         {"correctU","VelocityCorrection"},
         {"correctP","PressureUpdate"},
         {"correctFluxp","FluxCorrection"}};
-    const auto pressureCompiled=compileExecutionProgram(
-        pressureSystem,pressureProgram,pressureBindings,methods);
+    const auto pressureCompiled=Lowering::compileProgram(
+        pressureSystem,pressureSystem.state,pressureProgram,pressureBindings,methods);
     const auto fragmentOperations=[](const CompiledEquationCall& step) {
         std::vector<OpId> result;
         for (const auto& child:step.fragment.children)
@@ -218,7 +219,7 @@ int main() {
             && pressureCompiled.steps.at(4).requirements.size()==3,
         "Pressure method output, implicit solve, or canonical-face contract changed.");
     CompiledSolvePlan methodPlan;
-    methodPlan.root=compileMethodProgram(pressureCompiled);
+    methodPlan.root=pressureCompiled.loweredRoot;
     std::vector<std::string> pressureOrder;
     SF::Run::OpRegistry pressureOperations;
     for (const auto* id:{OpIds::MomentumAssemble,OpIds::MomentumSolve,
@@ -255,7 +256,7 @@ int main() {
     bool pressureRejected=false;
     try {
         ExecutionProgram missing{pressureProgram.root.children.at(1).step};
-        (void)compileExecutionProgram(pressureSystem,missing,
+        (void)Lowering::compileProgram(pressureSystem,pressureSystem.state,missing,
             {{"pSimple","PressureCorrection"}},methods);
     } catch (const std::runtime_error&) { pressureRejected=true; }
     require(pressureRejected,"PressureCorrection accepted missing face-response producer.");
@@ -263,14 +264,14 @@ int main() {
     try {
         auto missingInput=pressureBindings;
         missingInput.front().inputs={"momentum"};
-        (void)compileExecutionProgram(pressureSystem,pressureProgram,missingInput,methods);
+        (void)Lowering::compileProgram(pressureSystem,pressureSystem.state,pressureProgram,missingInput,methods);
     } catch (const std::runtime_error&) { pressureRejected=true; }
     require(pressureRejected,"PressureMomentum accepted duplicate source mathematics.");
     pressureRejected=false;
     try {
         auto wrongTarget=pressureProgram;
         wrongTarget.root.children.at(2).step.target.kind=TargetKind::Working;
-        (void)compileExecutionProgram(pressureSystem,wrongTarget,pressureBindings,methods);
+        (void)Lowering::compileProgram(pressureSystem,pressureSystem.state,wrongTarget,pressureBindings,methods);
     } catch (const std::runtime_error&) { pressureRejected=true; }
     require(pressureRejected,"Pressure correction kernel accepted a target storage kind it cannot implement.");
 
@@ -291,7 +292,7 @@ int main() {
     scope.children={physical,working};
     repeated.root.children={scope};
     const auto mathBefore=formulaText(system.registry.at("UpdateC"));
-    const auto repeatedCompiled=compileExecutionProgram(system,repeated,
+    const auto repeatedCompiled=Lowering::compileProgram(system,system.state,repeated,
         {{"*","MissingMethod"},{"UpdateC","DirectEvaluation"},
          {"UpdateC","LinearEquation",{},"publish"}},methods);
     require(repeatedCompiled.steps.size()==2
@@ -304,17 +305,18 @@ int main() {
     require(repeated.root.children.front().children.front().step.occurrence=="publish"
         && system.registry.entries().size()==3 && formulaText(system.registry.at("UpdateC"))==mathBefore,
         "Compiler changed frozen source HOW/WHAT while sorting or binding storage.");
-    const auto reorderedBindings=compileExecutionProgram(system,repeated,
+    const auto reorderedBindings=Lowering::compileProgram(system,system.state,repeated,
         {{"UpdateC","LinearEquation",{},"publish"},{"UpdateC","DirectEvaluation"},
          {"*","MissingMethod"},{"*","AnotherMissingDefault"}},methods);
     require(reorderedBindings.steps[0].equationMethod==repeatedCompiled.steps[0].equationMethod
         && reorderedBindings.steps[1].equationMethod==repeatedCompiled.steps[1].equationMethod,
         "Highest-priority selection depends on binding registration order.");
-    require(targetFromSyntax("U*").symbol=="U" && targetFromSyntax("U*").kind==TargetKind::Working
-        && targetFromSyntax("p'").symbol=="p" && targetFromSyntax("p'").kind==TargetKind::Correction,
-        "Source target notation was not converted to semantics before runtime.");
+    require(targetFromSyntax("U*").symbol=="U" && targetFromSyntax("U*").kind==TargetKind::Working,
+        "Working target notation was not resolved before runtime");
+    bool primeRejected=false;try{(void)targetFromSyntax("p'");}catch(const std::runtime_error&){primeRejected=true;}
+    require(primeRejected,"OldTime prime was accepted as a writable correction target");
     CompiledSolvePlan repeatedPlan;
-    repeatedPlan.root=compileMethodProgram(repeatedCompiled);
+    repeatedPlan.root=repeatedCompiled.loweredRoot;
     std::vector<TargetKind> observedTargets;
     SF::Run::OpRegistry repeatedOperations;
     for (const auto& occurrence:repeatedCompiled.steps)
@@ -329,19 +331,19 @@ int main() {
         "Generic loop did not preserve per-occurrence typed target execution.");
     bool rejected=false;
     try {
-        (void)compileExecutionProgram(system,
+        (void)Lowering::compileProgram(system,system.state,
             ExecutionProgram{EquationCall{"MyScalar",{""}}},binding,methods);
     } catch (const std::runtime_error&) { rejected=true; }
     require(rejected,"Compiler inferred a missing primary Output.");
     rejected=false;
     try {
-        (void)compileExecutionProgram(system,program,
+        (void)Lowering::compileProgram(system,system.state,program,
             {{"MyScalar","MissingMethod"}},methods);
     } catch (const std::runtime_error&) { rejected=true; }
     require(rejected,"Unknown numerical method silently fell back.");
     rejected=false;
     try {
-        (void)compileExecutionProgram(system,program,
+        (void)Lowering::compileProgram(system,system.state,program,
             {{"MyScalar","ConservativeResidual"},
              {"Unused","DirectEvaluation"}},methods);
     } catch (const std::runtime_error&) { rejected=true; }
@@ -358,7 +360,7 @@ int main() {
     consumer.kind=ExecutionKind::EquationCall;
     consumer.step={"DiffuseC",{"C"}};
     structured.root.children={repeat,consumer};
-    const auto nested=compileExecutionProgram(system,structured,
+    const auto nested=Lowering::compileProgram(system,system.state,structured,
         {{"UpdateC","DirectEvaluation"},{"DiffuseC","LinearEquation"}},methods);
     require(nested.root.children.size()==2
             && nested.root.children.front().kind==ExecutionKind::Loop
@@ -366,7 +368,7 @@ int main() {
 ,
             "Structured HOW did not preserve nesting and workspace dependency.");
     CompiledSolvePlan nestedPlan;
-    nestedPlan.root=compileMethodProgram(nested);
+    nestedPlan.root=nested.loweredRoot;
     std::vector<std::string> order;
     SF::Run::OpRegistry operations;
     operations.bind(nested.steps.front().backendOperation,
@@ -383,10 +385,10 @@ int main() {
     loop.terminationSignal="converged";
     loop.children.push_back(producer);
     until.root.children.push_back(loop);
-    const auto untilCompiled=compileExecutionProgram(system,until,
+    const auto untilCompiled=Lowering::compileProgram(system,system.state,until,
         {{"UpdateC","DirectEvaluation"}},methods);
     CompiledSolvePlan untilPlan;
-    untilPlan.root=compileMethodProgram(untilCompiled);
+    untilPlan.root=untilCompiled.loweredRoot;
     int iterations=0;
     SF::Run::OpRegistry untilOperations;
     untilOperations.bind(untilCompiled.steps.front().backendOperation,
@@ -398,8 +400,8 @@ int main() {
     require(iterations==1,"HOW LoopUntil did not honor compiled convergence signal.");
     rejected=false;
     try {
-        (void)compileExecutionProgram(system,structured,
-            {{"UpdateC","DirectEvaluation"},{"UpdateC","DirectEvaluation"},
+        (void)Lowering::compileProgram(system,system.state,structured,
+            {{"UpdateC","DirectEvaluation",{},"",{},{OriginKind::User,"first"},{},{},false,true},{"UpdateC","DirectEvaluation",{},"",{},{OriginKind::User,"second"},{},{},false,true},
              {"DiffuseC","LinearEquation"}},methods);
     } catch (const std::runtime_error&) { rejected=true; }
     require(rejected,"Duplicate method binding was accepted.");
@@ -428,8 +430,8 @@ int main() {
             "Pressure HOW changed WHAT or occurrence numerical selection.");
         auto selected=which;
         selected.push_back({"UpdateC","DirectEvaluation"});
-        const auto lowered=compileExecutionProgram(pressureSystem,how,selected,methods,&euler);
-        CompiledSolvePlan plan;plan.root=compileMethodProgram(lowered);
+        const auto lowered=Lowering::compileProgram(pressureSystem,pressureSystem.state,how,selected,methods,&euler);
+        CompiledSolvePlan plan;plan.root=lowered.loweredRoot;
         std::vector<std::string> actual;
         SF::Run::OpRegistry fake;
         int convergences=0;
@@ -457,9 +459,28 @@ int main() {
         }
         expected.insert(expected.end(),{"formula.direct.evaluate.UpdateC",OpIds::PressureStepCommit,OpIds::TimeCommit});
         require(actual==expected,"Provider lifecycle changed pressure operation order/count/termination/commit.");
+        for(int invalidClock=0;invalidClock<3;++invalidClock) {
+            auto duplicate=how;
+            if(invalidClock==0) {
+                auto extra=duplicate.root.children.back();extra.id="extraClock";
+                duplicate.root.children.push_back(extra);
+            } else if(invalidClock==1) duplicate.root.repetitions=2;
+            else {
+                ExecutionScope repeated;repeated.kind=ExecutionKind::Loop;
+                repeated.id="repeatedClock";repeated.repetitions=2;
+                repeated.order=duplicate.root.children.back().order;
+                repeated.children={duplicate.root.children.back()};
+                duplicate.root.children.back()=repeated;
+            }
+            bool clockRejected=false;
+            std::string clockError;
+            try {(void)Lowering::compileProgram(pressureSystem,pressureSystem.state,duplicate,selected,methods,&euler);}
+            catch(const std::runtime_error& error){clockError=error.what();clockRejected=clockError.find("Physical clock Commit")!=std::string::npos;}
+            require(clockRejected,("Pressure clock check variant="+std::to_string(invalidClock)+" preset="+request.preset+": "+clockError).c_str());
+        }
         bool temporalRejected=false;
         try {
-            (void)compileExecutionProgram(pressureSystem,how,selected,methods,&rk4);
+            (void)Lowering::compileProgram(pressureSystem,pressureSystem.state,how,selected,methods,&rk4);
         } catch (const std::runtime_error& error) {
             temporalRejected=std::string(error.what()).find("Unsupported: provider")!=std::string::npos;
         }
@@ -472,7 +493,7 @@ int main() {
     unimplementedCommit.root.children.push_back(sourceCommit);
     rejected=false;
     try {
-        (void)compileExecutionProgram(system,unimplementedCommit,{{"UpdateC","DirectEvaluation"}},methods);
+        (void)Lowering::compileProgram(system,system.state,unimplementedCommit,{{"UpdateC","DirectEvaluation"}},methods);
     } catch (const std::runtime_error&) { rejected=true; }
     require(rejected,"Source Commit without provider implementation was silently ignored.");
     ExecutionProgram nestedCommit;
@@ -481,7 +502,7 @@ int main() {
     nestedCommit.root.children={nestedBody};
     rejected=false;
     try {
-        (void)compileExecutionProgram(system,nestedCommit,binding,methods,&euler,&temporalMethods.at(euler.id()));
+        (void)Lowering::compileProgram(system,system.state,nestedCommit,binding,methods,&euler,&temporalMethods.at(euler.id()));
     } catch (const std::runtime_error&) { rejected=true; }
     require(rejected,"Temporal fusion dropped a nested source Commit.");
     for (auto id:{SF::FDM::TimeRecipeId::ForwardEuler,
@@ -492,7 +513,7 @@ int main() {
         const auto recipe=temporalMethod.compile(
             SF::FDM::builtInTimeRecipe(id));
         auto temporalProgram=program;
-        const auto temporal=compileExecutionProgram(system,temporalProgram,
+        const auto temporal=Lowering::compileProgram(system,system.state,temporalProgram,
             binding,methods,&recipe,&temporalMethod);
         require(temporal.hasTemporalRoot
                 && temporal.steps.front().source.equation=="MyScalar"

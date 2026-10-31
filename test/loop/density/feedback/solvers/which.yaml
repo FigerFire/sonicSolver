@@ -1,0 +1,28 @@
+{
+  "SonicFile": {
+    "object": "solver",
+    "type": "which"
+  },
+  "bindings": [
+    {
+      "equation": "continuity",
+      "method": "ConservativeResidual"
+    },
+    {
+      "equation": "momentum",
+      "method": "ConservativeResidual"
+    },
+    {
+      "equation": "energy",
+      "method": "ConservativeResidual"
+    },
+    {
+      "equation": "drag",
+      "method": "LocalAffine"
+    },
+    {
+      "equation": "power",
+      "method": "LocalAffine"
+    }
+  ]
+}

@@ -27,21 +27,6 @@ public:
     std::string_view runtimeProvider() const override {
         return method_=="LevelSetAdvection" ? "flow.conservative" : "interface.level-set";
     }
-    void lowerLifecycle(const ExecutionScope& scope,bool root,
-            const std::vector<CompiledEquationCall>& calls,SolvePlanNode& lowered) const override {
-        if (method_!="LevelSetGeometry" || root || scope.kind!=ExecutionKind::Sequence) return;
-        const auto owns=[&](const auto& self,const ExecutionScope& node)->bool {
-            if (node.kind==ExecutionKind::EquationCall)
-                return std::any_of(calls.begin(),calls.end(),[&](const auto& call) {
-                    return call.equationMethod==method_ && call.source.occurrence==node.step.occurrence;
-                });
-            return false;
-        };
-        if (std::none_of(scope.children.begin(),scope.children.end(),[&](const auto& child) {return owns(owns,child);})) return;
-        SolvePlanNode pre;pre.kind=PlanNodeKind::Update;pre.id="flow.finalize.beforeInterface";
-        pre.operation=OpIds::FlowFinalizeBegin;pre.provider="flow.conservative";
-        lowered.children.insert(lowered.children.begin(),std::move(pre));
-    }
     CompiledEquationCall compile(const ExecutableEquationSystem& system,const EquationCall& call,
             const NumericalBinding& binding) const override {
         auto expected=supportedMathematics(method_);expected.id=call.equation;
@@ -90,6 +75,7 @@ public:
         }
         if (method_=="LevelSetGeometry") result.stateEffects={{"interfaceNormal",true,true},{"interfaceCurvature",true,true}};
         result.backendOperation=operation_;result.providerContract=binding.parameters;
+        if(method_=="LevelSetGeometry")result.groupInputs={{OpIds::FlowFinalizeBegin,"flow.conservative"}};
         if (method_=="LevelSetAdvection") {
             result.temporalResidual=true;result.publishesStageToPhysicalTarget=true;
             result.oldTimeWorkspace="explicit.scalar.phi.q0";

@@ -1,3 +1,4 @@
+#include "solver/system/SF_lowering.h"
 #include "test/typedSymbols.h"
 #include "solver/system/SF_systemBuilder.h"
 #include "solver/system/SF_systemValidator.h"
@@ -171,7 +172,7 @@ int main() {
                 && invalidSimpleMatch.reason.find("use PIMPLE")!=std::string::npos,
             "SIMPLE silently accepted multiple pressure corrections");
 
-    require(!System::hasUnknown(system.rawSystem,"pPrime"),
+    require(!System::hasUnknown(system.rawSystem,"deltaP"),
             "pPrime leaked into RawEquationSystem");
     require(!System::hasEquation(system.rawSystem,"pSimple"),
             "pressure-correction equation leaked into RawEquationSystem");
@@ -180,7 +181,7 @@ int main() {
     require(System::hasConstraint(system.rawSystem,"C_INCOMPRESSIBILITY"),
             "raw incompressibility constraint is absent");
 
-    require(!System::hasUnknown(system,"pPrime") && !System::hasUnknown(system,"phi"),
+    require(system.executableSystem.state.at("deltaP").storageBinding==System::StorageBinding::TransientWorkspace && !System::hasUnknown(system,"phi"),
             "conservative pressure invented a base correction/face-flux authority");
     require(system.executableSystem.state.at("rhoU").storageKey=="conservative"
                 && System::producedBy(system.executableSystem.state.at("U"),"closure.thermodynamicVelocity"),
@@ -193,7 +194,7 @@ int main() {
                 && calls.front().writes==std::vector<std::string>{"rho","rhoU","rhoE"}
                 && calls.front().calls.size()==3,
             "native conservative predictor lacks an explicit mass/momentum/energy fusion contract");
-    require(calls[1].target.symbol=="p" && calls[1].target.kind==System::TargetKind::Correction
+    require(calls[1].target.symbol=="deltaP" && calls[1].target.kind==System::TargetKind::Correction
                 && calls[3].target.symbol=="p" && calls[3].target.kind==System::TargetKind::Working
                 && calls[4].target.kind==System::TargetKind::Workspace
                 && calls[5].target.symbol=="rhoE",
@@ -208,7 +209,7 @@ int main() {
     owned(owned,system.solvePlan.root);
     for (const auto& view:system.solvePlan.compiledProgram.stateViews) {
         if (view.kind==System::StateViewKind::Correction || view.kind==System::StateViewKind::Working)
-            require(view.symbol=="p" && view.owner==System::StateViewOwner::NumericalProvider,
+            require(view.symbol==(view.kind==System::StateViewKind::Correction ? "deltaP" : "p") && view.owner==System::StateViewOwner::NumericalProvider,
                 "pressure views acquired a second compiler workspace authority");
     }
 
@@ -421,7 +422,7 @@ int main() {
     authoredHow.root=system.solvePlan.compiledProgram.root;
     bool changedMathRejected=false;
     try {
-        (void)System::compileExecutionProgram(changedMath,authoredHow,
+        (void)System::Lowering::compileProgram(changedMath,changedMath.state,authoredHow,
             system.numericalSelection.bindings,System::builtinProviders(),
             &system.numericalSystem.time.recipe);
     } catch (const std::runtime_error& error) {
@@ -527,7 +528,7 @@ int main() {
         "ee.faceFlux.correct", "ee.boundary.afterPressure",
         "ee.faceFlux.canonical.pressure", "ee.energy.solve",
         "ee.boundary.final", "ee.outer.validate", "ee.step.commit",
-        "ee.time.commit"};
+        "time.commit"};
     require(eulerianOps == frozenEulerianOps,
             "generic Eulerian fragment lowering changed operation order");
     const auto* eulerianOuter = findNode(eulerian.solvePlan.root,"EE.outer");
@@ -545,8 +546,8 @@ int main() {
             "Eulerian Plan scheduled turbulence without turbulence equations");
     bool unconsumedVisible = false;
     try {
-        (void)System::SolvePlanner::compile(eulerian.executableSystem,
-            eulerian.numericalSystem.time.recipe);
+        (void)System::SolvePlanner::compile(
+            eulerian.numericalSystem.time.recipe, System::CompiledExecutionProgram{});
     } catch (const std::runtime_error& error) {
         unconsumedVisible = std::string(error.what()).find("compiled HOW")
             != std::string::npos;

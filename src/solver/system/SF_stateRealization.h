@@ -11,6 +11,9 @@
 #include <vector>
 
 namespace SF::System {
+/// @brief 编译期 STATE 引用解析；不读场值，不排序，不绑定数组。
+void resolveCallInputs(const StateRegistry&,const std::vector<EquationCall*>&);
+
 
 /// @brief 一个 role group 的编译期视图。
 struct RealizedRoleGroup {
@@ -54,11 +57,18 @@ struct CompiledStateRealization {
 CompiledStateRealization compileStateRealization(
     const StateRegistry& state,const std::vector<ConstraintDescriptor>& constraints);
 
+/// @brief 由实际请求的 STATE view（含 producer 依赖）计算 packed backing 大小。
+/// storage 是已声明 backing 身份，不从模型或 provider 推断布局。
+int requiredPackedComponents(const StateRegistry&,const CompiledExecutionProgram&,std::string_view storage);
+
 /// @brief Generic state binding; providers may demand backend-owned storage only.
 CompiledStateView realizeTarget(const StateRegistry& state,CompiledTarget& target);
 /// @brief Temporal methods request versions without changing source HOW ordering.
 void realizeTemporalViews(const StateRegistry& state,CompiledExecutionProgram& program,
     int stages);
+
+/// @brief 合并已声明字段端口的空间backing需求，不读取AST或场数值。
+void compileFieldResources(const StateRegistry&,CompiledExecutionProgram&);
 
 /// @brief 验证唯一 STATE 声明并冻结所需生产者；不添加更新或重排 HOW。
 void compileDerivedViews(const StateRegistry& state,std::vector<CompiledStateView>& views);

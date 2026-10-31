@@ -254,7 +254,7 @@ def main() -> int:
         authority_errors.append("ExecutionProgram lacks structured HOW authority")
     if "workspaceRequires" not in solve_program_header or "backendOperation" not in solve_program_header:
         authority_errors.append("Compiled method step lacks workspace/backend contract")
-    method_source = (root / "src/solver/system/SF_methodObjects.cpp").read_text(
+    method_source = (root / "src/solver/system/SF_lowering.cpp").read_text(
         errors="replace")
     if "compileFragment" not in method_source or "hasTemporalRoot=true" not in method_source:
         authority_errors.append("TemporalMethod does not compile a production fragment")
@@ -455,7 +455,7 @@ def main() -> int:
            ["compileEulerianPimple", "PIMPLE", "PISO", "SIMPLE",
             "ee.pressure", "ee.momentum"]):
         authority_errors.append("SolvePlanner still dispatches a pressure/Eulerian algorithm")
-    if "compiledExecution.steps.empty()" not in solve_plan_source or "compileMethodProgram(compiledExecution)" not in solve_plan_source:
+    if "compiledExecution.steps.empty()" not in solve_plan_source or "compiledExecution.loweredRoot" not in solve_plan_source:
         authority_errors.append(
             "SolvePlanner does not require authoritative compiled HOW")
     if 'operations.bind("ee.pressure.publish",[&] {})' in pressure_stepper:
@@ -494,7 +494,7 @@ def main() -> int:
         if token in (root / "src/models/ibm/descriptor/SF_algorithmDescriptor.cpp").read_text():
             authority_errors.append("IBM port recreates a duplicate mathematical/schedule inventory: " + token)
     for token in ["IBM", "ibm.", "Immersed"]:
-        if token in (root / "src/solver/system/SF_methodObjects.cpp").read_text():
+        if token in (root / "src/solver/system/SF_lowering.cpp").read_text():
             authority_errors.append("Generic method compiler dispatches an IBM implementation: " + token)
     if "missingCapability(plan.compiledProgram,context,call,boundContext)" not in provider_resolver:
         authority_errors.append("Provider resolution omitted generic execution-context capability validation")
@@ -783,7 +783,7 @@ def main() -> int:
     solve_program = (root / "src/core/system/SF_solveProgram.h").read_text()
     if "SolveBlock" in solve_program or "TIME_RECIPE" in solve_plan_source:
         authority_errors.append("retired duplicate solve/time summary authority restored")
-    for name in ("SF_numericalCompiler.cpp", "SF_systemValidator.cpp"):
+    for name in ("SF_lowering.cpp", "SF_systemValidator.cpp"):
         if "validateMathematicalCoverage(" not in (root / "src/solver/system" / name).read_text():
             authority_errors.append("active mathematics coverage is not validated: " + name)
     for name in ("SF_eulerianMethods.cpp", "SF_eulerianTurbulence.cpp"):
@@ -844,6 +844,10 @@ def main() -> int:
     scalar_binder=(root/"src/app/application/adapters/SF_scalarResources.cpp").read_text(errors="replace")
     if "localBlockId,boundModelResources" not in resource_binder or "validatePhysicalResources(system.solvePlan.compiledProgram,completeBindings)" not in scalar_binder:
         authority_errors.append("Physical model/scalar ports bypass compiled requirement validation")
+    if any(token in scalar_binder for token in ("any_cast", "CompiledScalarEquation", "CompiledAffineEquation", "CompiledLinearBlock")):
+        authority_errors.append("Application scalar binder infers resource needs from numerical method contracts")
+    if "required.fields" not in scalar_binder or "alreadyBound" not in scalar_binder:
+        authority_errors.append("Scalar resources bypass compiled field needs or existing resource ports")
     numerical_compiler = (
         root / "src/solver/system/SF_numericalCompiler.cpp"
     ).read_text(errors="replace")
@@ -857,7 +861,7 @@ def main() -> int:
     execution=(root/"src/app/application/execution/SF_execution.cpp").read_text(errors="replace")
     if "executeScalarEquations" in execution or "ScalarOps::Provider" in execution:
         authority_errors.append("Application dispatches scalar resource assembly by provider family")
-    if "NumericalCompiler::compileSystem(" \
+    if "Lowering::compileSystem(" \
             not in builder_source:
         authority_errors.append(
             "Resolved system does not compile the production numerical system")
@@ -1115,7 +1119,7 @@ def main() -> int:
         authority_errors.append(
             "constant-density pressure HOW is missing or retains LegacyPlanFragment branching")
     method_source = (
-        root / "src/solver/system/SF_methodObjects.cpp"
+        root / "src/solver/system/SF_lowering.cpp"
     ).read_text(errors="replace")
     if "compileLegacyExplicitStep(" in solve_plan_source:
         authority_errors.append("legacy explicit target inference was restored")
@@ -1277,7 +1281,7 @@ def main() -> int:
         authority_errors.append("pressure coupling duplicates momentum mathematics")
     if "EquationRegistry registry" not in equation_header:
         authority_errors.append("resolved systems lack the authoritative equation registry")
-    if "NumericalCompiler::compileSystem" not in builder_source or "builtinProviders()" in builder_source:
+    if "Lowering::compileSystem" not in builder_source or "builtinProviders()" in builder_source:
         authority_errors.append("SystemBuilder still owns numerical provider compilation")
     source_contribution=(root / "src/models/physics/SF_sourceContribution.cpp").read_text()
     if "extendMathematics" not in source_contribution or "LegacyExecutionPolicy" in source_contribution:
@@ -1314,7 +1318,7 @@ def main() -> int:
         authority_errors.append("WHAT still owns the retired unknown registration vector")
     if "StateRegistry state" not in equation_header or "CompiledStateView" not in solve_program_header:
         authority_errors.append("Four-module compiler lacks STATE specification/view output")
-    method_compiler = (root / "src/solver/system/SF_methodObjects.cpp").read_text()
+    method_compiler = (root / "src/solver/system/SF_lowering.cpp").read_text()
     if "state.at(step->target.symbol)" not in method_compiler or "realizeTarget(state,compiled.target)" not in method_compiler:
         authority_errors.append("Compiler does not resolve HOW targets through independent STATE input")
     source_target = cpp_body(solve_program_header, "struct Target {")
@@ -1420,8 +1424,16 @@ def main() -> int:
     if re.search(r"PlanExecutor::|providerContract|equationMethod|Time::Explicit::|advanceStage\(|evaluateRHS\(|stageIndex|stageCount",composition_body):
         authority_errors.append("runtime binding composition acquired numerical scheduling/contract authority")
 
-    temporal=(root / "src/solver/system/SF_methodObjects.cpp").read_text()
-    temporal_body=cpp_body(temporal,"CompiledExecutionProgram compileExecutionProgram(")
+    temporal=(root / "src/solver/system/SF_lowering.cpp").read_text()
+    recipe_scope=cpp_body((root/"src/solver/system/SF_lowering.cpp").read_text(),"void expandRecipeScope(")
+    if "stageLocalEvaluation" in recipe_scope or "ExecutionFrequency" not in recipe_scope or "Ambiguous HOW frequency" not in recipe_scope:
+        authority_errors.append("Time recipe scope inferred from adjacent provider capability instead of authored frequency")
+    stage_evaluation=cpp_body(temporal,"std::vector<SolvePlanNode> stageEvaluations(")
+    if "evaluated.insert(identity)" not in stage_evaluation or "leaf.equationCalls=participant->calls" not in stage_evaluation:
+        authority_errors.append("Stage evaluation lost complete one-RHS temporal-owner grouping")
+    if "validateCoefficientInputs(state,result)" not in temporal:
+        authority_errors.append("Stage coefficient preparation lost its input/version ordering validation")
+    temporal_body=cpp_body(temporal,"CompiledExecutionProgram compileProgram(")
     if re.search(r'"(?:k|omega|epsilon|TurbulenceTransport|kOmegaSST|kEpsilon|flow.turbulence)"',temporal_body):
         authority_errors.append("generic mixed temporal compiler branches on turbulence identity")
     if "physicalStepPrefix" not in (root / "src/solver/system/SF_methodObjects.h").read_text():
@@ -1526,11 +1538,11 @@ def main() -> int:
 
     # Native Eulerian assembly is AST/provider-owned; flat DSL remains scoped compatibility.
     # Generic contracts must inspect declared capabilities, not module pair names.
-    for name in ("SF_methodObjects.cpp", "SF_executionContract.cpp", "SF_providerResolver.cpp"):
+    for name in ("SF_lowering.cpp", "SF_executionContract.cpp", "SF_providerResolver.cpp"):
         text=(root/"src/solver/system"/name).read_text()
         if re.search(r"if\s*\([^;{}]*(?:turbulence[^;{}]*(?:IBM|ibm)|(?:IBM|ibm)[^;{}]*turbulence)", text):
             authority_errors.append(name+" reintroduced a module-pair capability guard")
-    contract_compiler=(root/"src/solver/system/SF_methodObjects.cpp").read_text()
+    contract_compiler=(root/"src/solver/system/SF_lowering.cpp").read_text()
     if "if (!program.explicitOrder) {" not in contract_compiler:
         authority_errors.append("explicit HOW can be silently reordered")
     if "validateDataFlow(state,result)" not in contract_compiler or "validatePlacement(program,root)" not in contract_compiler:
@@ -1599,6 +1611,35 @@ def main() -> int:
         authority_errors.append("compiler lost explicit temporal owner grouping")
     if "values_.boundReads" not in scalar_binding or "scalarInstances" not in scalar_binding:
         authority_errors.append("scalar instances lost stable Stage input/data binding")
+
+    # One coordinator owns four-axis lowering; neither the planner nor runtime re-compiles it.
+    lowering=(root/"src/solver/system/SF_lowering.cpp").read_text()
+    retired_api=(root/"src/solver/system/SF_methodObjects.h").read_text()+(root/"src/solver/system/SF_numericalCompiler.h").read_text()
+    if any(token in retired_api for token in ("compileExecutionProgram", "compileMethodProgram", "compileSystem(")):
+        authority_errors.append("retired parallel lowering API restored")
+    if not all(token in lowering for token in ("resolveCallInputs(state,steps)", "resolveNumerics(", "validateDataFlow(state,result)", "validateClockCommit(")):
+        authority_errors.append("unified lowering lost a four-axis or clock validation pass")
+    if re.search(r'#include\s*[<"](?:models/|mpi\.h)',lowering):
+        authority_errors.append("lowering depends on concrete physics or raw MPI")
+    if "ReferenceKind::Step?step->occurrence:step->equation" not in (root/"src/solver/system/SF_stateRealization.cpp").read_text():
+        authority_errors.append("STATE reference namespaces regained implicit name fallback")
+    target_parser=cpp_body(solve_program,"inline Target targetFromSyntax(")
+    if "OldTime prime is read-only" not in solve_program or "TargetKind::Correction" in target_parser:
+        authority_errors.append("prime regained correction target semantics")
+    if "explicitChoice" not in (root/"src/solver/system/SF_builtinNumerics.cpp").read_text():
+        authority_errors.append("WHICH confuses contribution provenance with authored selection priority")
+
+    numerical_binding=(root/"src/core/system/SF_numericalBinding.h").read_text()
+    state_registry=(root/"src/core/system/SF_stateRegistry.h").read_text()
+    if re.search(r"\b(?:StateUse|StateVersion)\b",re.sub(r"/\*.*?\*/|//[^\n]*","",numerical_binding,flags=re.S)):
+        authority_errors.append("WHICH regained authored STATE read-version authority")
+    if "callInputs()" not in state_registry or "state.callInputs()" not in (root/"src/solver/system/SF_stateRealization.cpp").read_text():
+        authority_errors.append("STATE occurrence input declarations lost their sole compiler consumer")
+    plan_executor=(root/"src/solver/run/SF_planExecutor.cpp").read_text()
+    if any(token in plan_executor for token in ("FormulaExpr", "LocalAffine", "LinearBlockCentral2Hypre", "WENO")):
+        authority_errors.append("generic PlanExecutor acquired numerical method identity dispatch")
+    if "was not updated in Loop" not in plan_executor or "maximum iterations without residual convergence" not in plan_executor:
+        authority_errors.append("typed residual loop lost freshness/maximum-failure validation")
 
     if not args.quiet:
         print(f"Architecture dependency check: {len(files)} source files")

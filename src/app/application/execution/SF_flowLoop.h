@@ -50,30 +50,4 @@ int flowLoop(
     std::function<bool(bool)> globallyFinished,
     std::function<std::string(const FDM::StepResult&)> formatDetail);
 
-namespace Detail {
-
-/// Compose the shared conservative solver/state/service tail used by both
-/// single- and multi-patch application setup. Topology-specific setup remains
-/// with the caller; numerical lifecycle authority remains in the compiled plan.
-int runConservative(
-    const FDM::SolverConfig& config,
-    const System::ResolvedSimulationSystem& system,
-    const System::CompiledSolvePlan& plan,
-    State::StateBundle& state,
-    FDM::IBoundaryPipeline& boundary,
-    FDM::IExecutionRuntime& runtime,
-    FDM::ISolverObserver& observer,
-    FDM::ImmersedCouplingPorts immersed,
-    FDM::ITransportModel* transport,
-    FDM::IEquationSystemCoupling* equations,
-    const Time::RunControl& control,
-    const std::string& name,
-    std::function<void(int)> saveStep,
-    std::function<void(double)> saveTime,
-    std::function<bool(bool)> globallyFinished,
-    const FDM::ThermalEquationData* thermal,
-    const std::vector<FDM::ScalarInstanceData>& scalarInstances);
-
-} // namespace Detail
-
 } // namespace SF::Application::Execution

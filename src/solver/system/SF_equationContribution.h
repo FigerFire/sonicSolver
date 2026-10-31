@@ -38,7 +38,15 @@ public:
     void finalizeMathematics();
 
     void addExecution(ExecutionScope value) { execution.push_back(std::move(value)); }
-    void bindNumerics(NumericalBinding value) { value.origin=origin_;numerics.push_back(std::move(value)); }
+    void bindNumerics(NumericalBinding value) {
+        if(value.origin.source.empty())value.origin=origin_;
+        numerics.push_back(std::move(value));
+    }
+    /// @brief 调用输入只注册到 STATE，不选择方法或重排执行树。
+    void bindInputs(CallInputs value) {
+        if(value.origin.source.empty())value.origin=origin_;
+        system_.state.bindInputs(std::move(value));
+    }
     std::optional<PressureCouplingInputs> pressureInputs;
     std::vector<PlacementRequirement> placement;
     std::vector<ExecutionScope> execution;

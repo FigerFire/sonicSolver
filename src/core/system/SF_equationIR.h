@@ -123,6 +123,8 @@ enum class OperationStage {
 enum class OperationCapability {
     ScalarExplicit,
     TemporalSynchronization,
+    PhysicalTimeCommit,
+    StatePublication,
     ConservativeExplicit,
     SingleFluidTurbulenceTransport,
     LevelSetExecution,
@@ -132,6 +134,7 @@ enum class OperationCapability {
     MomentumPredictor,
     PressureCorrection,
     PressureLinearSolve,
+    SparseLinearSolve,
     PressureBoundary,
     VelocityCorrection,
     FluxCorrection,

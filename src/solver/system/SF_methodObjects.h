@@ -8,6 +8,7 @@
 #include "core/system/SF_equationIR.h"
 #include "core/system/SF_solveProgram.h"
 
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -18,6 +19,18 @@ namespace SF::System {
 class TermProviderCatalog;
 struct FormulaOperatorBinding;
 struct CompiledNumericalSystem;
+/// @brief 已迁移的局部数值方法入口；仅按 WHICH 方法选择，不访问模型或运行资源。
+std::optional<CompiledEquationCall> compileDirectEquation(const ExecutableEquationSystem&,
+    const EquationCall&,const NumericalBinding&);
+CompiledEquationCall compileLocalAffine(const ExecutableEquationSystem&,const EquationCall&,const NumericalBinding&);
+/// @brief 真实方程项的编译；未迁移实现仍由其原接口处理，无失败回退。
+bool lowerDirectSpatial(const ExecutableEquationSystem&,const CompiledEquationCall&,
+    const FDM::NumericalRecipeSet&,const TermProviderCatalog&,
+    const std::vector<FormulaOperatorBinding>&,CompiledNumericalSystem&);
+
+/// @brief 已迁移方法的有限过程/布局约束，不重新匹配动量 AST。
+std::string validateCompiledConservativeStage(const ExecutableEquationSystem&,const CompiledSolvePlan&);
+void validateDirectProgram(const ExecutableEquationSystem&,const CompiledNumericalSystem&,const CompiledSolvePlan&);
 
 class ITemporalMethod {
 public:
@@ -55,9 +68,11 @@ public:
         const std::vector<FormulaOperatorBinding>&,CompiledNumericalSystem&) const {
         throw std::runtime_error("Selected provider has no spatial lowering implementation: "+std::string(id()));
     }
-    /// Provider-local lifecycle only decorates compiled scopes; source stays immutable.
-    virtual void lowerLifecycle(const ExecutionScope&, bool,
-        const std::vector<CompiledEquationCall>&, SolvePlanNode&) const {}
+    /// @brief 整体残差/未知量集合由所选实现lower；默认拒绝，不展开为逐项执行。
+    virtual CompiledEquationCall compileBlock(const ExecutableEquationSystem&,
+        const ExecutionScope&,const NumericalBinding&) const {
+        throw std::runtime_error("Unsupported implicit block solve =>: selected "+std::string(id())+" has no steady block capability");
+    }
     virtual CompiledEquationCall compile(
         const ExecutableEquationSystem& system,
         const EquationCall& step,
@@ -74,29 +89,4 @@ private:
 
 TemporalMethodRegistry builtinTemporalMethods();
 ProviderRegistry builtinProviders();
-/// @brief Explicit WHAT/STATE/HOW/WHICH inputs; STATE never infers call order.
-CompiledExecutionProgram compileExecutionProgram(
-    const ExecutableEquationSystem& system,const StateRegistry& state,
-    const ExecutionProgram& program,
-    const std::vector<NumericalBinding>& bindings,
-    const ProviderRegistry& registry,
-    const CompiledTimeRecipe* time = nullptr,
-    const ITemporalMethod* temporalMethod = nullptr);
-
-/// @brief Composition-snapshot convenience; delegates to the independent channels.
-inline CompiledExecutionProgram compileExecutionProgram(
-        const ExecutableEquationSystem& system,const ExecutionProgram& program,
-        const std::vector<NumericalBinding>& bindings,const ProviderRegistry& registry,
-        const CompiledTimeRecipe* time=nullptr,const ITemporalMethod* temporalMethod=nullptr) {
-    return compileExecutionProgram(system,system.state,program,bindings,registry,time,temporalMethod);
-}
-
-/// Lower equation-level HOW to executable control flow for method providers
-/// that have already supplied their backend OpIds. Temporal fragments are
-/// compiled by ITemporalMethod and take precedence for transient bodies.
-SolvePlanNode compileMethodProgram(const CompiledExecutionProgram& program, const ProviderRegistry* providers = nullptr);
-
-/// Validate phase barriers and one physical Commit before numerical mutation.
-std::string validateTemporalPlan(const CompiledSolvePlan&,int stages);
-
 } // namespace SF::System

@@ -55,10 +55,6 @@ public:
     explicit EulerianTurbulenceMethod(bool transport):transport_(transport) {}
     std::string_view id() const override {return transport_ ? "EulerianTurbulenceTransport" : "EulerianTurbulenceClosure";}
     std::string_view runtimeProvider() const override {return "flow.eulerian-turbulence";}
-    std::string_view operationProvider(const OpId& operation) const override {
-        return operation==OpIds::EeInterphaseCompute || operation==OpIds::EeSourcesAssemble
-            ? "flow.eulerian-pressure" : runtimeProvider();
-    }
     CompiledEquationCall compile(const ExecutableEquationSystem& system,const EquationCall& step,
             const NumericalBinding& binding) const override {
         if (!hasConstraint(system,"C_SHARED_PRESSURE") || !hasConstraint(system,"C_VOLUME_FRACTION")
@@ -154,10 +150,6 @@ public:
             auto leaf=op(operation,owner);leaf.equationCalls=result.calls;result.fragment.children.push_back(std::move(leaf));
             result.operations.push_back({operation,operation,OperationStage::Prepare,{capability},{OriginKind::Generated,std::string(id())}});
         };
-        if (!transport_) {
-            add(OpIds::EeInterphaseCompute,"flow.eulerian-pressure",OperationCapability::EulerianPhaseExecution);
-            add(OpIds::EeSourcesAssemble,"flow.eulerian-pressure",OperationCapability::EulerianPhaseExecution);
-        }
         add(transport_ ? OpIds::EeTurbulenceSolve : OpIds::EeTurbulencePrepare,
             "flow.eulerian-turbulence",OperationCapability::EulerianTurbulenceExecution);
         if(transport_) for(const char* operation:{OpIds::EeTurbulenceBoundary,OpIds::EeTurbulenceValidate,OpIds::EeTurbulenceRefresh})
@@ -169,42 +161,33 @@ public:
         result.providerContract=std::make_shared<const CompiledEulerianTurbulenceContract>(std::move(contract));
         return result;
     }
-    void lowerLifecycle(const ExecutionScope& source,bool root,const std::vector<CompiledEquationCall>& calls,SolvePlanNode& result) const override {
-        if (transport_) return;
-        if (root) {
-            // A transported model cannot silently become only a cached viscosity closure.
-            std::vector<const CompiledEquationCall*> closures,transport;
-            for (const auto& call:calls) if (const auto* c=eulerianTurbulenceContract(call))
-                (c->transport ? transport : closures).push_back(&call);
-            if (closures.empty()) throw std::runtime_error("Missing Eulerian turbulence closure group.");
-            const auto* c=eulerianTurbulenceContract(*closures.front());
-            if (c->model==FDM::TurbulenceModelKind::Smagorinsky) {
-                if (!transport.empty()) throw std::runtime_error("Algebraic LES cannot inherit a transported RAS kernel.");
-            } else {
-                if (transport.size()!=2*closures.size()) throw std::runtime_error("Eulerian RAS requires complete native transport occurrences.");
-                const auto* t=eulerianTurbulenceContract(*transport.front());
-                if (c->model!=t->model || c->phases.size()!=t->phases.size()) throw std::runtime_error("Inconsistent Eulerian closure/transport group.");
-                for (std::size_t i=0;i<c->phases.size();++i)
-                    if (c->phases[i].slot!=t->phases[i].slot || c->phases[i].name!=t->phases[i].name)
-                        throw std::runtime_error("Eulerian closure/transport phase order differs.");
-            }
-        }
-        if (source.kind!=ExecutionKind::EquationCall) return;
-        const auto member=std::find_if(calls.begin(),calls.end(),[&](const auto& call) {return call.source.occurrence==source.step.occurrence;});
-        if (member==calls.end() || member->equationMethod!="EulerianPhaseContinuity") return;
-        // The explicit closure HOW group now owns the original source prerequisites.
-        // Remove their duplicate realization from continuity, without moving a source sibling.
-        if (result.children.size()<2 || result.children[0].operation!=OpIds::EeInterphaseCompute
-            || result.children[1].operation!=OpIds::EeSourcesAssemble)
-            throw std::runtime_error("Unsupported Eulerian pre-closure prerequisite topology.");
-        result.children.erase(result.children.begin(),result.children.begin()+2);
-    }
 private:bool transport_;
 };
 }
 void addEulerianTurbulenceMethods(ProviderRegistry& registry) {
     static const EulerianTurbulenceMethod closure(false),transport(true);
     registry.add(closure);registry.add(transport);
+}
+void validateEulerianTurbulenceProcess(const CompiledExecutionProgram& program) {
+    const auto& calls=program.steps;
+    if(std::none_of(calls.begin(),calls.end(),[](const auto& c){return eulerianTurbulenceContract(c);}))return;
+    // A transported model cannot silently become only a cached viscosity closure.
+    std::vector<const CompiledEquationCall*> closures,transport;
+    for (const auto& call:calls) if (const auto* c=eulerianTurbulenceContract(call))
+        (c->transport ? transport : closures).push_back(&call);
+    if (closures.empty()) throw std::runtime_error("Missing Eulerian turbulence closure group.");
+    const auto* c=eulerianTurbulenceContract(*closures.front());
+    if (c->model==FDM::TurbulenceModelKind::Smagorinsky) {
+        if (!transport.empty()) throw std::runtime_error("Algebraic LES cannot inherit a transported RAS kernel.");
+    } else {
+        if (transport.size()!=2*closures.size()) throw std::runtime_error("Eulerian RAS requires complete native transport occurrences.");
+        const auto* t=eulerianTurbulenceContract(*transport.front());
+        if (c->model!=t->model || c->phases.size()!=t->phases.size()) throw std::runtime_error("Inconsistent Eulerian closure/transport group.");
+        for (std::size_t i=0;i<c->phases.size();++i)
+            if (c->phases[i].slot!=t->phases[i].slot || c->phases[i].name!=t->phases[i].name)
+                throw std::runtime_error("Eulerian closure/transport phase order differs.");
+    }
+
 }
 void validateEulerianTurbulenceBindings(const CompiledExecutionProgram& program,
         const std::vector<std::string>& names,const FDM::TurbulenceConfig& config) {

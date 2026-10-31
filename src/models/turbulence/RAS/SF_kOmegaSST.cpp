@@ -1,3 +1,4 @@
+#include "models/turbulence/SF_transportMathematics.h"
 /// @file SF_kOmegaSST.cpp
 /// @brief RAS 湍流模型选择与闭式实现。
 
@@ -21,14 +22,14 @@ namespace RAS {
 namespace {
 
 struct SSTConstants {
-    double betaStar = 0.09;
-    double sigmaK1 = 0.85;
-    double sigmaW1 = 0.5;
-    double beta1 = 0.075;
+    double betaStar = stageSstBetaStar;
+    double sigmaK1 = stageSstSigmaK1;
+    double sigmaW1 = stageSstSigmaW1;
+    double beta1 = stageSstBeta1;
     double gamma1 = 5.0 / 9.0;
-    double sigmaK2 = 1.0;
-    double sigmaW2 = 0.856;
-    double beta2 = 0.0828;
+    double sigmaK2 = stageSstSigmaK2;
+    double sigmaW2 = stageSstSigmaW2;
+    double beta2 = stageSstBeta2;
     double gamma2 = 0.44;
     double a1 = 0.31;
 };
@@ -220,10 +221,8 @@ FDM::TransportStageCoefficients KOmegaSSTModel::stageCoefficients(const Field& f
     value.dynamicViscosity=rho*c.a1*kv/std::max(c.a1*wv,vorticityMagnitude(flow,i,j,k)*value.blending2);
     const double f1=value.blending1,s=strainRateMagnitude(flow,i,j,k);
     const double production=std::min(value.dynamicViscosity*s*s,20*c.betaStar*rho*kv*wv);
-    value.diffusivity={(config.laminarDynamicViscosity+(f1*c.sigmaK1+(1-f1)*c.sigmaK2)*value.dynamicViscosity)/rho,
-        (config.laminarDynamicViscosity+(f1*c.sigmaW1+(1-f1)*c.sigmaW2)*value.dynamicViscosity)/rho};
+    value.molecularViscosity=config.laminarDynamicViscosity;
     value.production={production,rho*(f1*c.gamma1+(1-f1)*c.gamma2)*production/std::max(value.dynamicViscosity,1e-30)};
-    value.sink={c.betaStar*rho*wv,(f1*c.beta1+(1-f1)*c.beta2)*rho*wv};
     value.crossSource=2*(1-f1)*rho*c.sigmaW2*product/std::max(wv,config.coefficients.omegaFloor);
     return value;
 }

@@ -1,0 +1,19 @@
+{
+  "SonicFile": {
+    "object": "models",
+    "type": "thermoDynamics"
+  },
+  "thermoDynamics": {
+    "equationOfState": "rhoConst",
+    "transport": "const"
+  },
+  "properties": {
+    "equationOfState": {
+      "rho": 1.0
+    },
+    "transport": {
+      "mu": 0.1,
+      "Pr": 0.72
+    }
+  }
+}

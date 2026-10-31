@@ -13,6 +13,12 @@
 
 namespace SF::System {
 class SystemCompositionBuilder;
+struct CompiledNumericalSystem;
+struct CompiledSolvePlan;
+
+/// @brief 恒密度压力的过程/资源能力；消费已编译数学，不遍历动量 AST 或重选离散。
+std::string validatePressureProgram(const ExecutableEquationSystem&,
+    const CompiledNumericalSystem&,const CompiledSolvePlan&);
 
 /// @brief 已有预测器的表示；不从 equation/occurrence 名称推断存储或算法。
 enum class PressurePredictorKind { Velocity, ConservativeMomentum };
@@ -37,7 +43,7 @@ inline Math::Signature signature(std::string_view name,bool conservative=false) 
     if(name=="rho")return Math::signature(0,{1,-3,0,0,0,0,0});
     if(name=="U")return Math::signature(1,{0,1,-1,0,0,0,0});
     if(name=="rhoU")return Math::signature(1,{1,-2,-1,0,0,0,0});
-    if(name=="rhoE" || name=="p" || name=="pPrime")return Math::signature(0,{1,-1,-2,0,0,0,0});
+    if(name=="rhoE" || name=="p" || name=="deltaP")return Math::signature(0,{1,-1,-2,0,0,0,0});
     if(name=="soundSpeed")return Math::signature(0,{0,1,-1,0,0,0,0});
     if(name=="dt")return Math::signature(0,{0,0,1,0,0,0,0});
     if(name=="momentumRelaxation" || name=="pressureRelaxation" || name=="fluxValidity" || name=="converged")return Math::signature(0,{});
@@ -54,7 +60,7 @@ inline FormulaExpr op(std::string_view name,std::vector<FormulaExpr> args,std::s
     static const Math::OperatorRule rules[]={
         {"faceAverage",[](const std::vector<S>& a){if(a.size()!=1 || a[0].rank)throw std::runtime_error("Face average requires scalar");return a[0];}},
         {"faceVolumeDivergence",[](const std::vector<S>& a){if(a.size()!=1)throw std::runtime_error("Face divergence needs one volume rate");Math::requireCompatible(a[0],signature("phi"),"face rate");return Math::signature(0,{0,0,-1,0,0,0,0});}},
-        {"pressureFlux",[](const std::vector<S>& a){if(a.size()!=2)throw std::runtime_error("Pressure flux needs response/p");Math::requireCompatible(a[0],signature("faceResponse"),"pressure response");Math::requireCompatible(a[1],signature("pPrime"),"pressure flux");return signature("phi");}},
+        {"pressureFlux",[](const std::vector<S>& a){if(a.size()!=2)throw std::runtime_error("Pressure flux needs response/p");Math::requireCompatible(a[0],signature("faceResponse"),"pressure response");Math::requireCompatible(a[1],signature("deltaP"),"pressure flux");return signature("phi");}},
         {"invalidateDerivedFlux",[](const std::vector<S>& a){if(a.size()!=1)throw std::runtime_error("Flux invalidation needs momentum");Math::requireCompatible(a[0],signature("rhoU"),"flux invalidation");return signature("fluxValidity");}},
         {"totalEnergyFromPressure",[](const std::vector<S>& a){if(a.size()!=3)throw std::runtime_error("Energy closure needs rho/rhoU/p");for(unsigned i=0;i<3;++i)Math::requireCompatible(a[i],signature(i==0?"rho":i==1?"rhoU":"p"),"energy closure");return signature("rhoE");}},
         {"relax",[](const std::vector<S>& a){if(a.size()!=2 || !a[0].tupleSize)throw std::runtime_error("Relaxation requires typed iterate products");Math::requireCompatible(a[0],a[1],"relax");return a[0];}},

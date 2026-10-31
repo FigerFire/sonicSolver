@@ -141,8 +141,8 @@ int main() {
                 "momentum mathematics or Working execution target was lost");
         const auto& pressureFormula=manualSystem.executableSystem.registry.at(
             "pSimple");
-        require(SF::System::dependsOn(pressureFormula.lhs,"pPrime")
-                    && !SF::System::dependsOn(pressureFormula.rhs,"pPrime"),
+        require(SF::System::dependsOn(pressureFormula.lhs,"deltaP")
+                    && !SF::System::dependsOn(pressureFormula.rhs,"deltaP"),
                 "pressure correction Equation does not expose its implicit target");
         const auto scanFormulaCalls=[&](const auto& self,
             const SF::System::SolvePlanNode& node,
@@ -157,7 +157,7 @@ int main() {
         require(scanFormulaCalls(scanFormulaCalls,manualSystem.solvePlan.root,
                     "momentum","U")==1
                 && scanFormulaCalls(scanFormulaCalls,manualSystem.solvePlan.root,
-                    "pSimple","pPrime")==1
+                    "pSimple","deltaP")==1
                 && scanFormulaCalls(scanFormulaCalls,manualSystem.solvePlan.root,
                     "correctFluxp","phi")==1,
                 "PISO plan lost its FormulaCall semantics");
@@ -212,7 +212,7 @@ int main() {
                     && hasOuterLoop && hasPressureLoop,
                 "PIMPLE preset did not contribute both plan loops");
         require(scanFormulaCalls(scanFormulaCalls,pimpleSystem.solvePlan.root,
-                    "pSimple","pPrime")==1,
+                    "pSimple","deltaP")==1,
                 "PIMPLE used a different pressure Equation binding");
 
         // 3. 守恒 transported-rho 系统注册 PIMPLE：必须报告 invalid，而不是

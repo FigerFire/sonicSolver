@@ -5,12 +5,15 @@ namespace SF::System {
 // A version is an algorithm input, not an instruction to refresh a value.
 enum class StateVersion { Current, Stage, OldTime, Frozen, Lagged };
 enum class StateEvaluation { Direct, Lazy, Materialized };
+/// @brief 存储用途与时间版本正交；工作量、修正量不重新定义数学符号。
+enum class TargetKind { Physical, Working, Correction, Workspace };
 struct StateUse {
     std::string symbol;
     StateVersion version=StateVersion::Current;
     bool halo=false;
     std::string snapshot;
     bool perIteration=false;
+    TargetKind kind=TargetKind::Physical;
 };
 struct StateEffect {
     std::string symbol;

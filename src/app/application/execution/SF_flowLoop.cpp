@@ -5,6 +5,9 @@
 
 #include "solver/algorithm/SF_singleFluidStepper.h"
 #include "solver/system/SF_systemValidator.h"
+#include "solver/system/SF_solvePlan.h"
+#include "core/system/SF_operationIds.h"
+#include <algorithm>
 
 #include <stdexcept>
 #include <utility>
@@ -48,6 +51,15 @@ int executeEquations(const FDM::SolverConfig& config,
         system.numericalSystem,system.solvePlan,system.runtime);
     host.bindServices(services);
     FDM::SolverState state;state.bundle=&bundle;
+    const auto operations=System::SolvePlanner::requiredOperations(system.solvePlan);
+    if(std::find(operations.begin(),operations.end(),System::OpIds::TimeCommit)==operations.end()) {
+        // An algebraic HOW has no physical-time evolution. Execute the same plan once.
+        host.bindSolvePlan(system.solvePlan);host.prepare(state);const auto result=host.advance(state);
+        if(!result.accepted)throw std::runtime_error(result.message);
+        if(control.writeByStep){if(callbacks.saveStep)callbacks.saveStep(bundle.step);}
+        else if(callbacks.saveTime)callbacks.saveTime(bundle.time);
+        return 0;
+    }
     return flowLoop(host,state,system.solvePlan,control,"EquationSystem",
         callbacks.saveStep,callbacks.saveTime,callbacks.report,callbacks.globallyFinished,
         [](const FDM::StepResult& result) {return result.message;});
@@ -99,48 +111,3 @@ int flowLoop(
 }
 
 } // namespace SF::Application::Execution
-
-namespace SF::Application::Execution::Detail {
-
-int runConservative(
-        const FDM::SolverConfig& config,
-        const System::ResolvedSimulationSystem& system,
-        const System::CompiledSolvePlan& plan,
-        State::StateBundle& bundle,
-        FDM::IBoundaryPipeline& boundary,
-        FDM::IExecutionRuntime& runtime,
-        FDM::ISolverObserver& observer,
-        FDM::ImmersedCouplingPorts immersed,
-        FDM::ITransportModel* transport,
-        FDM::IEquationSystemCoupling* equations,
-        const Time::RunControl& control,
-        const std::string& name,
-        std::function<void(int)> saveStep,
-        std::function<void(double)> saveTime,
-        std::function<bool(bool)> globallyFinished,
-        const FDM::ThermalEquationData* thermal,
-        const std::vector<FDM::ScalarInstanceData>& scalarInstances) {
-    SolverAlgorithm::SingleFluidStepper solver(
-        config,system.executableSystem,system.numericalSystem,
-        system.solvePlan,system.runtime);
-    FDM::SolverState state;
-    state.bundle = &bundle;
-    FDM::SolverServices services;
-    services.boundaryPipeline = &boundary;
-    services.executionRuntime = &runtime;
-    services.observer = &observer;
-    services.immersed = immersed;
-    services.transportModel = transport;
-    services.equationSystem = equations;
-    services.thermalEquation = thermal;
-    services.scalarInstances = scalarInstances;
-    services.levelSet = dynamic_cast<FDM::ILevelSetOperations*>(equations);
-    solver.bindServices(services);
-    return flowLoop(
-        solver,state,plan,control,name,
-        std::move(saveStep),std::move(saveTime),{},
-        std::move(globallyFinished),
-        [](const FDM::StepResult& result) { return result.message; });
-}
-
-} // namespace SF::Application::Execution::Detail

@@ -31,8 +31,8 @@ void shared(FDM::TimeRecipeId id,bool constant,int nodes=41) {
     Execution::LocalRuntime runtime;HomogeneousExterior exterior;FDM::SolverServices services;services.executionRuntime=&runtime;services.boundaryPipeline=&exterior;services.scalarInstances={{"advance.rhoC",data}};
     auto realized=System::realizeState(system.executableSystem.state,system.runtime,state,system.solvePlan.compiledProgram.stateViews);
     const double limit=dt;
-    auto flow=std::make_shared<FlowOperations>(config,system.executableSystem,system.numericalSystem,system.solvePlan,system.runtime,state,services,realized,limit);flow->prepare();
-    auto f=flow->temporalParticipant();auto scalars=scalarParticipants(system.numericalSystem,system.solvePlan,state,services,realized,limit,[flow](auto stamp){return flow->stageMassFlux(stamp);});auto& c=scalars.at(0);
+    auto flow=std::make_shared<FlowOperations>(config.boundaries,config.pressure,config.numerics.idealGasGamma,system.executableSystem,system.numericalSystem,system.solvePlan,system.runtime,state,services,realized,limit);flow->prepare();
+    auto f=flow->temporalParticipant();auto scalars=scalarParticipants(system.numericalSystem,system.solvePlan,state,services,realized,limit,[flow](auto stamp){return flow->stageMassFlux(stamp);});auto& c=scalars.at(0);realized.bindDerivedViews();if(c.bindReads)c.bindReads();
     double accumulated=0,maxBudget=0,maxC=0,maxFluxDifference=0;int fluxReads=0,comparedFaces=0;
     const auto integral=[&]{double sum=0;for(int i=g;i<g+nodes;++i)sum+=scalar(i,g,g)*h;return sum;};
     double initial=integral();std::ofstream log("stage-budget-"+std::string(FDM::toString(id))+(constant?"-constant":"-pulse")+".csv");log.precision(17);log<<"step,stage,time,dt,netScalarFlux\n";

@@ -134,7 +134,7 @@ void exercise(const std::string& model, bool enabled, double temperature, int ou
                 else require(actual==baseline,"Outer iteration accumulated source rates or wall diagnostics.");
                 phases.sources().transferLedger.validate();
             }
-            if(id==System::OpIds::EeTimeCommit) {time+=1e-4;++step;}
+            if(id==System::OpIds::TimeCommit) {time+=1e-4;++step;}
             preceding=id;
         });
     }
@@ -145,7 +145,7 @@ void exercise(const std::string& model, bool enabled, double temperature, int ou
     require(count[System::OpIds::EeInterphaseCompute]==outers*2 && count[System::OpIds::EeSourcesAssemble]==outers*2,
         "Source rate was assembled per phase/pressure/nonorth pass instead of per outer.");
     require(count[System::OpIds::EePressureSolve]==outers*8 && count[System::OpIds::EeStepCommit]==2
-        && count[System::OpIds::EeTimeCommit]==2 && step==19 && probes==2,"Nested corrections repeated a physical commit.");
+        && count[System::OpIds::TimeCommit]==2 && step==19 && probes==2,"Nested corrections repeated a physical commit.");
     near(time,.3002,"Source operation changed the physical clock.");
     Snapshot final;
     for(const auto& p:phases.phases()) {

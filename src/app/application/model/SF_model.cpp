@@ -1,6 +1,7 @@
 #include "SF_model.h"
 #include "compatibility/SF_compatibility.h"
 #include "infrastructure/io/case/SF_case.h"
+#include "solver/system/SF_singleFluidPreset.h"
 #include <filesystem>
 #include <cctype>
 namespace SF::Application::ModelLoader {
@@ -55,23 +56,26 @@ Model::Description expandPresets(const Model::Description& input) {
         Model::Schema{{{"preset","string",true}},false}.validate(object.parameters,object.source);
         const auto name=object.parameters.at("preset").get<std::string>();
         if(name!="singleFluidLaminar" && name!="singleFluidSST")
-            throw std::runtime_error(object.source+": unknown composition preset "+name);
+            throw std::runtime_error(object.source+": unknown built-in composition preset "+name);
         const bool sst=name=="singleFluidSST";
-        const auto source=object.source+" ["+name+"]";
+        const auto source=object.source+" [builtin "+name+"]";
         merge(merge,numerical,P{{"time",{{"default",sst?"classicalRK4":"forwardEuler"}}},
             {"terms",{{"convection","weno5Rusanov"},{"diffusion","central2Explicit"}}}},"solver/numerics",source,false);
-        const auto add=[&](const std::string& id,const std::string& type,P parameters) {
+        const auto add=[&](const char* id,const char* category,const char* type,P parameters) {
             auto& value=defaults[role(type)];
-            if(value.type.empty())value={id,"solver",type};
-            if(type=="turbulence")value.category="models";
+            if(value.type.empty())value={id,category,type};
             merge(merge,value.parameters,parameters,"object/"+role(type),source,false);
             value.source=source;
         };
-        add("equations","equationSystem",{{"preset","compressible"}});
-        add("state","stateRegistry",{{"use",P::array({"rho","rhoU","rhoE"})}});
-        add("equationRegistry","equationRegistry",{{"use",P::array({"Continuity","Momentum","Energy"})}});
-        add("execution","algorithmRegistry",{{"Explicit",P::object()}});
-        add("turbulence","turbulence",sst?P{{"simulationType","RAS"},{"RAS",{{"model","kOmegaSST"}}},{"transportMethod","stageConservative"}}:P{{"simulationType","laminar"}});
+        const auto base=System::Preset::singleFluidDefaults();
+        add("equations","solver","equationSystem",{{"preset","conservativeExplicit"}});
+        add("state","solver","stateRegistry",{{"use",base.solutionVariables}});
+        add("equationRegistry","solver","equationRegistry",{{"use",base.equations}});
+        add("execution","solver","algorithmRegistry",{{base.algorithm,P::object()}});
+        add("turbulence","models","turbulence",sst
+            ? P{{"simulationType","RAS"},{"RAS",{{"model","kOmegaSST"}}},{"transportMethod","stageConservative"}}
+            : P{{"simulationType","laminar"}});
+
     }
     const auto numericsSource=input.selectionOrigins.find("solver/numerics");
     merge(merge,numerical,input.numerics,"solver/numerics",numericsSource==input.selectionOrigins.end()?"registered numerics":numericsSource->second,true);
@@ -85,7 +89,7 @@ Model::Description expandPresets(const Model::Description& input) {
             if(!inserted)throw std::runtime_error("Conflicting explicit target "+key+": "+prior->second+" and "+object.source);
             auto parameters=defaults.at(key).parameters;
             // Explicit algorithm/model choices replace alternative branches, not merge two algorithms.
-            if(key=="algorithmregistry" || (key=="turbulence" && object.parameters.contains("simulationType"))) {
+            if(key=="algorithmregistry" || key=="equationsystem" || (key=="turbulence" && object.parameters.contains("simulationType"))) {
                 for(const auto& item:parameters.items())if(!object.parameters.contains(item.key())) {
                     const auto prefix="object/"+key+"/"+item.key();
                     for(auto it=origins.begin();it!=origins.end();) {
@@ -116,13 +120,12 @@ std::vector<EquationSystemInstanceConfig> equationInstances(
             && object.type != "BuiltinEquationSystem") continue;
         if (object.name.empty() || !object.parameters.contains("preset")) {
             throw std::runtime_error(
-                "An equation-system instance requires a name and preset/type.");
+                "An equation-system instance requires a name and a built-in preset.");
         }
-        const std::string preset =
-            object.parameters.at("preset").get<std::string>();
-        const std::string type = preset == "compressible"
-            ? "singleFluid" : preset == "eulerianEulerian"
-                ? "eulerian" : std::string{};
+        const std::string preset=object.parameters.at("preset").get<std::string>();
+        // Instance metadata records provenance; execution remains provider-driven.
+        const std::string type=preset=="compressible" || preset=="conservativeExplicit"
+            ? "singleFluid" : preset=="eulerianEulerian" ? "eulerian" : std::string{};
         if (type.empty()) {
             throw std::runtime_error(
                 "Equation-system instance '"+object.name

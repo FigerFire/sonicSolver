@@ -4,6 +4,7 @@
 /// @brief Turbulence-owned mathematical equation contribution contract.
 
 #include <string>
+#include <optional>
 #include <vector>
 
 #include "core/system/SF_systemContribution.h"
@@ -17,6 +18,8 @@ struct SystemContributionSpec {
     /// @brief 完整 PhaseSystem 声明顺序；selected phases 可以是子集或不同顺序。
     std::vector<std::string> phaseOrder;
     bool stageConservativeTransport=false;
+    /// @brief Stage 闭合使用的实际层流动力黏度；此选择必须显式传入。
+    std::optional<double> laminarDynamicViscosity;
 };
 
 void contribute(

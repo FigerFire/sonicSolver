@@ -1,0 +1,11 @@
+{
+  "SonicFile": {
+    "object": "solver",
+    "type": "execution"
+  },
+  "PISO": {
+    "correctors": 2,
+    "outerCorrectors": 1,
+    "nonOrthogonalCorrectors": 0
+  }
+}

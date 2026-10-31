@@ -49,17 +49,20 @@ ResolvedOperationBinding ProviderCatalog::resolve(
 
 ProviderCatalog ProviderCatalog::builtIn() {
     ProviderCatalog catalog;
-    catalog.add({TemporalOps::Provider,{OperationCapability::TemporalSynchronization}});
+    catalog.add({"execution.state",{OperationCapability::StatePublication}});
+    catalog.add({TemporalOps::Provider,{OperationCapability::TemporalSynchronization,OperationCapability::PhysicalTimeCommit}});
     catalog.add({"equation.thermal",{OperationCapability::ScalarExplicit}});
-    catalog.add({"equation.scalar-central2",{OperationCapability::ScalarExplicit}});
+    catalog.add({"equation.scalar-central2",{OperationCapability::ScalarExplicit,OperationCapability::SparseLinearSolve}});
     catalog.add({"equation.scalar-transport",{OperationCapability::ScalarExplicit}});
     catalog.add({"equation.scalar-shared-flux",{OperationCapability::ScalarExplicit}});
-    catalog.add({"equation.stage-scalar-transport",{OperationCapability::ScalarExplicit}});
-    catalog.add({"flow.homogeneous",{OperationCapability::ConservativeExplicit}});
+    catalog.add({"equation.capacity-transport",{OperationCapability::ScalarExplicit}});
+    catalog.add({"closure.sst-nonlocal",{OperationCapability::ScalarExplicit}});
+    catalog.add({"flow.homogeneous",{OperationCapability::ConservativeExplicit,OperationCapability::PhysicalTimeCommit}});
     catalog.add({"interface.level-set",{OperationCapability::LevelSetExecution}});
     catalog.add({"flow.turbulence-closure",{OperationCapability::SingleFluidTurbulenceClosure}});
     catalog.add({"flow.turbulence",{OperationCapability::SingleFluidTurbulenceTransport}});
     catalog.add({"flow.conservative",{
+        OperationCapability::PhysicalTimeCommit,
         OperationCapability::ConservativeExplicit,
         OperationCapability::PressureSchedule,
         OperationCapability::MomentumPredictor,
@@ -69,6 +72,7 @@ ProviderCatalog ProviderCatalog::builtIn() {
         OperationCapability::VelocityCorrection,
         OperationCapability::FluxCorrection}});
     const std::vector<OperationCapability> constantPressure{
+        OperationCapability::PhysicalTimeCommit,
         OperationCapability::PressureSchedule,
         OperationCapability::FixedTimeIteration,
         OperationCapability::MomentumPredictor,
@@ -81,6 +85,7 @@ ProviderCatalog ProviderCatalog::builtIn() {
     catalog.add({"flow.rhie-chow",constantPressure});
     catalog.add({"flow.eulerian-turbulence",{OperationCapability::EulerianTurbulenceExecution}});
     catalog.add({"flow.eulerian-pressure",{
+        OperationCapability::PhysicalTimeCommit,
         OperationCapability::EulerianPhaseExecution,
         OperationCapability::PressureLinearSolve}});
     catalog.add({"ibm.constraint",{OperationCapability::ImmersedConstraint}});

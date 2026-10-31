@@ -18,7 +18,9 @@ namespace SF::FDM {
 /// @brief 求解器可见的有效输运闭合接口。
 struct TransportStageCoefficients {
     double dynamicViscosity=0;
-    std::array<double,2> diffusivity{},production{},sink{};
+    std::array<double,2> production{};
+    /// @brief 原模型实际使用的层流动力黏度；绑定时核对 WHAT 常量来源。
+    double molecularViscosity=0;
     double crossSource=0,blending1=0,blending2=0;
 };
 using TransportStageSamples=std::array<std::function<double(int,int,int)>,2>;

@@ -1,0 +1,20 @@
+{
+  "SonicFile": {
+    "object": "solver",
+    "type": "which"
+  },
+  "bindings": [
+    {
+      "equation": "continuity",
+      "method": "ConservativeResidual"
+    },
+    {
+      "equation": "momentum",
+      "method": "ConservativeResidual"
+    },
+    {
+      "equation": "energy",
+      "method": "ConservativeResidual"
+    }
+  ]
+}

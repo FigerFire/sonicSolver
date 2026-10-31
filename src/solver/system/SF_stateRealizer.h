@@ -7,6 +7,7 @@
 #include "SF_runtimeRequirements.h"
 #include "core/state/SF_stateBundle.h"
 #include <memory>
+#include <map>
 #include <vector>
 
 namespace SF::System {
@@ -33,6 +34,15 @@ public:
     std::size_t size() const { return unknowns_.size(); }
     /// @brief Scope-qualified reads; binding is stable, availability is per stage.
     std::function<double(int,int)> stageReader(std::string_view symbol,int stages);
+    /// @brief 借用原 q0/old 数组；只在本步全部 snapshot 完成后可读，绝不回退 Current。
+    std::function<double(int,int)> oldTimeReader(std::string_view symbol);
+    /// @brief 借用明确版本和分量的只读数据；不刷新、不同步、不替换版本。
+    std::function<double(int,int)> reader(const StateUse&,int stages);
+    /// @brief 数值 workspace 的发布代次；物理数组仍使用其原 registry generation。
+    unsigned long long revision(std::string_view symbol) const;
+    void publishWorkspace(std::string_view symbol);
+    void beginOldTime();
+    void publishOldTime();
     void beginStage(int index,int count,double time);
     void stageReady();
     void rhsReady();
@@ -45,7 +55,7 @@ public:
     void updateView(std::string_view symbol,StateViewKind kind,int stage=-1);
 private:
     enum class StagePhase { Closed, Preparing, Reading, Advancing };
-    struct StageEpoch { int index=-1;double time=0;StagePhase phase=StagePhase::Closed; };
+    struct StageEpoch { int index=-1;int oldTimeStep=-1;double time=0;StagePhase phase=StagePhase::Closed; };
     std::shared_ptr<StageEpoch> epoch_=std::make_shared<StageEpoch>();
     State::StateBundle* state_=nullptr;
     const StateRegistry* symbols_=nullptr;
@@ -66,6 +76,7 @@ private:
         State::DistributedFieldView field;
     };
     std::vector<RealizedUnknown> unknowns_;
+    std::map<std::string,unsigned long long> workspaceRevisions_;
     std::vector<RealizedStateView> views_;
     std::vector<std::unique_ptr<ViewStorage>> owned_;
 };

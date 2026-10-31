@@ -1,3 +1,4 @@
+#include "solver/system/SF_lowering.h"
 #include "solver/system/SF_equationContribution.h"
 #include "solver/system/SF_methodObjects.h"
 #include "solver/system/SF_stateRealizer.h"
@@ -72,7 +73,7 @@ void extension() {
     ExecutableEquationSystem system;system.state=raw.state;system.registry=raw.registry;
     ProviderRegistry providers;UpdateMethod method;providers.add(method);
     ExecutionProgram how{{"affine",{"q"},"current"}};how.explicitOrder=true;
-    auto compiled=compileExecutionProgram(system,how,{{"affine","test.affine.update"}},providers);
+    auto compiled=Lowering::compileProgram(system,system.state,how,{{"affine","test.affine.update"}},providers);
     for(int stage=0;stage<2;++stage)for(const auto& id:{"a","b","q"})
         compiled.stateViews.push_back(demand(id,std::string(id)+".stage",StateViewKind::Stage,stage));
     compileDerivedViews(system.state,compiled.stateViews);
@@ -96,7 +97,7 @@ void extension() {
     auto residual=ResourceView::bind(resource,owner,owner->residual,"patch");
     const auto* address=&owner->residual;
     Run::OpRegistry ops;ops.bind("derive.current","test.affine",[&]{state.updateView("q",StateViewKind::Physical);residual.write<Residual>()->source(1,1,1,0)=read();});
-    CompiledSolvePlan plan;plan.compiledProgram=compiled;plan.root=compileMethodProgram(compiled,&providers);
+    CompiledSolvePlan plan;plan.compiledProgram=compiled;plan.root=compiled.loweredRoot;
     Run::PlanExecutor::validateBindings(plan,ops);Run::PlanExecutor::execute(plan,ops);
     require(read()==5 && owner->residual.source(1,1,1,0)==5,"Compiled current update/reference failed");
     require(residual.read<Residual>().get()==address,"Resource was copied");

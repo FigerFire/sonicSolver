@@ -104,7 +104,7 @@ inline void requireCompatible(const Signature& a,const Signature& b,std::string_
 }
 /// @brief Identity不含occurrence或数值provider。扩展规则使用独立的显式名称和签名函数。
 enum class Op { Add, Subtract, Multiply, Divide, Negate, Dot, Outer, Cross, DoubleDot,
-    Grad, Div, Curl, Laplacian, Diffusion, Ddt, Partial, Trace, Pow, Sin, Source, Extension };
+    Grad, Div, Curl, Laplacian, Diffusion, Ddt, Partial, Trace, Pow, Sin, Source, Component, Vector, Extension };
 inline const char* name(Op op) {
     switch(op) {
 #define SF_MATH_NAME(ID,TEXT) case Op::ID:return TEXT;
@@ -114,6 +114,7 @@ inline const char* name(Op op) {
         SF_MATH_NAME(Div,"div") SF_MATH_NAME(Laplacian,"laplacian") SF_MATH_NAME(Diffusion,"diffusion")
         SF_MATH_NAME(Ddt,"ddt") SF_MATH_NAME(Partial,"partial") SF_MATH_NAME(Trace,"trace")
         SF_MATH_NAME(Pow,"pow") SF_MATH_NAME(Sin,"sin") SF_MATH_NAME(Source,"source")
+        SF_MATH_NAME(Component,"component") SF_MATH_NAME(Vector,"vector")
         SF_MATH_NAME(Extension,"extension")
 #undef SF_MATH_NAME
     }
@@ -122,7 +123,7 @@ inline const char* name(Op op) {
 inline Op resolveOperator(std::string_view text) {
     if(text=="gradient")return Op::Grad;
     for(auto op:{Op::Add,Op::Subtract,Op::Multiply,Op::Divide,Op::Negate,Op::Dot,Op::Outer,Op::Cross,Op::DoubleDot,
-            Op::Grad,Op::Div,Op::Curl,Op::Laplacian,Op::Diffusion,Op::Ddt,Op::Partial,Op::Trace,Op::Pow,Op::Sin,Op::Source})
+            Op::Grad,Op::Div,Op::Curl,Op::Laplacian,Op::Diffusion,Op::Ddt,Op::Partial,Op::Trace,Op::Pow,Op::Sin,Op::Source,Op::Component,Op::Vector})
         if(text==name(op))return op;
     throw std::runtime_error("Unknown mathematical operator: "+std::string(text));
 }
@@ -135,6 +136,14 @@ inline Signature inferSignature(Op op,const std::vector<Signature>& a,double exp
         if(a.size()!=a[0].tupleSize)throw std::runtime_error("Source function argument count mismatch");
         for(unsigned i=1;i<a.size();++i){Signature input;static_cast<TensorSignature&>(input)=(*a[0].tuple)[i-1];requireCompatible(a[i],input,"source function argument");}
         Signature result;static_cast<TensorSignature&>(result)=(*a[0].tuple)[a[0].tupleSize-1];return result;
+    }
+    if(op==Op::Component) {
+        if(a.size()!=2 || a[0].rank!=1 || a[0].tupleSize)throw std::runtime_error("component requires a vector and constant index");
+        requireCompatible(a[1],signature(0,{}),"component index");auto result=a[0];result.rank=0;return result;
+    }
+    if(op==Op::Vector) {
+        if(a.size()!=3 || a[0].rank || a[0].tupleSize)throw std::runtime_error("vector requires three scalar components");
+        requireCompatible(a[0],a[1],"vector component");requireCompatible(a[0],a[2],"vector component");auto result=a[0];result.rank=1;return result;
     }
     if(op==Op::Pow && a.size()==2) {
         requireCompatible(a[1],signature(0,{}),"constant power exponent");

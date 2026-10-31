@@ -1,0 +1,28 @@
+{
+  "SonicFile": {
+    "object": "solver",
+    "type": "which"
+  },
+  "bindings": [
+    {
+      "equation": "momentum",
+      "method": "PressureMomentum"
+    },
+    {
+      "equation": "pSimple",
+      "method": "PressureCorrection"
+    },
+    {
+      "equation": "correctU",
+      "method": "VelocityCorrection"
+    },
+    {
+      "equation": "correctP",
+      "method": "PressureUpdate"
+    },
+    {
+      "equation": "correctFluxp",
+      "method": "FluxCorrection"
+    }
+  ]
+}

@@ -20,8 +20,11 @@ struct FormulaValues {
     /// Compile-time symbol slots, bound once; no per-cell string lookup.
     std::vector<std::function<double(int,int)>> boundReads;
     std::function<double(std::size_t,int,int,int,int)> boundNeighbor;
+    /// @brief 算术面系数邻域：通过原版本reader借用物理镜像节点，不创建系数ghost authority。
+    std::function<double(std::size_t,int,int,int)> coefficientNeighbor;
     /// Frozen orthogonal-stencil geometry/neighbor bindings supplied by a provider.
     std::function<double(int)> spacing;
+    std::function<int(int,int,int)> neighborCell;
     int ownedCells = 0;
     int components = 1;
     std::function<double(const std::string&,int,int)> read;

@@ -18,7 +18,6 @@ namespace SF::SolverAlgorithm::ConservativeRHS {
 
 void validateTimestepState(
     const State::StateBundle& state,
-    const FDM::SolverConfig& config,
     const System::CompiledNumericalSystem& numericalSystem);
 
 void prepareBoundaryState(
@@ -32,7 +31,6 @@ void prepareBoundaryState(
 void assembleAllPatches(
     const std::vector<Field*>& fields,
     std::vector<PatchWorkspace>& workspaces,
-    const FDM::SolverConfig& config,
     const System::CompiledNumericalSystem& numericalSystem,
     SF::Equation::Compressible::System& equations,
     State::StateBundle& state,

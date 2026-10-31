@@ -11,7 +11,7 @@
 namespace SF::SolverAlgorithm {
 void bindImmersedOperations(Run::OpRegistry& operations,
     const System::RuntimeRequirements& requirements, const System::CompiledSolvePlan& plan,
-    const FDM::SolverConfig& config, State::StateBundle& state,
+    const FDM::PressureCorrectionConfig& pressure,double pressureGamma, State::StateBundle& state,
     const FDM::SolverServices& services, FDM::ImmersedConstraintResult& correction,
     std::function<void(const std::vector<Field*>&,double,double)> prepareBoundaryState) {
     const auto required=[&](std::string_view id) {
@@ -28,7 +28,7 @@ void bindImmersedOperations(Run::OpRegistry& operations,
     }
     std::shared_ptr<PressureBased::MonolithicKKT> kktProvider;
     if (required(System::OpIds::IbmKktSolve))
-        kktProvider=std::make_shared<PressureBased::MonolithicKKT>(config.pressure,config.numerics.idealGasGamma);
+        kktProvider=std::make_shared<PressureBased::MonolithicKKT>(pressure,pressureGamma);
     if (required(System::OpIds::IbmConstraintProject)
         && services.immersed.constraint && services.immersed.system) {
         operations.bind(System::OpIds::IbmConstraintProject,"ibm.constraint",[&state,&services,&correction,prepareBoundaryState,kktProvider] {

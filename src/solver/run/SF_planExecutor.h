@@ -41,6 +41,7 @@ class OpRegistry {
 public:
     using Operation = std::function<void()>;
     using ContextOperation = std::function<void(const ExecutionContext&)>;
+    using ResidualOperation = std::function<std::vector<double>(const ExecutionContext&)>;
     void bind(System::OpId id, Operation operation);
     void bind(System::OpId id, ContextOperation operation);
     void bind(System::OpId id,std::string provider,Operation operation);
@@ -49,14 +50,21 @@ public:
                 const ExecutionContext& context,std::string_view provider = {}) const;
     [[nodiscard]] bool contains(const System::OpId& id) const;
     [[nodiscard]] bool contains(const System::OpId& id,std::string_view provider) const;
+    /// @brief 借用已绑定方法的真实状态/残差；范数和循环退出由统一执行器负责。
+    void bindResidual(std::string id,std::string provider,ResidualOperation operation);
+    [[nodiscard]] bool containsResidual(std::string_view id,std::string_view provider) const;
+    [[nodiscard]] std::vector<double> sampleResidual(std::string_view id,
+        std::string_view provider,const ExecutionContext&) const;
     /// @brief 只保留编译期已分配给当前 runtime provider 的 OpId。
     void retain(const std::vector<System::OpId>& assigned);
     /// @brief 复用同一 registry 时丢弃上一轮的 binding。
-    void clear() { entries_.clear(); }
+    void clear() { entries_.clear(); residuals_.clear(); }
 
 private:
     struct Entry { System::OpId id; std::string provider; ContextOperation operation; };
     std::vector<Entry> entries_;
+    struct ResidualEntry { std::string id,provider; ResidualOperation operation; };
+    std::vector<ResidualEntry> residuals_;
 };
 
 class PlanExecutor {

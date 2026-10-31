@@ -9,14 +9,6 @@ public:
     MultiphaseBalance(const char* id,const char* provider):id_(id),provider_(provider) {}
     std::string_view id() const override {return id_;}
     std::string_view runtimeProvider() const override {return provider_;}
-    void lowerLifecycle(const ExecutionScope& scope,bool,
-            const std::vector<CompiledEquationCall>&,SolvePlanNode& node) const override {
-        if (scope.kind!=ExecutionKind::Commit || id_!="HomogeneousBalance") return;
-        for (const auto* op:{OpIds::FlowStepCommit,OpIds::TimeCommit}) {
-            SolvePlanNode leaf;leaf.kind=PlanNodeKind::Commit;leaf.id=leaf.operation=op;leaf.provider=provider_;
-            node.children.push_back(std::move(leaf));
-        }
-    }
     CompiledEquationCall compile(const ExecutableEquationSystem& system,const EquationCall& call,
             const NumericalBinding&) const override {
         const auto& formula=system.registry.at(call.equation);
@@ -31,12 +23,13 @@ public:
         result.target.symbol=call.target.symbol;result.target.kind=call.target.kind;
         result.calls={{call.equation,call.target.symbol}};result.writes={call.target.symbol};
         if (id_=="HomogeneousBalance") {
+            result.physicalPublication={OpIds::FlowStepCommit,provider_};
             result.temporalResidual=true;result.publishesStageToPhysicalTarget=true;
             result.oldTimeWorkspace="explicit.homogeneous.q0";
             result.backendOperation=OpIds::ExplicitStageExecute;
             result.operatorBindings={"generic component flux implementation pending"};
             for (const auto* op:{OpIds::FlowStepPrepare,OpIds::FlowDtCompute,OpIds::FlowStepBegin,
-                                OpIds::ExplicitStageExecute,OpIds::FlowStepCommit,OpIds::TimeCommit})
+                                OpIds::ExplicitStageExecute,OpIds::FlowStepCommit})
                 result.operations.push_back({op,"homogeneous component execution",OperationStage::Prepare,
                     {OperationCapability::ConservativeExplicit},{OriginKind::Generated,id_}});
         } else {

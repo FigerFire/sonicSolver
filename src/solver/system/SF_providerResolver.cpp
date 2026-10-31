@@ -1,3 +1,4 @@
+#include "solver/system/SF_lowering.h"
 #include "core/system/SF_operationIds.h"
 /// @file SF_providerResolver.cpp
 /// @brief Freeze method-declared provider ownership and validate its capabilities.
@@ -9,10 +10,13 @@
 #include "SF_providerCatalog.h"
 #include "SF_solvePlan.h"
 #include "SF_scalarMethod.h"
+#include "SF_eulerianAssembly.h"
+#include "SF_pressureCoupling.h"
 
 #include <algorithm>
 #include <cmath>
 #include <sstream>
+#include <set>
 #include <stdexcept>
 
 namespace SF::System {
@@ -23,115 +27,46 @@ bool hasCapability(const std::vector<OperationCapability>& values,
     return std::find(values.begin(),values.end(),wanted) != values.end();
 }
 
-bool pressureOperatorRequirementsSatisfied(
-        const ExecutableEquationSystem& equations,
-        const ExecutionCapabilitySignature& signature,
-        const CompiledNumericalSystem& numerics,
-        bool additionalContributions) {
-    if (additionalContributions
-        || numerics.time.recipe.topology()!=FDM::TimeTopology::ExplicitStages
-        || numerics.time.recipe.stageCount()!=1
-        || !signature.pressureConstraint || !signature.constantDensity
-        || signature.conservativeState
-        || !signature.momentumPredictor || !signature.pressureCorrection
-        || signature.auxiliarySchedule || signature.outerCorrectors<=0
-        || signature.pressureCorrectors<=0
-        || signature.nonOrthogonalCorrectors!=0
-        || !numerics.pressureOperator
-        || numerics.pressureFaceCoupling!=PressureFaceCoupling::RhieChow)
-        return false;
-    const auto density=std::find_if(equations.state.symbols().begin(),
-        equations.state.symbols().end(),[](const StateSymbol& unknown) {
-            return unknown.id=="rho" && unknown.constantValue.has_value();
-        });
-    if (density==equations.state.symbols().end()
-        || !std::isfinite(*density->constantValue)
-        || *density->constantValue<=0.0) return false;
-    if (std::count_if(equations.constraints.begin(),equations.constraints.end(),
-            [](const ConstraintDescriptor& constraint) { return constraint.id=="C_INCOMPRESSIBILITY"; })!=1
-        || equations.constraints.size()!=1) return false;
-    const auto sourceBinding=std::find_if(numerics.operators.begin(),
-        numerics.operators.end(),[](const CompiledSpatialBinding& binding) {
-            return binding.equationMethod=="PressureMomentum"
-                && binding.output=="U";
-        });
-    if (sourceBinding==numerics.operators.end()) return false;
-    const Equation* formula=nullptr;
-    try { formula=&equations.registry.at(sourceBinding->formulaId); }
-    catch (const std::runtime_error&) { return false; }
-    int transient=0,divergence=0,diffusion=0;
-    const auto checkLeft=[&](const auto& self,const FormulaExpr& node)->bool {
-        if (node.kind()==FormulaExpr::Kind::Add)
-            return self(self,node.arguments()[0]) && self(self,node.arguments()[1]);
-        if (node.kind()!=FormulaExpr::Kind::Operator) return false;
-        if (node.operation()==Math::Op::Ddt && node.arguments().size()==1
-            && node.arguments()[0].kind()==FormulaExpr::Kind::Symbol
-            && node.arguments()[0].name()=="U") { ++transient; return true; }
-        if (node.operation()==Math::Op::Div && node.arguments().size()==1
-            && node.arguments()[0].kind()==FormulaExpr::Kind::Symbol
-            && node.arguments()[0].name()=="momentumFlux") {
-            ++divergence; return true;
-        }
-        if (node.operation()==Math::Op::Diffusion && node.arguments().size()==2
-            && node.arguments()[0].kind()==FormulaExpr::Kind::Symbol
-            && node.arguments()[0].name()=="nu"
-            && node.arguments()[1].kind()==FormulaExpr::Kind::Symbol
-            && node.arguments()[1].name()=="U") { ++diffusion; return true; }
-        return false;
-    };
-    if (!checkLeft(checkLeft,formula->lhs)
-        || transient!=1 || divergence!=1 || diffusion>1) return false;
-    const auto checkRight=[&](const auto& self,const FormulaExpr& node)->bool {
-        if (node.kind()==FormulaExpr::Kind::Add)
-            return self(self,node.arguments()[0]) && self(self,node.arguments()[1]);
-        if (node.kind()==FormulaExpr::Kind::Constant) return node.constant()==0.0;
-        const auto symbol=node.kind()==FormulaExpr::Kind::Symbol ? node.name()
-            : node.kind()==FormulaExpr::Kind::Operator
-                && node.operation()==Math::Op::Source && node.arguments().size()==1
-                && node.arguments()[0].kind()==FormulaExpr::Kind::Symbol
-                ? node.arguments()[0].name() : std::string{};
-        if (symbol.empty()) return false;
-        return std::any_of(numerics.operators.begin(),numerics.operators.end(),
-            [&](const CompiledSpatialBinding& binding) {
-                return binding.formulaId==formula->id && binding.output=="U"
-                    && binding.operation==Math::Op::Source
-                    && binding.side==CompiledSpatialBinding::Side::Right
-                    && binding.primary==symbol && binding.primitiveSource;
-            });
-    };
-    if (!checkRight(checkRight,formula->rhs)) return false;
-    bool convection=false;
-    for (const CompiledSpatialBinding& term:numerics.operators) {
-        if (term.formulaId!=formula->id || term.output!="U") continue;
-        if (term.operation==Math::Op::Div) {
-            if (term.primary!="momentumFlux" || !term.recipe
-                || term.recipe->id()!=FDM::TermRecipeId::PrimitiveUpwind1)
-                return false;
-            convection=true;
-        } else if (term.operation==Math::Op::Diffusion) {
-            if (term.primary!="U" || term.secondary!="nu" || !term.recipe
-                || term.recipe->id()!=FDM::TermRecipeId::Central2Explicit)
-                return false;
-        } else if (term.operation==Math::Op::Source) {
-            if (term.side!=CompiledSpatialBinding::Side::Right
-                || !term.primitiveSource) return false;
-        }
-    }
-    return convection;
-}
-
 std::string validateNativeProvider(const std::string& selected,
         const ExecutableEquationSystem& equations,const CompiledNumericalSystem& numerics,
         const CompiledSolvePlan& plan,const ExecutionCapabilitySignature& signature,
         bool additionalContributions) {
-    if (selected==ScalarOps::Provider || selected==ScalarOps::TransportProvider || selected==ScalarOps::SharedFluxProvider || selected==ScalarOps::StageTransportProvider) {
-        const auto reason=validateTemporalPlan(plan,numerics.time.recipe.stageCount());
+    if (selected==ScalarOps::Provider || selected==ScalarOps::TransportProvider || selected==ScalarOps::SharedFluxProvider || selected==ScalarOps::CapacityProvider) {
+        const bool temporal=!plan.compiledProgram.temporalParticipants.empty();
+        if(!temporal) {
+            // Static calls own only their declared leaves, not the surrounding
+            // pressure program's clock, correction operations or loop topology.
+            std::vector<std::string> owned;
+            for(const auto& call:plan.compiledProgram.steps)if(call.backendProvider==selected)
+                for(const auto& op:call.operations)owned.push_back(op.operation);
+            std::set<std::string> found;
+            bool clock=false;
+            const auto local=[&](const auto& self,const SolvePlanNode& node)->bool {
+                clock|=node.operation==OpIds::TimeCommit;
+                if(node.provider==selected && !node.operation.empty()) {
+                    if(std::find(owned.begin(),owned.end(),node.operation)==owned.end())return false;
+                    found.insert(node.operation);
+                }
+                for(const auto& child:node.children)if(!self(self,child))return false;
+                return true;
+            };
+            if(!local(local,plan.root) || std::any_of(owned.begin(),owned.end(),[&](const auto& op){return !found.count(op);}))
+                return "Local scalar method has a missing or undeclared numerical operation";
+            if(clock && !numerics.pressureMomentum)
+                return "Static scalar calls have no implemented surrounding physical publication/clock contract";
+            return {};
+        }
+        const auto reason=Lowering::validateTemporalPlan(plan,numerics.time.recipe.stageCount());
         if(!reason.empty())return reason;
-        if (plan.compiledProgram.temporalParticipants.empty() || !plan.compiledProgram.hasTemporalRoot)
+        if (!plan.compiledProgram.hasTemporalRoot)
             return "scalar provider requires a compiled synchronous temporal group";
         int commits=0;
         std::vector<std::string> required{TemporalOps::Dt,TemporalOps::Open,TemporalOps::Ready,
             TemporalOps::RhsReady,TemporalOps::Close,TemporalOps::PublishReady,OpIds::TimeCommit};
+        // A common plan can contain ordinary calls from other selected providers.
+        // Validate their frozen operations too; provider availability is checked separately.
+        for(const auto& call:plan.compiledProgram.steps)if(!call.temporalResidual)for(const auto& operation:call.operations)
+            if(std::find(required.begin(),required.end(),operation.operation)==required.end())required.push_back(operation.operation);
         for (const auto& p:plan.compiledProgram.temporalParticipants) {
             if(!p.coefficientPrepare.empty())required.push_back(p.coefficientPrepare);
             if(!p.coefficientPublish.empty())required.push_back(p.coefficientPublish);
@@ -162,6 +97,8 @@ std::string validateNativeProvider(const std::string& selected,
             || numerics.phaseTransport.convection!=FDM::PhaseConvectionScheme::Upwind
             || plan.compiledProgram.hasTemporalRoot)
             return "native Eulerian provider requires shared-pressure/volume closures, current Upwind backend and native non-temporal schedule";
+        try {validateEulerianHow(plan.compiledProgram);}
+        catch(const std::runtime_error& error){return error.what();}
     } else if (selected=="flow.homogeneous") {
         return "Unsupported native homogeneous execution: the current reconstructed convection kernel requires five-variable PerfectGas and cannot assemble generic-EOS component fluxes. No Rusanov fallback is permitted.";
     } else if (selected=="ibm.constraint") {
@@ -184,21 +121,12 @@ std::string validateNativeProvider(const std::string& selected,
     } else if (selected=="flow.turbulence" || selected=="flow.turbulence-closure") {
         if (signature.pressureConstraint || !plan.compiledProgram.hasTemporalRoot)
             return "single-fluid transported turbulence requires explicit flow and the implemented unconstrained predictor treatment";
-    } else if (selected=="flow.pressure-operators" || selected=="flow.rhie-chow") {
-        if (!pressureOperatorRequirementsSatisfied(equations,signature,numerics,additionalContributions))
-            return "selected native pressure provider requires a supported constant-density pressure-multiplier state, equation, recipe and fixed-time capability";
-        for (const auto& layout:std::vector<std::pair<std::string,int>>{{"U",3},{"p",1},{"phi",1}}) {
-            if (!equations.state.contains(layout.first)) return "selected pressure provider requires STATE "+layout.first;
-            const auto& symbol=equations.state.at(layout.first);
-            if (symbol.components!=layout.second || symbol.readOnly() || symbol.constantValue)
-                return "selected pressure provider has incompatible STATE contract: "+layout.first;
-        }
     } else if (selected=="flow.conservative" && std::any_of(plan.compiledProgram.steps.begin(),plan.compiledProgram.steps.end(),
             [](const auto& call) {return call.equationMethod=="MixtureBalance";})) {
         return "Unsupported native mixture execution: tracked phase-mass kernel exists, but compatible flow thermodynamic binding and native closure publication are not implemented. No fallback is permitted.";
     } else if (selected=="flow.conservative" && signature.pressureConstraint) {
         if (additionalContributions || !signature.conservativeState
-            || !signature.momentumPredictor || !signature.pressureCorrection || signature.auxiliarySchedule
+            || !signature.momentumPredictor || !signature.pressureCorrection
             || signature.outerCorrectors!=1 || signature.pressureCorrectors<=0
             || signature.nonOrthogonalCorrectors!=0 || numerics.time.recipe.stageCount()!=1
             || equations.constraints.size()!=1)
@@ -214,67 +142,13 @@ std::string validateNativeProvider(const std::string& selected,
             || !producedBy(equations.state.at("U"),"closure.thermodynamicVelocity")
             || !producedBy(equations.state.at("p"),"closure.thermodynamic.p"))
             return "conservative pressure requires velocity and pressure views of the EOS-backed physical state";
-    } else if (selected=="flow.conservative" && plan.compiledProgram.hasTemporalRoot) {
-        const auto stageContract=validateCompiledConservativeStage(equations,plan);
-        if (!stageContract.empty()) return stageContract;
-        const std::vector<std::string> layout{"rho","rhoU","rhoE"};
-        std::vector<CompiledEquationCall> calls;
-        for (const auto& call:plan.compiledProgram.steps) if (call.equationMethod=="ConservativeResidual") calls.push_back(call);
-        if (calls.size()!=layout.size()) return "selected fused conservative provider requires exactly rho/rhoU/rhoE occurrences";
-        for (std::size_t i=0;i<layout.size();++i) {
-            if (!calls[i].temporalResidual || calls[i].backendProvider!=selected
-                || calls[i].source.target.symbol!=layout[i])
-                return "selected fused conservative provider has incompatible occurrence/target layout";
-            const auto& symbol=equations.state.at(layout[i]);
-            const int components=i==1 ? 3 : 1;
-            const int offset=i==0 ? 0 : i==1 ? 1 : 4;
-            if (symbol.storageBinding!=StorageBinding::PackedDistributed || symbol.storageKey!="conservative"
-                || symbol.components!=components || symbol.componentOffset!=offset)
-                return "selected fused conservative provider has incompatible physical storage: "+layout[i];
-        }
+
     }
     return {};
 }
 
 } // namespace
 
-std::string validateCompiledConservativeStage(const ExecutableEquationSystem& equations,
-    const CompiledSolvePlan& plan) {
-    const auto findStage=[&](const auto& self,
-                             const System::SolvePlanNode& node)
-        -> const System::SolvePlanNode* {
-        if (node.operation==System::OpIds::ExplicitStageExecute || node.operation=="flow.stage.rhs") return &node;
-        for (const auto& child:node.children)
-            if (const auto* found=self(self,child)) return found;
-        return nullptr;
-    };
-    const auto* stage=findStage(findStage,plan.root);
-    if (!stage || stage->equationCalls.empty())
-        return "Fused explicit stage has no compiled EquationCalls.";
-    const auto& compiled=plan.compiledProgram;
-    if (!compiled.hasTemporalRoot)
-        return "Fused conservative backend requires a TemporalMethod fragment.";
-    std::vector<System::CompiledMathRef> calls;
-    for (const auto& occurrence:compiled.steps) {
-        if (!occurrence.temporalResidual || (!compiled.temporalParticipants.empty() && occurrence.backendProvider!="flow.conservative")) continue;
-        if (occurrence.backendOperation!=System::OpIds::ExplicitStageExecute
-            || occurrence.backendProvider!="flow.conservative")
-            return "Fused explicit stage has an incompatible selected backend.";
-        calls.insert(calls.end(),occurrence.calls.begin(),occurrence.calls.end());
-    }
-    const std::vector<std::string> layout{"rho","rhoU","rhoE"};
-    if (calls.size()<layout.size() || stage->equationCalls.size()!=calls.size())
-        return "Fused conservative stage requires rho/rhoU/rhoE targets.";
-    for (size_t n=0;n<calls.size();++n)
-        if ((n<layout.size() && calls[n].target!=layout[n])
-            || (n>=layout.size() && std::find(layout.begin(),layout.end(),calls[n].target)==layout.end()
-                && (equations.state.at(calls[n].target).storageBinding!=System::StorageBinding::NamedDistributed
-                || equations.state.at(calls[n].target).components!=1))
-            || stage->equationCalls[n].equation!=calls[n].equation
-            || stage->equationCalls[n].target!=calls[n].target)
-            return "Fused stage differs from compiled equation occurrence binding.";
-    return {};
-}
 
 
 std::string validateSolutionProviderContract(const StateRegistry& state,
@@ -354,6 +228,27 @@ std::vector<ResolvedOperationBinding> compileOperationBindings(
     const auto signature=compileExecutionCapabilities(equations,&plan);
     const ProviderCatalog catalog=ProviderCatalog::builtIn();
     std::vector<ResolvedOperationBinding> bindings;
+    // These operation identities were selected by actual numerical calls/HOW,
+    // not by the legacy model catalog. Runtime must still bind every leaf.
+    std::set<std::pair<OpId,std::string>> direct;
+    const auto add=[&](const OpId& op,const std::string& owner){if(!op.empty())direct.emplace(op,owner);};
+    for(const auto& call:plan.compiledProgram.steps)if(!call.legacyProvider) {
+        add(call.backendOperation,call.backendProvider);
+        for(const auto* actions:{&call.stepInputs,&call.iterationInputs,&call.iterationOutputs,&call.groupInputs})
+            for(const auto& action:*actions)add(action.operation,action.provider);
+        add(call.physicalPublication.operation,call.physicalPublication.provider);
+        if(!call.physicalPublication.operation.empty())add(OpIds::TimeCommit,call.physicalPublication.provider);
+        const auto fragment=[&](const auto& self,const SolvePlanNode& n)->void {
+            add(n.operation,n.provider);for(const auto& child:n.children)self(self,child);
+        };fragment(fragment,call.fragment);
+        for(const auto& op:call.temporalPreparation)add(op,call.backendProvider);
+        for(const auto& op:{call.temporalStepSize,call.temporalSnapshot,call.temporalStagePrepare,call.temporalRhs,
+                call.temporalAdvance,call.temporalPublish})add(op,call.backendProvider);
+    }
+    if(plan.compiledProgram.hasTemporalRoot) {
+        for(const auto* op:{TemporalOps::Dt,TemporalOps::Open,TemporalOps::Ready,TemporalOps::RhsReady,
+                TemporalOps::Close,TemporalOps::PublishReady,OpIds::TimeCommit})add(op,TemporalOps::Provider);
+    }
     const auto bind=[&](const auto& self,SolvePlanNode& leaf)->void {
         if (!leaf.operation.empty()) {
             ResolvedOperationBinding binding;
@@ -364,7 +259,9 @@ std::vector<ResolvedOperationBinding> compileOperationBindings(
                 binding.reason=leaf.unsupportedReason.empty()
                     ? "no ExecutableOperation declares '"+leaf.operation+"'" : leaf.unsupportedReason;
             } else {
-                binding=catalog.resolve(*declaration,leaf.provider);
+                if(direct.count({leaf.operation,leaf.provider})) {
+                    binding.provider=leaf.provider;binding.status=BindingStatus::Resolved;
+                } else binding=catalog.resolve(*declaration,leaf.provider);
                 // STATE can reject a selected implementation; it cannot choose another.
                 if (binding.status==BindingStatus::Resolved) {
                     std::vector<std::string> context;
@@ -378,8 +275,10 @@ std::vector<ResolvedOperationBinding> compileOperationBindings(
                         requirement=missingCapability(plan.compiledProgram,context,call,boundContext);
                         if (!requirement.empty()) break;
                     }
-                    const auto reason=!requirement.empty()?requirement:validateNativeProvider(binding.provider,equations,numerics,plan,
-                        signature,additionalContributions);
+                    const bool legacy=std::any_of(plan.compiledProgram.steps.begin(),plan.compiledProgram.steps.end(),
+                        [&](const auto& call){return call.legacyProvider && call.backendProvider==binding.provider;});
+                    const auto reason=!requirement.empty()?requirement:legacy ? validateNativeProvider(binding.provider,equations,numerics,plan,
+                        signature,additionalContributions) : std::string{};
                     if (!reason.empty()) {
                         binding.status=BindingStatus::Unsupported;
                         binding.provider.clear();

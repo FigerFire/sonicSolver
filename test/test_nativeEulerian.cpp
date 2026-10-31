@@ -1,3 +1,4 @@
+#include "solver/system/SF_lowering.h"
 #include "solver/system/SF_systemBuilder.h"
 #include "solver/system/SF_methodObjects.h"
 #include "solver/system/SF_pressureCoupling.h"
@@ -34,7 +35,7 @@ int main() {
     const auto resolved=build(config,request);
     require(resolved.executableSystem.state.solutionVariables().empty(),"Phase fields became single-fluid primary selection.");
     require(resolved.solvePlan.compiledProgram.steps.size()==17,"Missing separate phase/correction occurrences.");
-    require(!resolved.executableSystem.state.contains("pPrime") && !resolved.executableSystem.state.contains("pressureCorrection"),"Pressure correction became another base state.");
+    require(resolved.executableSystem.state.at("deltaP").storageBinding==StorageBinding::TransientWorkspace && !resolved.executableSystem.state.contains("pressureCorrection"),"Pressure correction became another base state.");
     for (const auto& binding:resolved.runtime.operationBindings)
         require(binding.provider=="flow.eulerian-pressure" && binding.status==BindingStatus::Resolved,"Provider ownership was not frozen.");
     const auto& root=resolved.solvePlan.sourceProgram.root;
@@ -49,7 +50,7 @@ int main() {
         && counts[OpIds::EeContinuityAssemble]==2 && counts[OpIds::EeMomentumSolve]==2
         && counts[OpIds::EeEnergySolve]==2 && counts[OpIds::EePressureSolve]==12
         && counts[OpIds::EePhaseCorrect]==12 && counts[OpIds::EeFaceFluxCorrect]==12
-        && counts[OpIds::EeStepCommit]==1 && counts[OpIds::EeTimeCommit]==1,"Multi-phase kernels executed once per member instead of group.");
+        && counts[OpIds::EeStepCommit]==1 && counts[OpIds::TimeCommit]==1,"Multi-phase kernels executed once per member instead of group.");
     const auto provenance=[&](const auto& self,const SolvePlanNode& node)->void {
         if (!node.operation.empty()) {
             require(node.provider=="flow.eulerian-pressure","Core leaf uses legacy provider discovery.");
@@ -61,7 +62,7 @@ int main() {
     };
     provenance(provenance,resolved.solvePlan.root);
     const auto reject=[&](ExecutionProgram program,ExecutableEquationSystem equations,std::vector<NumericalBinding> bindings) {
-        bool rejected=false;try { (void)compileExecutionProgram(equations,program,bindings,builtinProviders()); }
+        bool rejected=false;try { (void)Lowering::compileProgram(equations,equations.state,program,bindings,builtinProviders()); }
         catch (const std::runtime_error&) { rejected=true; }
         require(rejected,"Invalid Eulerian composition was accepted.");
     };
@@ -126,7 +127,7 @@ int main() {
     auto* mass=realized.view("phaseMass.air",StateViewKind::Physical).fields.front();mass->write(0,0,0.42);
     require(phases[1].primary.phaseMass.values()[0]==0.42,"Phase STATE allocated a second authority.");
     auto deltas=bundle.distributed.select("pressureCorrection",SF::State::HaloSyncStage::None);
-    realized.bindView("p",StateViewKind::Correction,*deltas.front());
-    realized.view("p",StateViewKind::Correction).fields.front()->write(0,0,1.5);
+    realized.bindView("deltaP",StateViewKind::Correction,*deltas.front());
+    realized.view("deltaP",StateViewKind::Correction).fields.front()->write(0,0,1.5);
     require(delta.values()[0]==1.5 && pressure.values()[0]==101325,"Correction(p) aliases or overwrites physical pressure incorrectly.");
 }

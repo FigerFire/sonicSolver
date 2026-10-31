@@ -9,6 +9,22 @@
 #include <stdexcept>
 
 namespace SF::System {
+void StateRealization::beginOldTime(){epoch_->oldTimeStep=-1;}
+void StateRealization::publishOldTime(){
+    if(!state_ || epoch_->oldTimeStep==state_->step)throw std::runtime_error("Invalid/repeated OldTime snapshot publication");
+    epoch_->oldTimeStep=state_->step;
+}
+std::function<double(int,int)> StateRealization::oldTimeReader(std::string_view symbol){
+    const auto& resource=view(symbol,StateViewKind::OldTime);
+    if(resource.fields.size()!=1)throw std::runtime_error("OldTime reader requires an existing single-patch snapshot: "+std::string(symbol));
+    const auto field=*resource.fields.front();
+    return [epoch=std::weak_ptr<StageEpoch>(epoch_),state=state_,field](int cell,int component){
+        const auto scope=epoch.lock();
+        if(!scope)throw std::runtime_error("Expired OldTime STATE view");
+        if(!state || scope->oldTimeStep!=state->step)throw std::runtime_error("OldTime snapshot is not published for the active physical step");
+        if(field.requireReadable)field.requireReadable();return field.read(cell,component);
+    };
+}
 void StateRealization::beginStage(int index,int count,double time) {
     if (epoch_->phase!=StagePhase::Closed || index<0 || index>=count || !std::isfinite(time))
         throw std::runtime_error("Stage epoch already active or invalid index/time.");
@@ -60,6 +76,41 @@ const RealizedUnknown& StateRealization::at(std::string_view id) const {
             "Runtime state has no realized unknown '"+std::string(id)+"'.");
     }
     return *found;
+}
+
+std::function<double(int,int)> StateRealization::reader(const StateUse& use,int stages) {
+    if(use.kind!=TargetKind::Physical || use.halo || !use.snapshot.empty() || use.perIteration)
+        throw std::runtime_error("Unsupported bound reader qualifier: "+use.symbol);
+    if(use.version==StateVersion::Stage)return stageReader(use.symbol,stages);
+    if(use.version==StateVersion::OldTime)return oldTimeReader(use.symbol);
+    if(use.version!=StateVersion::Current)throw std::runtime_error("No backing for bound reader version: "+use.symbol);
+    const auto& input=at(use.symbol);
+    if(input.descriptor->constantValue) {
+        const double value=*input.descriptor->constantValue;return [value](int,int){return value;};
+    }
+    if(input.fields.size()!=1)throw std::runtime_error("Bound Current reader requires one realized patch: "+use.symbol);
+    auto field=*input.fields.front();const auto* descriptor=input.descriptor;
+    const auto lifetime=std::weak_ptr<StageEpoch>(epoch_);
+    return [field,descriptor,lifetime,id=use.symbol](int cell,int component) {
+        if(lifetime.expired())throw std::runtime_error("Expired STATE input: "+id);
+        if(component<0 || component>=descriptor->components)throw std::runtime_error("STATE input component outside declared shape: "+descriptor->id);
+        if(field.requireReadable)field.requireReadable();return field.read(cell,descriptor->componentOffset+component);
+    };
+}
+unsigned long long StateRealization::revision(std::string_view symbol) const {
+    const auto& input=at(symbol);
+    if(input.descriptor->constantValue)return 0;
+    if(input.descriptor->storageBinding==StorageBinding::TransientWorkspace) {
+        const auto found=workspaceRevisions_.find(input.descriptor->storageKey);
+        return found==workspaceRevisions_.end()?0:found->second;
+    }
+    if(input.fields.size()!=1)throw std::runtime_error("Revision requires a bound single-patch STATE: "+std::string(symbol));
+    return state_->distributed.generation(input.fields.front()->name,input.fields.front()->blockId);
+}
+void StateRealization::publishWorkspace(std::string_view symbol) {
+    const auto& descriptor=*at(symbol).descriptor;
+    if(descriptor.storageBinding!=StorageBinding::TransientWorkspace)throw std::runtime_error("Not a solver workspace publication: "+descriptor.id);
+    ++workspaceRevisions_[descriptor.storageKey];
 }
 
 namespace {

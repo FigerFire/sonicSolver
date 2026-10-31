@@ -1,6 +1,10 @@
 find_package(yaml-cpp REQUIRED)
+# Plain document serialization has no Field IO dependency.
+add_library(SF_serialization STATIC serialization/SF_serialization.cpp)
+target_link_libraries(SF_serialization PUBLIC SF_headers SF_model yaml-cpp::yaml-cpp)
+set_lib_output(SF_serialization io)
+
 add_library(SF_io STATIC
-    serialization/SF_serialization.cpp
     registry/SF_IORegistry.cpp
     case/SF_case.cpp
     field/SF_field.cpp
@@ -17,7 +21,7 @@ target_include_directories(SF_io PRIVATE
     ${CMAKE_SOURCE_DIR}/src/infrastructure/mesh
     ${CMAKE_SOURCE_DIR}/src/infrastructure/mesh/createMesh
 )
-target_link_libraries(SF_io PUBLIC SF_headers SF_field SF_model yaml-cpp::yaml-cpp)
+target_link_libraries(SF_io PUBLIC SF_headers SF_field SF_model SF_serialization)
 set_lib_output(SF_io io)
 
 add_library(SF_resultWriter STATIC

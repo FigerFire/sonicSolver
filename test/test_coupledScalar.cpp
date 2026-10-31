@@ -1,4 +1,5 @@
 #define main standaloneSingleMain
+#include "solver/system/SF_lowering.h"
 #include "test_standaloneScalar.cpp"
 #undef main
 #include "solver/algorithm/SF_singleFluidBinding.h"
@@ -151,7 +152,7 @@ void stageAndBindingGuards() {
             }
             for(auto& child:node.children)self(self,child);
         };corrupt(corrupt,invalid.root);
-        require(!System::validateTemporalPlan(invalid,4).empty(),"Malformed phase/Commit falsely valid");
+        require(!System::Lowering::validateTemporalPlan(invalid,4).empty(),"Malformed phase/Commit falsely valid");
         Run::OpRegistry invalidOps;auto views=System::realizeState(system.executableSystem.state,system.runtime,state,system.solvePlan.compiledProgram.stateViews);
         rejects([&]{SolverAlgorithm::bindSingleFluidOperations(invalidOps,config,system.executableSystem,system.numericalSystem,invalid,system.runtime,state,services,views,limit);});
         require(state.time==0 && state.step==0 && a(4,1,1)==1 && b(4,1,1)==2,"Invalid plan published partial physical/clock state");

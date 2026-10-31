@@ -1,9 +1,8 @@
 #pragma once
 
 /// @file SF_eulerianStepper.h
-/// @brief Eulerian–Eulerian 的状态、数值 workspace 与 provider 回调。
+/// @brief 借用相/模型/边界资源，持有数值 workspace 与冻结计划的操作回调。
 
-#include "SF_config.h"
 #include "SF_phaseBoundary.h"
 #include "solver/algorithm/eulerian/equation/SF_equations.h"
 #include "SF_phaseSource.h"
@@ -22,7 +21,9 @@ public:
     /// @brief 只绑定已冻结的数学、数值选择与运行计划；PIMPLE 算术不变。
     /// @param numerics compiled WHICH（dt policy 与 phase numerical recipe）。
     EulerianStepper(Physics::PhaseSystems::PhaseSystem& phaseSystem,
-                    FDM::SolverConfig config,
+                    Turbulence::EquationSystem& turbulence,
+                    Physics::PhaseSystems::PhaseSourceRegistry& sources,
+                    Physics::PhaseSystems::PhaseBoundaryApplicator& boundary,
                     const System::ExecutableEquationSystem& equations,
                     const System::CompiledNumericalSystem& numerics,
                     const System::CompiledSolvePlan& solvePlan,
@@ -49,11 +50,11 @@ private:
     const System::CompiledNumericalSystem& numerics_;
     const System::CompiledSolvePlan& solve_;
     const System::RuntimeRequirements& runtime_;
-    FDM::SolverConfig config_;
-    Turbulence::EquationSystem turbulence_;
+    const System::PhaseNumericalConfig& inputs_;
+    Turbulence::EquationSystem& turbulence_;
     PhaseSolverWorkspace workspace_;
-    Physics::PhaseSystems::PhaseBoundaryApplicator boundary_;
-    Physics::PhaseSystems::PhaseSourceRegistry sourceRegistry_;
+    Physics::PhaseSystems::PhaseBoundaryApplicator& boundary_;
+    Physics::PhaseSystems::PhaseSourceRegistry& sourceRegistry_;
     PhaseEquationAssembler equations_;
     StepSummary lastSummary_;
     FDM::SolverServices services_;

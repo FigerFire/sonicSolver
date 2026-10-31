@@ -622,3 +622,96 @@ test/builtinComposition/*
 !/test/explicitA6/module_cases.py
 !/test/explicitA6/run_tests.py
 !/test/explicitA6/verify.py
+
+# A7 runnable sources only; cases, snapshots, logs and numerical output stay local.
+!/test/coefficientA7/
+/test/coefficientA7/*
+!/test/coefficientA7/test_coefficient.cpp
+!/test/coefficientA7/cases.py
+!/test/coefficientA7/protect.py
+!/test/coefficientA7/module_cases.py
+!/test/coefficientA7/run_tests.py
+!/test/coefficientA7/verify.py
+
+!/test/equationBinding/
+/test/equationBinding/*
+!/test/equationBinding/test_binding.cpp
+!/test/equationBinding/cases.py
+!/test/equationBinding/module_cases.py
+!/test/equationBinding/protect.py
+!/test/equationBinding/verify.py
+!/test/equationBinding/run_tests.py
+
+# A8 runnable sources; frozen binaries, cases and evidence remain local.
+!/test/linearA8/
+/test/linearA8/*
+!/test/linearA8/test_linear.cpp
+!/test/linearA8/cases.py
+!/test/linearA8/module_cases.py
+!/test/linearA8/protect.py
+!/test/linearA8/verify.py
+!/test/linearA8/run_tests.py
+
+!/test/linearA8/boundary.py
+
+# A9 sources only; retain local frozen binaries, cases and numerical evidence.
+!/test/howA9/
+/test/howA9/*
+!/test/howA9/test_how.cpp
+!/test/howA9/native.py
+!/test/howA9/run_tests.py
+!/test/howA9/module_cases.py
+!/test/howA9/protect.py
+!/test/howA9/verify.py
+!/test/howA9/pressure.py
+!/test/howA9/pressure_verify.py
+
+# Unified lowering runnable sources; freeze/test outputs remain local.
+!/test/lowering/
+/test/lowering/*
+!/test/lowering/test_lowering.cpp
+!/test/lowering/native.py
+!/test/lowering/cases.py
+!/test/lowering/convert.py
+!/test/lowering/verify.py
+!/test/lowering/run_tests.py
+!/test/lowering/pressure.py
+!/test/lowering/pressure_verify.py
+!/test/lowering/ibm.py
+!/test/lowering/settings.py
+!/test/lowering/ibm_verify.py
+
+# Explicit scope/resource contract test sources; evidence/binaries/results stay local.
+!/test/scopes/
+/test/scopes/*
+!/test/scopes/test_resources.cpp
+!/test/scopes/native.py
+!/test/scopes/cases.py
+!/test/scopes/convert.py
+!/test/scopes/verify.py
+!/test/scopes/run_tests.py
+!/test/scopes/pressure.py
+!/test/scopes/pressure_verify.py
+!/test/scopes/settings.py
+!/test/scopes/mpi.py
+
+# Declaration-library contract source; evidence and binaries remain local.
+!/test/templates/
+/test/templates/*
+!/test/templates/test_templates.cpp
+
+# Four-axis loop inputs; generated evidence and results stay local.
+!test/loop/
+test/loop/**
+!test/loop/**/
+!test/loop/prepare.py
+!test/loop/README.md
+!test/loop/**/*.yaml
+test/loop/evidence/
+test/loop/**/result/
+test/loop/**/mesh/*.sfm
+test/loop/**/mesh/*.vts
+test/loop/**/mesh/*.vtm
+# Keep metadata excluded after fixture extension exceptions.
+._*
+.DS_Store

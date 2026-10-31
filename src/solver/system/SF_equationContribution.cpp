@@ -131,6 +131,7 @@ void SystemCompositionBuilder::applyContribution(SystemContribution contribution
     }
     for (auto& binding:contribution.numerics) {binding.origin=origin_;numerics.push_back(std::move(binding));}
     for (auto& unknown : contribution.states) addState(std::move(unknown));
+    for(auto& inputs:contribution.callInputs)bindInputs(std::move(inputs));
     for (auto& id:contribution.requiredStates) requireState(std::move(id));
     for (auto& formula:contribution.registeredEquations) addEquation(std::move(formula));
     for (auto& extension:contribution.mathematicalExtensions)

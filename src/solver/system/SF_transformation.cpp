@@ -40,6 +40,12 @@ public:
             const RawEquationSystem& raw,
             ExecutableEquationSystemBuilder& executable,
             TransformationRecord& record) const override {
+        StateSymbol correction;correction.id="deltaP";correction.name="pressure increment";
+        correction.role=StateRole::Algebraic;correction.signature=PressureMathematics::signature("deltaP");
+        correction.storageBinding=StorageBinding::TransientWorkspace;correction.storageKey="pressureCorrection";
+        correction.initializationRequired=correction.boundaryRequired=correction.outputEligible=correction.runtimeStorageRequired=correction.restartEligible=false;
+        correction.origin={OriginKind::Generated,"pressure-constraint correction workspace"};
+        executable.addState(std::move(correction));
         std::vector<std::string> priorEquations;
         for (const auto& equation:executable.system().registry.entries()) priorEquations.push_back(equation.id);
         const auto velocity = std::find_if(
@@ -75,21 +81,21 @@ public:
             relation(inputs_.correction,{"pSimple",
                 Expr::negate(Expr::op(Math::Op::Div,{
                     Expr::multiply(PressureMathematics::symbol("faceResponse"),
-                        Expr::op(Math::Op::Grad,{PressureMathematics::symbol("pPrime")}))},
+                        Expr::op(Math::Op::Grad,{PressureMathematics::symbol("deltaP")}))},
                     "pressureLaplacian")),
                 Expr::negate(PressureMathematics::op("faceVolumeDivergence",{PressureMathematics::symbol("correctedFlux")},
                                      "continuityDefect")),origin});
             relation(inputs_.pressureUpdate,{"correctP",PressureMathematics::symbol("p"),
-                Expr::add(PressureMathematics::symbol("p"),PressureMathematics::symbol("pPrime")),origin});
+                Expr::add(PressureMathematics::symbol("p"),PressureMathematics::symbol("deltaP")),origin});
             relation(inputs_.velocityUpdate,{"correctU",PressureMathematics::symbol("U"),
                 Expr::subtract(PressureMathematics::symbol("U"),
                     Expr::multiply(PressureMathematics::symbol("rAU"),
-                        Expr::op(Math::Op::Grad,{PressureMathematics::symbol("pPrime")},
+                        Expr::op(Math::Op::Grad,{PressureMathematics::symbol("deltaP")},
                                  "correction.pressureGradient"))),origin});
             relation(inputs_.fluxUpdate,{"correctFluxp",PressureMathematics::symbol("phi"),
                 Expr::subtract(PressureMathematics::symbol("phi"),
                     PressureMathematics::op("pressureFlux",{
-                        PressureMathematics::symbol("faceResponse"),PressureMathematics::symbol("pPrime")},
+                        PressureMathematics::symbol("faceResponse"),PressureMathematics::symbol("deltaP")},
                         "correction.faceFlux")),origin});
         }
         if (primitiveTarget && fixedTime_) {
@@ -103,14 +109,14 @@ public:
                 PressureMathematics::op("residualConvergence",{PressureMathematics::symbol("iterate"),PressureMathematics::symbol("laggedIterate")}),origin});
         }
         executable.addOperator({
-            "OP_PRESSURE_UPDATE","pressure update",{"pPrime"},{"p"},
+            "OP_PRESSURE_UPDATE","pressure update",{"deltaP"},{"p"},
             {OriginKind::Generated,"pressureConstraint"}});
         executable.addOperator({
             "OP_VELOCITY_CORRECTION","velocity correction",
-            {"pPrime",primitiveTarget ? "U" : "rhoU"},{primitiveTarget ? "U" : "rhoU"},
+            {"deltaP",primitiveTarget ? "U" : "rhoU"},{primitiveTarget ? "U" : "rhoU"},
             {OriginKind::Generated,"pressureConstraint"}});
         executable.addOperator({
-            "OP_FLUX_CORRECTION","flux correction",{"pPrime"},
+            "OP_FLUX_CORRECTION","flux correction",{"deltaP"},
             {primitiveTarget ? "faceFlux" : "fluxValidity"},
             {OriginKind::Generated,"pressureConstraint"}});
         for (const auto& equation:executable.system().registry.entries())

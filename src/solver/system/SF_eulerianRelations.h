@@ -9,7 +9,7 @@ inline Math::Signature signature(std::string name) {
     if(name=="rho" || name=="phaseMass" || name=="faceDensity")return Math::signature(0,{1,-3,0,0,0,0,0});
     if(name=="U" || name=="predictedVelocity")return Math::signature(1,{0,1,-1,0,0,0,0});
     if(name=="momentum")return Math::signature(1,{1,-2,-1,0,0,0,0});
-    if(name=="enthalpy" || name=="p" || name=="pPrime")return Math::signature(0,{1,-1,-2,0,0,0,0});
+    if(name=="enthalpy" || name=="p" || name=="deltaP")return Math::signature(0,{1,-1,-2,0,0,0,0});
     if(name=="T")return Math::signature(0,{0,0,0,1,0,0,0});
     if(name=="h")return Math::signature(0,{0,2,-2,0,0,0,0});
     if(name=="alpha" || name=="referencePhaseRemainder" || name=="pressureRelaxation")return Math::signature(0,{});
@@ -38,7 +38,7 @@ inline FormulaExpr op(std::string_view name,std::vector<FormulaExpr> args) {
         return Math::product({a[0],a[1]});
     }};
     static const Math::OperatorRule gradient{"faceGradient",[](const std::vector<Math::Signature>& a){
-        if(a.size()!=1)throw std::runtime_error("Face gradient needs pressure");Math::requireCompatible(a[0],signature("pPrime"),"face gradient");
+        if(a.size()!=1)throw std::runtime_error("Face gradient needs pressure");Math::requireCompatible(a[0],signature("deltaP"),"face gradient");
         auto result=Math::resultSignature(Math::Op::Grad,a);result.rank=0;return result;
     }};
     if(name==pair.id)return FormulaExpr::op(pair,std::move(args));

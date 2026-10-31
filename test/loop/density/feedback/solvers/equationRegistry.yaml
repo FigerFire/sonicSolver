@@ -1,0 +1,133 @@
+{
+  "SonicFile": {
+    "object": "solver",
+    "type": "equationRegistry"
+  },
+  "use": [
+    "Continuity",
+    "Momentum",
+    "Energy",
+    "drag",
+    "power"
+  ],
+  "add": {
+    "drag": {
+      "lhs": {
+        "symbol": "F"
+      },
+      "rhs": {
+        "op": "multiply",
+        "args": [
+          {
+            "constant": -0.2,
+            "dimensions": [
+              0,
+              0,
+              -1,
+              0,
+              0,
+              0,
+              0
+            ]
+          },
+          {
+            "op": "component",
+            "args": [
+              {
+                "symbol": "rhoU"
+              },
+              {
+                "constant": 0
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "power": {
+      "lhs": {
+        "symbol": "P"
+      },
+      "rhs": {
+        "op": "divide",
+        "args": [
+          {
+            "op": "multiply",
+            "args": [
+              {
+                "symbol": "F"
+              },
+              {
+                "op": "component",
+                "args": [
+                  {
+                    "symbol": "rhoU"
+                  },
+                  {
+                    "constant": 0
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "symbol": "rho"
+          }
+        ]
+      }
+    }
+  },
+  "extend": {
+    "momentum": {
+      "rhs": {
+        "op": "source",
+        "args": [
+          {
+            "op": "vector",
+            "args": [
+              {
+                "symbol": "F"
+              },
+              {
+                "constant": 0,
+                "dimensions": [
+                  1,
+                  -2,
+                  -2,
+                  0,
+                  0,
+                  0,
+                  0
+                ]
+              },
+              {
+                "constant": 0,
+                "dimensions": [
+                  1,
+                  -2,
+                  -2,
+                  0,
+                  0,
+                  0,
+                  0
+                ]
+              }
+            ]
+          }
+        ],
+        "occurrence": "drag.source"
+      }
+    },
+    "energy": {
+      "rhs": {
+        "op": "source",
+        "args": [
+          {
+            "symbol": "P"
+          }
+        ],
+        "occurrence": "work.source"
+      }
+    }
+  }
+}

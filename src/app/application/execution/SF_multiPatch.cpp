@@ -1,3 +1,5 @@
+#include "solver/system/SF_numericalCompiler.h"
+#include "solver/system/SF_systemValidator.h"
 /// @file SF_multiPatch.cpp
 /// @brief 组装 multi-patch state、equation coupling 与 distributed providers。
 ///
@@ -29,7 +31,6 @@
 #include "SF_parallelContext.h"
 #include "infrastructure/execution/SF_executionRuntime.h"
 #include "SF_numericsPolicy.h"
-#include "solver/algorithm/SF_singleFluidStepper.h"
 #include "SF_multiphase.h"
 #include "app/application/output/SF_fields.h"
 #include "SF_pipeline.h"
@@ -55,6 +56,13 @@ int executeMulti(
         const CaseConfig& caseConfig,
         bool ibmEnabled,
         bool initialOutputOnly) {
+    if (&plan!=&system.solvePlan)
+        throw std::runtime_error("Multi-patch assembly requires the authoritative compiled plan identity.");
+    System::validate(system);
+    for(const auto& call:plan.compiledProgram.steps)for(const auto& resource:call.physicalResources)
+        if(resource.fields || resource.owner=="model.turbulence")
+            throw std::runtime_error("Unsupported multi-patch physical resource assembly: "+resource.id
+                +" owner="+resource.owner+" step="+call.source.occurrence);
     using SF::Equation::Coupling::CompositeTransportProvider;
     using SF::Equation::Coupling::MultiPatchMixtureEquationProvider;
     using SF::SolverAlgorithm::MultiPatchInterfaceEquationProvider;
@@ -71,9 +79,9 @@ int executeMulti(
     // second workflow plan.  It stays next to the multi-patch adapter until
     // those numerical providers are operation-level implementations.
     if (System::requiresProvider(system,"thermodynamics.homogeneous")
-        || System::requiresProvider(system,"flow.eulerian-pressure")) {
+        || System::requiredPhaseInputs(System::programOf(system))!=nullptr) {
         broadcast("Fatal execution capability: ",
-            "the selected executable system has no multi-patch provider.");
+            "the selected phase/homogeneous resources require an unimplemented multi-local-patch state/flux/pressure binding.");
         return -1;
     }
     if (System::requiresProvider(system,"equation.turbulence-transport")
@@ -101,7 +109,7 @@ int executeMulti(
             solverConfig.turbulence.scalars.omegaBoundary);
     }
 
-    const bool canonicalFlux = solverConfig.numerics.interfaceFlux
+    const bool canonicalFlux = System::NumericalCompiler::requireConservativeInputs(system.numericalSystem).interfaceFlux
         == FDM::InterfaceFluxPolicy::SharedInterfaceFlux;
     parallel.configureBlocks(
         &mesh.haloExchangePlan(), &mesh.blocks(), canonicalFlux);
@@ -216,7 +224,7 @@ int executeMulti(
     Boundary::Applicator physicalBoundary(solverConfig.boundaries);
     const int conservativeHaloDepth = std::max(
         system.numericalSystem.requiredHaloWidth,
-        FDM::requiredGhostLayersForILW(solverConfig.numerics.ilwOrder));
+        FDM::requiredGhostLayersForILW(System::NumericalCompiler::requireConservativeInputs(system.numericalSystem).ilwOrder));
     Boundary::Pipeline boundaryPipeline({
         &physicalBoundary,
         &executionRuntime,
@@ -247,11 +255,10 @@ int executeMulti(
     State::StateBundle bundle;
     bundle.patches = localFields;
     if (System::requiresProvider(system,"thermodynamics.single-fluid")) {
-        if (!solverConfig.thermophysical)
+        if (!system.numericalSystem.thermophysical)
             throw std::runtime_error("Multi-patch single-fluid execution requires frozen thermophysical binding.");
-        solverConfig.validateThermophysicalProjection();
         bundle.stateModel = Physics::FluidStateModel::makeSingleFluidPerfectGas(
-            *solverConfig.thermophysical);
+            *system.numericalSystem.thermophysical);
         for (Field* field : bundle.patches) {
             if (field) field->setStateModel(bundle.stateModel);
         }
@@ -309,16 +316,15 @@ int executeMulti(
     FDM::IEquationSystemCoupling* equationProvider = nullptr;
     if (equations) equationProvider = equations.get();
     if (interfaceEquations) equationProvider = interfaceEquations.get();
-    const int status = Detail::runConservative(
-        solverConfig,system,plan,bundle,boundaryPipeline,executionRuntime,
-        observer,
-        ibmAdapter
-            ? FDM::ImmersedCouplingPorts{ibmAdapter.get(),nullptr,nullptr}
-            : FDM::ImmersedCouplingPorts{},
-        nullptr,equationProvider,caseConfig.time,"Multi-patch density",
-        saveStep,
-        saveTime,
-        [&](bool finished) { return coordinator.allRanksAgree(finished); },nullptr,{});
+    FDM::SolverServices services;
+    services.boundaryPipeline=&boundaryPipeline;services.executionRuntime=&executionRuntime;
+    services.observer=&observer;
+    services.immersed=ibmAdapter?FDM::ImmersedCouplingPorts{ibmAdapter.get(),nullptr,nullptr}:FDM::ImmersedCouplingPorts{};
+    services.equationSystem=equationProvider;
+    services.levelSet=dynamic_cast<FDM::ILevelSetOperations*>(equationProvider);
+    Time::DriverCallbacks callbacks;callbacks.saveStep=saveStep;callbacks.saveTime=saveTime;
+    callbacks.globallyFinished=[&](bool finished) {return coordinator.allRanksAgree(finished);};
+    const int status=executeEquations(solverConfig,system,bundle,std::move(services),caseConfig.time,callbacks);
     if (std::getenv("SF_LEVEL_SET_CHECKPOINT_DIR")) {
         const auto& counts=executionRuntime.statistics();
         std::cout<<"[SF D1 runtime] haloRequests="<<counts.haloRequests

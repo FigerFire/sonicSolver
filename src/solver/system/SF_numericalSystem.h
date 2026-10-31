@@ -42,6 +42,14 @@ struct CompiledPhaseTransport {
     double sourceCfl = 0.5;
 };
 
+/// @brief 相压力内核实际消费的冻结输入；不包含循环、dt、模型或应用设置。
+struct PhaseNumericalConfig {
+    double momentumRelaxation=1.0,pressureRelaxation=1.0;
+    FDM::PressureReference reference;
+    FDM::LinearSolverSet linear;
+    std::vector<BCSetting<double>> pressureBoundary;
+};
+
 enum class PressureFaceCoupling { None, RhieChow };
 
 /// @brief Frozen inputs for constant-density pressure operations.
@@ -78,6 +86,7 @@ struct CompiledSpatialBinding {
     PrimitiveMomentumSource primitiveSource;
     ConservativeSourceKernel conservativeSource;
     StageConservativeSource stageSource;
+    FieldSource fieldSource;
     PrimitiveMomentumSpatialTerm primitiveSpatial = nullptr;
 
     CompiledSpatialBinding(std::string formula, std::string executionEquation,
@@ -106,6 +115,12 @@ struct CompiledSpatialBinding {
 
 enum class RecipeConsumerKind { EquationTerm, ExecutableOperation };
 
+/// @brief 已完整消费的压力动量调用；索引引用原 operators，不保存第二份数学。
+struct CompiledPressureMomentum {
+    std::string equation,occurrence,timeOccurrence;
+    std::vector<std::size_t> terms;
+};
+
 /// @brief Selected recipe 的实际编译消费者，供 validation/explain 使用。
 struct CompiledRecipeBinding {
     FDM::TermRecipe recipe;
@@ -113,7 +128,17 @@ struct CompiledRecipeBinding {
     std::string consumerId;
 };
 
+/// @brief 守恒空间装配的静态输入；动态 EOS/物性仍从已绑定模型读取。
+struct ConservativeExecutionInputs {
+    FDM::IBMBoundaryScheme ibmBoundary;
+    FDM::InterfaceFluxPolicy interfaceFlux;
+    int ilwOrder;
+    double molecularViscosity,prandtl,caloricGamma,gasConstant;
+    std::string origin;
+};
 struct CompiledNumericalSystem {
+    std::optional<ConservativeExecutionInputs> conservative;
+
     std::shared_ptr<const SF::ThermophysicalContract> thermophysical;
     FDM::NumericalRecipeSet recipes;
     CompiledTimeIntegration time;
@@ -121,6 +146,8 @@ struct CompiledNumericalSystem {
     CompiledPhaseTransport phaseTransport;
     PressureFaceCoupling pressureFaceCoupling = PressureFaceCoupling::None;
     std::optional<PressureNumericalConfig> pressureOperator;
+    std::optional<CompiledPressureMomentum> pressureMomentum;
+    std::optional<PhaseNumericalConfig> phaseOperator;
     std::vector<CompiledSpatialBinding> operators;
     std::vector<CompiledRecipeBinding> recipeBindings;
     int requiredHaloWidth = 0;

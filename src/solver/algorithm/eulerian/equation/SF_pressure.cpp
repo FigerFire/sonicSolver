@@ -354,7 +354,7 @@ void PhaseEquationAssembler::correctAllPhases() {
         }
         const double pressure = system_.sharedPressure()
                                     .values()[(size_t)cell]
-            + config_.coupling.pressureRelaxation
+            + config_.pressureRelaxation
                 * correction.values()[(size_t)cell];
         if (!std::isfinite(pressure) || pressure <= 0.0) {
             throw std::runtime_error(

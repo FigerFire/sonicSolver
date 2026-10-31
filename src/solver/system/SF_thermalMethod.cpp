@@ -9,13 +9,6 @@ class ThermalMethod final:public IProvider {
 public:
     std::string_view id() const override {return "ThermalEulerTransport";}
     std::string_view runtimeProvider() const override {return ThermalProvider;}
-    void lowerLifecycle(const ExecutionScope& scope,bool,const std::vector<CompiledEquationCall>&,SolvePlanNode& node) const override {
-        if(scope.kind!=ExecutionKind::Commit)return;
-        for(const auto* op:{"thermal.publish",OpIds::TimeCommit}) {
-            SolvePlanNode leaf;leaf.kind=PlanNodeKind::Commit;leaf.id=leaf.operation=op;leaf.provider=ThermalProvider;
-            node.children.push_back(std::move(leaf));
-        }
-    }
     CompiledEquationCall compile(const ExecutableEquationSystem& system,const EquationCall& call,
             const NumericalBinding& binding) const override {
         const auto& state=system.state.at(call.target.symbol);

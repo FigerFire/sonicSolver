@@ -1,12 +1,6 @@
 /// @file SF_execution.cpp
-/// @brief 根据 compiled execution requirements 组装 providers 并分发执行。
-///
-/// Data flow:
-///   ResolvedSimulationSystem + CompiledSolvePlan + field resources
-///       -> conservative/Eulerian provider composition
-///       -> existing execution assembler
-///
-/// 本文件不创建第二份 solve plan，也不实现 timestep 或数值公式。
+/// @brief 按已请求 STATE backing 和操作资源装配；数值顺序仅来自冻结计划。
+/// 相与单流体的真实存储/发布需求分别装配，不作为缺失资源的 fallback。
 
 #include "app/application/execution/SF_execution.h"
 #include "app/application/SF_application.h"
@@ -17,6 +11,7 @@
 #include "infrastructure/execution/SF_localExecutionRuntime.h"
 #include "core/interfaces/SF_log.h"
 #include "solver/system/SF_stateRealizer.h"
+#include "solver/system/SF_systemValidator.h"
 
 #include <stdexcept>
 
@@ -30,18 +25,26 @@ int executeSingle(
         const System::CompiledSolvePlan& plan,
         const CaseConfig& caseConfig, bool ibmEnabled,
         bool initialOutputOnly, int localBlockId) {
-    if (System::requiresProvider(system,"flow.eulerian-pressure")) {
-        return Detail::executeEulerianEquations(
-            field, writer, parallel, solverConfig, system, plan,
-            caseConfig,
-            initialOutputOnly, localBlockId);
+    if (&plan!=&system.solvePlan)
+        throw std::runtime_error("Resource assembly requires the authoritative compiled plan identity.");
+    System::validate(system);
+    if (System::requiredPhaseInputs(System::programOf(system))) {
+        return Detail::withPhaseResources(field,writer,parallel,solverConfig,system,plan,
+            caseConfig,initialOutputOnly,localBlockId);
     }
-    if (System::requiresProvider(system,"flow.conservative")
-        || System::requiresProvider(system,"flow.pressure-operators")) {
-        return Detail::executeConservativeEquations(
-            field, writer, parallel, ibm, solverConfig, system, plan,
-            caseConfig,
-            ibmEnabled, initialOutputOnly, localBlockId);
+    const auto run=[&](State::StateBundle& state,FDM::SolverServices services,
+                       const Time::DriverCallbacks& callbacks) {
+        return executeEquations(solverConfig,system,state,std::move(services),caseConfig.time,callbacks);
+    };
+    const int packed=System::requiredPackedComponents(system.executableSystem.state,plan.compiledProgram,"conservative");
+    const auto* pressure=System::requiredPressureInputs(System::programOf(system));
+    if (packed || pressure) {
+        if (packed && field.NVar()<packed)
+            throw std::runtime_error("Insufficient packed STATE backing: required="+std::to_string(packed)
+                +" available="+std::to_string(field.NVar()));
+        return Detail::withSingleFieldResources(
+            field,writer,parallel,ibm,solverConfig,system,plan,caseConfig,
+            ibmEnabled,initialOutputOnly,localBlockId,run);
     }
     State::StateBundle state;state.patches={&field};state.time=caseConfig.time.startTime;
     auto resources=Detail::bindScalarResources(field,state,system,caseConfig);
@@ -61,7 +64,7 @@ int executeSingle(
     if(initialOutputOnly)return 0;
     Time::DriverCallbacks callbacks;callbacks.saveStep=saveStep;callbacks.saveTime=saveTime;
     callbacks.report=[&](int step,const Time::AdvanceResult& result){SF::broadcast("Scalar step: ","step="+std::to_string(step)+", time="+std::to_string(result.time)+", dt="+std::to_string(result.dt));};
-    return executeEquations(solverConfig,system,state,services,caseConfig.time,callbacks);
+    return run(state,std::move(services),callbacks);
 }
 
 int execute(const System::ResolvedSimulationSystem& system,

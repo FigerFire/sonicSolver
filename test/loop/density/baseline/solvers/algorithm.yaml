@@ -1,0 +1,8 @@
+{
+  "SonicFile": {
+    "object": "solver",
+    "type": "algorithm"
+  },
+  "type": "densityBase",
+  "algorithm": "Explicit"
+}

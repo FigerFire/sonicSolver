@@ -27,6 +27,39 @@ inline System::FormulaValueKernel central2StageKernel(double D,std::size_t slot,
         return result;
     };
 }
+/// @brief 节点系数，显式算术面值；同一面表达以相反符号进入相邻节点。
+inline System::FormulaValueKernel central2ArithmeticKernel(std::size_t coefficient,std::size_t input,bool scalar) {
+    return [coefficient,input,scalar](const System::FormulaValues& v,int cell,int component) {
+        if(scalar)component=0;
+        if(!v.coefficientNeighbor)throw std::runtime_error("Unbound arithmetic coefficient-neighbor STATE view");
+        const double D=v.boundReads.at(coefficient)(cell,0),center=v.boundReads.at(input)(cell,component);
+        if(!std::isfinite(D))throw std::runtime_error("Non-finite arithmetic face coefficient");
+        double result=0;
+        for(int axis=0;axis<3;++axis) {
+            const double h=v.spacing(axis);if(h==0)continue;
+            const double dl=v.coefficientNeighbor(coefficient,cell,axis,-1),dr=v.coefficientNeighbor(coefficient,cell,axis,1);
+            if(!std::isfinite(dl) || !std::isfinite(dr))throw std::runtime_error("Non-finite coefficient neighbor");
+            const double left=.5*(dl+D)*(center-v.boundNeighbor(input,cell,axis,-1,component))/h;
+            const double right=.5*(D+dr)*(v.boundNeighbor(input,cell,axis,1,component)-center)/h;
+            result+=(right-left)/h;
+        }
+        return result;
+    };
+}
+/// @brief 节点型常系数扩散的矩阵行；自由度与边界数据由已绑定视图提供。
+inline System::FormulaLinearTerm nodalCentral2Linear(double D,const std::string& target,
+        const System::FormulaValues& v,int cell) {
+    System::FormulaLinearTerm row;
+    for(int axis=0;axis<3;++axis) {
+        double h=v.spacing(axis);if(h==0)continue;
+        for(int sign:{-1,1}) {
+            double coefficient=D/(h*h);
+            row.add(v.dof(target,v.neighborCell(cell,axis,sign),0),coefficient);
+            row.add(v.dof(target,cell,0),-coefficient);
+        }
+    }
+    return row;
+}
 inline System::FormulaValueKernel conservativeCentral2Kernel(double D,int coefficientSlot,bool primitive) {
     return [D,coefficientSlot,primitive](const auto& v,int cell,int) {
             double result=0;

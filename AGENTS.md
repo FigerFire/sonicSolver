@@ -1227,3 +1227,8 @@ Euler/slip 圆柱算例作为壁面物理验收。
 - 显式 file reference 必须直接位于对应 object 目录；拒绝跨 object、路径逃逸、重复文件引用（含规范化路径和 symlink）、第二份 registry。注册的缺失文件报错，不搜索替代文件。
 - EOS/thermo/transport、IBM、turbulence 和物理 source 由 models 注册；ILW 等 solver 数值配置由 solver 注册。CLI init、writer、正式算例与测试工具遵守同一契约。
 - 历史冻结输入只保留作对照。旧式文件头/分散布局需显式转换，生产 reader 不提供 hidden fallback。迁移输入格式不改变数学 ownership、storage、clock、执行顺序或并行语义。
+
+
+## 35. 测试执行由用户指定（2026-10-28）
+
+后续代码修改默认不运行测试、回归、诊断实验或架构检查脚本；需要测试时由用户指定具体算例。此要求优先于前文及技能中默认自动测试流程。不删除现有测试或历史证据，不把未测试修改写成已通过验证。获得测试授权后仍遵守 test/ 路径与逐例报告规则。构建和测试分开报告；文档修改无需构建。

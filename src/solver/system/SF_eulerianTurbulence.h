@@ -26,6 +26,8 @@ inline const CompiledEulerianTurbulenceContract* eulerianTurbulenceContract(cons
     return value ? value->get() : nullptr;
 }
 /// @brief 验证冻结契约与实际模型存储顺序，runtime 不重新解释 equation identity。
+/// @brief 只读的 closure/transport 完整组校验；不生成过程或修改树。
+void validateEulerianTurbulenceProcess(const CompiledExecutionProgram&);
 void validateEulerianTurbulenceBindings(const CompiledExecutionProgram& program,
     const std::vector<std::string>& phases,const FDM::TurbulenceConfig& config);
 void addEulerianTurbulenceMethods(ProviderRegistry& providers);

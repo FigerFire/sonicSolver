@@ -7,12 +7,20 @@
 #include <vector>
 #include <string>
 #include "core/state/SF_valueTypes.h"
+#include "core/system/SF_dataContract.h"
 
 namespace SF {
 class Field;
 class Residual;
 
 namespace System {
+/// @brief WHAT source(expr) 的冻结求值；绑定 STATE reader，不拥有更新或时间循环。
+struct FieldSource {
+    using Reader=std::function<double(int,int)>;
+    std::vector<StateUse> inputs;
+    std::vector<std::string> evaluation;
+    std::function<Reader(std::vector<Reader>)> bind;
+};
 struct StageConservativeSource {
     using Reader=std::function<double(int,int)>;
     std::vector<std::string> reads;

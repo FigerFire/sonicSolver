@@ -120,8 +120,8 @@ public:
             if (references!=1) throw std::runtime_error("Eulerian volume closure requires exactly one reference-phase contract.");
         }
         if (pressure) {
-            if (step.equation!="E_SHARED_PRESSURE" || step.target.symbol!="p" || step.target.kind!=TargetKind::Correction)
-                throw std::runtime_error("Shared pressure requires Correction(p).");
+            if (step.equation!="E_SHARED_PRESSURE" || step.target.symbol!="deltaP" || step.target.kind!=TargetKind::Correction)
+                throw std::runtime_error("Shared pressure requires registered deltaP workspace.");
             result.target.workspace="pressureCorrection";
         } else if (flux) {
             if (step.target.kind!=TargetKind::Workspace) throw std::runtime_error("Phase face flux is numerical workspace.");
@@ -139,7 +139,9 @@ public:
         }
         std::vector<const char*> ids;
         if (continuity) {
-            ids={OpIds::EeInterphaseCompute,OpIds::EeSourcesAssemble};
+            result.stepInputs={{OpIds::EeDtCompute,std::string(runtimeProvider())},{OpIds::EeStepBegin,std::string(runtimeProvider())}};
+            result.iterationInputs={{OpIds::EeInterphaseCompute,std::string(runtimeProvider())},{OpIds::EeSourcesAssemble,std::string(runtimeProvider())}};
+            result.physicalPublication={OpIds::EeStepCommit,std::string(runtimeProvider())};
             ids.insert(ids.end(),{OpIds::EeSourcesValidate,OpIds::EeMomentumDiagonal,OpIds::EeMomentumFlux,
                 OpIds::EeFaceFluxCanonical,OpIds::EeContinuityAssemble,OpIds::EeBoundaryPrepare});
         } else if (momentum) ids={OpIds::EeMomentumSolve,OpIds::EeInterphaseCorrect,OpIds::EeBoundaryAfterMomentum,
@@ -147,7 +149,10 @@ public:
         else if (pressure) ids={OpIds::EePressureSolve,OpIds::EePressurePublish,OpIds::EePressureSync};
         else if (correction) ids={OpIds::EePhaseCorrect};
         else if (flux) ids={OpIds::EeFaceFluxCorrect,OpIds::EeBoundaryAfterPressure,OpIds::EeFaceFluxCanonicalPressure};
-        else ids={OpIds::EeEnergySolve};
+        else {
+            ids={OpIds::EeEnergySolve};
+            result.iterationOutputs={{OpIds::EeBoundaryFinal,std::string(runtimeProvider())},{OpIds::EeOuterValidate,std::string(runtimeProvider())}};
+        }
         result.fragment.id=id_;result.fragment.kind=PlanNodeKind::Sequence;
         for (const auto* op:ids) {
             auto leaf=operation(op,result.calls);
@@ -156,7 +161,7 @@ public:
                 std::string(op)==OpIds::EePressureSolve ? std::vector<OperationCapability>{OperationCapability::EulerianPhaseExecution,OperationCapability::PressureLinearSolve}
                     : std::vector<OperationCapability>{OperationCapability::EulerianPhaseExecution},actual.origin});
         }
-        if (continuity) for (const auto* op:{OpIds::EeDtCompute,OpIds::EeStepBegin,OpIds::EeStepCommit,OpIds::EeTimeCommit,OpIds::EeBoundaryFinal,OpIds::EeOuterValidate})
+        if (continuity) for (const auto* op:{OpIds::EeInterphaseCompute,OpIds::EeSourcesAssemble,OpIds::EeDtCompute,OpIds::EeStepBegin,OpIds::EeStepCommit,OpIds::EeBoundaryFinal,OpIds::EeOuterValidate})
             result.operations.push_back({op,op,OperationStage::Prepare,{OperationCapability::EulerianPhaseExecution},actual.origin});
         result.reads={"p"};result.writes={step.target.symbol};
         for (const auto* phase:phases) {
@@ -174,63 +179,6 @@ public:
         result.requirements={"explicit shared-pressure PIMPLE HOW","phase Upwind; existing HYPRE backend","existing owner/COPY/SUM/canonical-face semantics"};
         result.providerContract=std::make_shared<const CompiledEulerianAssemblyContract>(std::move(contract));
         return result;
-    }
-    void lowerLifecycle(const ExecutionScope& source,bool root,const std::vector<CompiledEquationCall>& calls,SolvePlanNode& result) const override {
-        if (id_!="EulerianPhaseContinuity") return;
-        if (root) {
-            // This backend supports the frozen segregated micro-lifecycle only.
-            // Validate authored scopes; their repetition counts remain source HOW values.
-            const auto methodOf=[&](const ExecutionScope& node,const char* method) {
-                const auto belongs=[&](const ExecutionScope& member) {
-                    return member.kind==ExecutionKind::EquationCall && std::any_of(calls.begin(),calls.end(),[&](const auto& call) {
-                        return call.source.occurrence==member.step.occurrence && call.equationMethod==method;
-                    });
-                };
-                return node.kind==ExecutionKind::EquationCall ? belongs(node)
-                    : node.kind==ExecutionKind::Sequence && !node.children.empty()
-                        && std::all_of(node.children.begin(),node.children.end(),belongs);
-            };
-            bool compatible=source.kind==ExecutionKind::Sequence && source.children.size()==2
-                && source.children[0].kind==ExecutionKind::Loop && source.children[1].kind==ExecutionKind::Commit;
-            if (compatible) {
-                const auto& outer=source.children[0];
-                const bool closure=!outer.children.empty() && methodOf(outer.children[0],"EulerianTurbulenceClosure");
-                const std::size_t start=closure ? 1 : 0;
-                const bool transport=outer.children.size()>start+4
-                    && methodOf(outer.children[start+4],"EulerianTurbulenceTransport");
-                compatible=outer.children.size()==start+4+(transport ? 1 : 0)
-                    && methodOf(outer.children[start],"EulerianPhaseContinuity")
-                    && methodOf(outer.children[start+1],"EulerianPhaseMomentum")
-                    && outer.children[start+2].kind==ExecutionKind::Loop
-                    && methodOf(outer.children[start+3],"EulerianPhaseEnthalpy") && (!transport || closure);
-                if (compatible) {
-                    const auto& pressure=outer.children[start+2];
-                    compatible=pressure.children.size()==1 && pressure.children[0].kind==ExecutionKind::Loop;
-                    if (compatible) {
-                        const auto& pass=pressure.children[0];
-                        compatible=pass.children.size()==3 && methodOf(pass.children[0],"EulerianSharedPressureCorrection")
-                            && methodOf(pass.children[1],"EulerianPhaseCorrection") && methodOf(pass.children[2],"EulerianPhaseFluxCorrection");
-                    }
-                }
-            }
-            if (!compatible) throw std::runtime_error("Unsupported Eulerian HOW topology for the selected segregated backend; source scopes were not reordered.");
-            result.children.insert(result.children.begin(),operation(OpIds::EeStepBegin));
-            result.children.insert(result.children.begin(),operation(OpIds::EeDtCompute));
-        }
-        if (source.kind==ExecutionKind::Loop && std::any_of(source.children.begin(),source.children.end(),[&](const auto& child) {
-                return child.kind==ExecutionKind::Sequence && std::any_of(child.children.begin(),child.children.end(),[&](const auto& member) {
-                    return std::any_of(calls.begin(),calls.end(),[&](const auto& call) {
-                        return call.source.occurrence==member.step.occurrence && call.equationMethod=="EulerianPhaseEnthalpy";
-                    });
-                });
-            })) {
-            result.children.push_back(operation(OpIds::EeBoundaryFinal));
-            result.children.push_back(operation(OpIds::EeOuterValidate));
-        }
-        if (source.kind==ExecutionKind::Commit) {
-            result.children.push_back(operation(OpIds::EeStepCommit));
-            result.children.push_back(operation(OpIds::EeTimeCommit));
-        }
     }
 private:std::string id_;
 };

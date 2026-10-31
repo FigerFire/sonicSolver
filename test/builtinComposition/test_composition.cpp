@@ -101,6 +101,8 @@ void prepare(const std::string& source,const std::string& output,const std::stri
 ResolvedSimulationSystem manual(const CaseConfig& config) {
     using E=FormulaExpr;
     BuildRequest request;request.includeDefaultFluidPreset=false;request.composition=config.composition;
+    // This reference supplies its own typed declarations, independently of a package selection.
+    request.composition.equationPreset.clear();request.composition.replacePresetHow=false;
     request.capabilities=Application::detectBuildCapabilities();
     request.termProviders=Physics::Gravity::termProviders(config.solver.sources.gravity);
     SystemContribution c;c.recordContribution("test.manual","independent explicit contribution");
@@ -124,18 +126,57 @@ ResolvedSimulationSystem manual(const CaseConfig& config) {
             s.initializationRequired=s.boundaryRequired=std::string(id)!="mu_t";
             if(std::string(id)=="mu_t"){s.evaluation=StateEvaluation::Materialized;s.dependencies={"k","omega","rho","U"};}c.addState(SF::Test::state(s));
         }
-        for(const auto* id:{"SST.nu.k","SST.nu.omega","SST.production.k","SST.production.omega","SST.sink.k","SST.sink.omega","SST.cross"}) {
+        for(const auto* id:{"SST.nu.k","SST.nu.omega","SST.production.k","SST.production.omega","SST.sink.k","SST.sink.omega","SST.cross","SST.F1"}) {
             StateSymbol s;s.id=s.name=s.storageKey=id;s.role=StateRole::Derived;s.storageBinding=StorageBinding::TransientWorkspace;
-            s.runtimeStorageRequired=s.initializationRequired=s.boundaryRequired=s.restartEligible=s.outputEligible=false;c.addState(SF::Test::state(s));
+            s.runtimeStorageRequired=s.initializationRequired=s.boundaryRequired=s.restartEligible=s.outputEligible=false;
+            s.evaluation=StateEvaluation::Materialized;
+            if(s.id=="SST.sink.k")s.dependencies={"rho","omega"};
+            else if(s.id=="SST.sink.omega")s.dependencies={"SST.F1","rho","omega"};
+            else if(s.id=="SST.nu.k" || s.id=="SST.nu.omega") {
+                s.dependencies={"SST.F1","mu_t","rho"};s.workspaceBoundary=WorkspaceBoundary::NearestInterior;
+            }
+            c.addState(SF::Test::state(s));
+        }
+        for(const auto& [name,value]:std::vector<std::pair<std::string,double>>{
+            {"betaStar",.09},{"sigmaK1",.85},{"sigmaK2",1.},{"sigmaW1",.5},{"sigmaW2",.856},
+            {"beta1",.075},{"beta2",.0828},{"laminarMu",config.solver.turbulence.laminarDynamicViscosity}}) {
+            StateSymbol constant;constant.id=constant.name="kOmegaSST."+name;constant.signature=SF::Test::symbol(constant.id).signature();constant.constantValue=value;
+            constant.runtimeStorageRequired=constant.initializationRequired=constant.boundaryRequired=constant.restartEligible=constant.outputEligible=false;c.addState(constant);
+        }
+        const std::array<const char*,5> closureOutputs={"SST.F1","mu_t","SST.production.k","SST.production.omega","SST.cross"};
+        const std::array<Math::OperatorRule,5> rules={{{"sst.F1",Turbulence::stageClosureSignature<0>},{"sst.eddyViscosity",Turbulence::stageClosureSignature<1>},{"sst.kProduction",Turbulence::stageClosureSignature<2>},{"sst.omegaProduction",Turbulence::stageClosureSignature<3>},{"sst.crossDiffusion",Turbulence::stageClosureSignature<4>}}};
+        for(std::size_t i=0;i<closureOutputs.size();++i)c.addEquation({closureOutputs[i],SF::Test::symbol(closureOutputs[i]),E::op(rules[i],{SF::Test::symbol("rho"),SF::Test::symbol("rhoU"),SF::Test::symbol("k"),SF::Test::symbol("omega"),SF::Test::symbol("kOmegaSST.laminarMu")})});
+        ExecutionScope nonlocal;nonlocal.kind=ExecutionKind::EquationCall;nonlocal.frequency=ExecutionFrequency::Stage;nonlocal.step={"SST.F1",{"SST.F1"},"sst.closure"};c.addExecution(nonlocal);
+        c.bindNumerics({"SST.F1","SSTNonlocalClosure",std::vector<std::string>(closureOutputs.begin(),closureOutputs.end())});
+        c.bindInputs({"sst.closure",{{"rho",StateVersion::Stage},{"rhoU",StateVersion::Stage},{"k",StateVersion::Stage},{"omega",StateVersion::Stage}},{OriginKind::User,"manual"},ReferenceKind::Step});
+        c.placement.push_back({{},"equation:SST.F1",{},{"equation:SST.sink.k","equation:SST.nu.k","equation:SST.nu.omega","equation:SST.sink.omega"}});
+        // Independent explicit declarations: do not invoke the production preset/math constructor.
+        const auto symbol=[](const std::string& n){return SF::Test::symbol(n);};
+        const auto blend=[&](const std::string& a,const std::string& b){return E::add(E::multiply(symbol("SST.F1"),symbol("kOmegaSST."+a)),E::multiply(E::subtract(E::constantValue(1),symbol("SST.F1")),symbol("kOmegaSST."+b)));};
+        std::vector<Equation> relations={
+            {"SST.sink.k",symbol("SST.sink.k"),E::multiply(E::multiply(symbol("kOmegaSST.betaStar"),symbol("rho")),symbol("omega"))},
+            {"SST.nu.k",symbol("SST.nu.k"),E::divide(E::add(symbol("kOmegaSST.laminarMu"),E::multiply(blend("sigmaK1","sigmaK2"),symbol("mu_t"))),symbol("rho"))},
+            {"SST.nu.omega",symbol("SST.nu.omega"),E::divide(E::add(symbol("kOmegaSST.laminarMu"),E::multiply(blend("sigmaW1","sigmaW2"),symbol("mu_t"))),symbol("rho"))},
+            {"SST.sink.omega",symbol("SST.sink.omega"),E::multiply(E::multiply(blend("beta1","beta2"),symbol("rho")),symbol("omega"))}};
+        std::string previous="SST.F1";
+        for(auto relation:relations) {
+            const auto id=relation.id,step="sst."+id.substr(4);c.addEquation(relation);
+            ExecutionScope coefficient;coefficient.kind=ExecutionKind::EquationCall;coefficient.frequency=ExecutionFrequency::Stage;
+            coefficient.step={id,{id},step};c.addExecution(coefficient);c.bindNumerics({id,"LocalAffine"});
+            std::vector<StateUse> reads;
+            for(const auto& field:c.states)if(field.id==id)for(const auto& input:field.dependencies)reads.push_back({input,StateVersion::Stage});
+            c.bindInputs({step,reads,{OriginKind::User,"independent manual"},ReferenceKind::Step});
+            c.placement.push_back({{},"equation:"+id,{"equation:"+previous},{"first-of:equation:continuity|equation:momentum"}});previous=id;
         }
         for(const auto& id:std::vector<std::string>{"k","omega"}) {
             const auto symbol=[](const std::string& x){return SF::Test::symbol(x);};
             auto rhs=E::add(E::op("diffusion",{E::multiply(symbol("rho"),symbol("SST.nu."+id)),symbol(id)}),E::subtract(symbol("SST.production."+id),E::multiply(symbol("SST.sink."+id),symbol(id))));
             if(id=="omega")rhs=E::add(rhs,symbol("SST.cross"));
             c.addEquation({id,E::add(E::op("ddt",{E::multiply(symbol("rho"),symbol(id))}),E::op("div",{symbol("rhoU"),symbol(id)})),rhs});
-            ExecutionScope call;call.kind=ExecutionKind::EquationCall;call.step={id,{id}};c.addExecution(call);c.bindNumerics({id,"SSTStageTransport",{"k","omega"}});
+            ExecutionScope call;call.kind=ExecutionKind::EquationCall;call.step={id,{id}};c.addExecution(call);c.bindNumerics({id,"CapacityTransportSharedFluxCentral2"});
         }
-        c.placement={{{},"equation:k",{"equation:energy"},{"kind:Commit"}},{{},"equation:omega",{"equation:k"},{"kind:Commit"}}};
+        c.placement.push_back({{},"equation:k",{"equation:energy"},{"kind:Commit"}});
+        c.placement.push_back({{},"equation:omega",{"equation:k"},{"kind:Commit"}});
         c.requireProvider("closure.turbulence","bind turbulence closure and transported equations");
         c.addClosure("mu_t from kOmegaSST",{"k","omega"},{"mu_t"});
     }
@@ -145,7 +186,7 @@ ResolvedSimulationSystem manual(const CaseConfig& config) {
 std::string signature(const ResolvedSimulationSystem& system) {
     Model::Parameters result=Model::Parameters::object();
     for(const auto& e:system.executableSystem.registry.entries())result["math"][e.id]=canonicalFormula(e);
-    for(const auto& s:system.executableSystem.state.symbols())result["state"][s.id]={int(s.role),int(s.storageBinding),s.storageKey,s.componentOffset,s.components,s.dependencies,s.initializationRequired,s.boundaryRequired,s.runtimeStorageRequired};
+    for(const auto& s:system.executableSystem.state.symbols())result["state"][s.id]={int(s.role),int(s.storageBinding),s.storageKey,s.componentOffset,s.components,s.dependencies,s.initializationRequired,s.boundaryRequired,s.runtimeStorageRequired,int(s.workspaceBoundary)};
     for(const auto& c:system.solvePlan.compiledProgram.steps) {
         auto& call=result["calls"][c.source.occurrence];call={{"equation",c.source.equation},{"target",targetText(c.source.target)},{"method",c.equationMethod},{"provider",c.backendProvider},{"old",c.oldTimeWorkspace},{"stage",c.stageWorkspace},{"rhs",c.residualWorkspace}};
         for(const auto& use:c.stateUses)call["reads"].push_back({use.symbol,int(use.version),use.halo});

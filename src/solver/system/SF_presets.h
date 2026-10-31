@@ -15,6 +15,9 @@
 
 namespace SF::System::Compose {
 
+/// @brief 在调用后声明唯一物理步提交；时间 stages 仍由原 recipe 展开。
+ExecutionProgram explicitProgram(std::vector<ExecutionScope> calls);
+
 /// @brief 单流体压力约束方程族（rho/U/rhoE + pressure-velocity constraint）。
 void addPressureConstraintFluid(
     SystemCompositionBuilder& system, const PressureConstraintSpec& spec,

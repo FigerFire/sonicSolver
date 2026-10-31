@@ -36,6 +36,8 @@ public:
                       const System::CompiledNumericalSystem& numerics);
 
     void bind(System::StateRealization& state, FDM::IExecutionRuntime& runtime);
+    /// @brief 全部声明的关系 workspace 绑定后解析 reader；不执行关系或时间推进。
+    void bindFieldSources();
     double prepare(double maximumTimeStep);
     void beginFixedTimeStep();
     void beginIteration();

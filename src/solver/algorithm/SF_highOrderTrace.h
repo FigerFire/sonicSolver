@@ -474,15 +474,14 @@ inline void workspaceAfterClear(const Field& field,
     }
 }
 
-inline void gamma(const FDM::SolverConfig& config,
-                  const Physics::FluidStateModel::Model& equations) {
+inline void gamma(const Physics::FluidStateModel::Model& equations) {
     if (!enabled()) return;
     const auto equationGamma = equations.perfectGasGamma();
     printPrefix(std::cout << std::setprecision(17))
-              << "thermodynamics config-gamma=" << config.numerics.idealGasGamma
+              << "thermodynamics bound-model-gamma=" << (equationGamma ? *equationGamma : -1.0)
               << " equation-gamma=" << (equationGamma ? *equationGamma : -1.0)
               << " selected-divDispatch-gamma="
-              << (equationGamma ? *equationGamma : config.numerics.idealGasGamma) << '\n';
+              << (equationGamma ? *equationGamma : -1.0) << '\n';
 }
 
 } // namespace SF::SolverAlgorithm::HighOrderTrace

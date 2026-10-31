@@ -8,6 +8,7 @@
 #include "SF_numericalSystem.h"
 #include "core/system/SF_solveProgram.h"
 
+#include <algorithm>
 #include <string>
 #include <initializer_list>
 #include <string_view>
@@ -40,7 +41,6 @@ struct ExecutionCapabilitySignature {
     bool conservativeState = false;
     bool momentumPredictor = false;
     bool pressureCorrection = false;
-    bool auxiliarySchedule = false;
     int outerCorrectors = 0;
     int pressureCorrectors = 0;
     int nonOrthogonalCorrectors = 0;
@@ -103,6 +103,19 @@ struct Program {
     const RuntimeRequirements& runtime;
     const StateRegistry& state=equations.state;
 };
+
+/// @brief 只查询冻结计划实际请求的操作；不选择算法或补入生命周期。
+inline bool requiresOperation(const RuntimeRequirements& requirements,std::string_view id) {
+    const auto& operations=requirements.report.requiredOperations;
+    return std::find(operations.begin(),operations.end(),id)!=operations.end();
+}
+
+/// @brief 已选 PressureMomentum 实现的资源契约；不按字段名或单个 OpId 启用算法。
+/// 返回现有冻结数值输入；核验 STATE backing、完整操作组与持久面通量归属。
+/// 没有该方法调用时返回 nullptr，不将未消费的默认配置变成活动资源。
+const PressureNumericalConfig* requiredPressureInputs(const Program&);
+/// @brief 从实际冻结相装配契约核验布局、旧时间层/通量与操作需求；不按配置启用。
+const PhaseNumericalConfig* requiredPhaseInputs(const Program&);
 
 /// @brief RUNTIME residency queries；只读取 RuntimeRequirements。
 bool requiresCapability(const RuntimeRequirements& requirements,

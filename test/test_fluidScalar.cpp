@@ -4,6 +4,7 @@
 #undef main
 #include "models/physics/fluidStateModel/SF_factory.h"
 #include "app/application/model/SF_output.h"
+#include "solver/system/SF_lowering.h"
 namespace {
 struct HomogeneousExterior : FDM::IBoundaryPipeline {
     void prepare(const std::vector<Field*>& fields,double,double) override {
@@ -101,8 +102,59 @@ FluidResult fluid(double dt,FDM::TimeRecipeId recipe,bool scalar,bool feedback=f
         <<" momentumError="<<result.momentumError<<" energyError="<<result.energyError<<'\n';return result;
 }
 }
-int main() {
+namespace {
+void stageAlgebraicTransport() {
+    using namespace System;using E=FormulaExpr;
+    const auto frequency=Math::signature(0,{0,0,-1,0,0,0,0});
+    auto request=fluidRequest(true,false);auto& extra=request.userContributions.front();
+    StateSymbol rate;rate.id=rate.name=rate.storageKey="rate";rate.storageBinding=StorageBinding::NamedDistributed;rate.signature=frequency;rate.restartEligible=false;extra.addState(rate);
+    const auto q=SF::Test::symbol("rhoC"),rho=SF::Test::symbol("rho"),r=rate.expression();
+    extra.registeredEquations.front().rhs=E::add(E::op("diffusion",{E::multiply(rho,E::constantValue(.02,Math::signature(0,{0,2,-1,0,0,0,0}))),E::divide(q,rho)}),E::multiply(r,q));
+    extra.addEquation({"coefficient",r,E::multiply(E::constantValue(.1,frequency),E::add(E::constantValue(1),E::divide(q,E::constantValue(1.2,q.signature()))))});
+    extra.bindInputs({"coefficient",{{"rhoC",StateVersion::Stage}}});
+    extra.bindInputs({"transport.rhoC",{{"rate",StateVersion::Stage}}});
+    request.composition.solutionVariables.push_back("rate");
+    ExecutionProgram how;how.explicitOrder=how.recipeScopes=true;
+    ExecutionScope stage;stage.kind=ExecutionKind::Sequence;stage.id="coupled-stage";stage.frequency=ExecutionFrequency::Stage;
+    for(const auto& item:std::vector<std::pair<std::string,std::string>>{{"coefficient","rate"},{"continuity","rho"},{"momentum","rhoU"},{"energy","rhoE"},{"transport.rhoC","rhoC"}}) {
+        ExecutionScope call;call.kind=ExecutionKind::EquationCall;call.id="evaluate."+item.first;call.step={item.first,{item.second},call.id};stage.children.push_back(call);
+        request.authoredNumerics.push_back({item.first,item.first=="coefficient"?"LocalAffine":item.first=="transport.rhoC"?"ScalarTransportSharedFluxCentral2":"ConservativeResidual"});
+    }
+    how.root.children.push_back(stage);ExecutionScope commit;commit.kind=ExecutionKind::Commit;commit.id="accepted";how.root.children.push_back(commit);request.authoredExecution=how;
+    FDM::SolverConfig config;config.numerics.timeRecipe=FDM::builtInTimeRecipe(FDM::TimeRecipeId::ClassicalRK4);config.numerics.maxDeltaT=.001;config.numerics.cfl=2;
+    auto system=build(config,request);validate(system);
+    const auto flow=std::find_if(system.solvePlan.compiledProgram.temporalParticipants.begin(),system.solvePlan.compiledProgram.temporalParticipants.end(),[](const auto& p){return p.identity=="flow.conservative";});
+    require(flow!=system.solvePlan.compiledProgram.temporalParticipants.end() && flow->calls.size()==3,"Flow mathematical members lost their fused temporal owner");
+    int flowRhs=0,scalarRhs=0;
+    const auto count=[&](const auto& self,const SolvePlanNode& n)->void {flowRhs+=n.operation=="flow.stage.rhs";scalarRhs+=n.operation==instanceOperation("scalar.stage.rhs","evaluate.transport.rhoC");for(const auto& c:n.children)self(self,c);};count(count,system.solvePlan.root);
+    require(flowRhs==1 && scalarRhs==1,"A numerical owner is evaluated more than once in a Stage body");
+    auto duplicate=system.solvePlan;
+    const auto repeat=[&](const auto& self,SolvePlanNode& n)->bool {
+        for(std::size_t i=0;i<n.children.size();++i) {
+            if(n.children[i].operation=="flow.stage.rhs"){auto copy=n.children[i];n.children.insert(n.children.begin()+i,std::move(copy));return true;}
+            if(self(self,n.children[i]))return true;
+        }return false;
+    };
+    require(repeat(repeat,duplicate.root) && !Lowering::validateTemporalPlan(duplicate,4).empty(),"Plan accepted duplicate fused RHS");
+    auto interleaved=request;auto& body=interleaved.authoredExecution->root.children.front().children;std::swap(body[0],body[2]);
+    rejects([&]{auto invalid=build(config,interleaved);validate(invalid);});
+    constexpr int nodes=17,g=3;Field mesh;mesh.setup(nodes,1,1,g,5);auto model=Physics::FluidStateModel::makeSingleFluidPerfectGas(1.4,287.05,0,.72);mesh.setStateModel(model);
+    ScalarField scalar,coefficient;scalar.setupLike(mesh,"rhoC",1.2);coefficient.setupLike(mesh,"rate",0.);
+    for(int cell=0;cell<mesh.TotalSize();++cell){int i,j,k;mesh.getIJK(cell,i,j,k);mesh.X(i,j,k)=(i-g)/16.;mesh.Jac(i,j,k)=1;mesh.XiX(i,j,k)=16;mesh.EtY(i,j,k)=mesh.ZeZ(i,j,k)=1;mesh(i,j,k,0)=1.2;mesh(i,j,k,1)=.3;mesh(i,j,k,4)=2.5+.5*1.2*.25*.25;}
+    State::StateBundle state;state.patches={&mesh};state.stateModel=model;state.registerConservativeState();state.distributed.add(State::scalarView("rhoC",0,mesh,scalar));state.distributed.add(State::scalarView("rate",0,mesh,coefficient));
+    auto transport=std::make_shared<FDM::ScalarEquationData>(),algebraic=std::make_shared<FDM::ScalarEquationData>();transport->target="rhoC";algebraic->target="rate";for(auto& bc:transport->boundary)bc.kind=FDM::ScalarBoundaryKind::ZeroGradient;
+    Execution::LocalRuntime runtime;HomogeneousExterior exterior;FDM::SolverServices services;services.executionRuntime=&runtime;services.boundaryPipeline=&exterior;services.scalarInstances={{"evaluate.transport.rhoC",transport},{"evaluate.coefficient",algebraic}};
+    Time::RunControl control;control.endTime=.01;control.writeByStep=true;control.writeIntervalSteps=1000;
+    Application::Execution::executeEquations(config,system,state,services,control);
+    const double exact=1.2*std::exp(.001)/(2-std::exp(.001));
+    for(int i=g;i<g+nodes;++i){require(std::abs(scalar(i,g,g)-exact)<1e-12,"Stage coefficient transport differs from uniform reaction reference");require(std::abs(coefficient(i,g,g)-.1*(1+scalar(i,g,g)/1.2))<1e-14,"Final algebraic coefficient was not re-evaluated after physical publication");}
+    require(state.step==10 && std::abs(state.time-.01)<1e-14,"Stage composition advanced a second clock");
+}
+}
+int main(int argc,char** argv) {
     std::cout.precision(17);
+    if(argc==2 && std::string(argv[1])=="stageAlgebraicTransport"){stageAlgebraicTransport();return 0;}
+    if(argc!=1){std::cerr<<"Unknown fluidScalar case selection\n";return 2;}
     for(auto recipe:{FDM::TimeRecipeId::ForwardEuler,FDM::TimeRecipeId::ClassicalRK4}) {
         auto reference=fluid(.005,recipe,false),passive=fluid(.005,recipe,true,false,false,false,.1,.5,true),reordered=fluid(.005,recipe,true,false,true,false,.1,.5,true);
         require(reference.q==passive.q && passive.q==reordered.q,"Passive scalar changed flow or group order");

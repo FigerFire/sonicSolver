@@ -19,7 +19,8 @@
 #include "solver/algorithm/SF_highOrderTrace.h"
 #include "solver/run/SF_planExecutor.h"
 #include "solver/system/SF_solvePlan.h"
-#include "solver/system/SF_providerResolver.h"
+#include "solver/system/SF_methodObjects.h"
+#include "solver/system/SF_stateRealization.h"
 #include "core/system/SF_formula.h"
 #include "core/system/SF_scheduleIds.h"
 #include "solver/system/SF_numericalCompiler.h"
@@ -38,34 +39,31 @@
 
 namespace SF::SolverAlgorithm {
 FlowOperations::FlowOperations(
-        FDM::SolverConfig config,
+        FDM::BoundaryConfig boundaries,FDM::PressureCorrectionConfig pressure,double pressureGamma,
         const System::ExecutableEquationSystem& equations,
         const System::CompiledNumericalSystem& numerics,
         const System::CompiledSolvePlan& solvePlan,
         const System::RuntimeRequirements& requirements,
         State::StateBundle& state, const FDM::SolverServices& services,
         System::StateRealization& realized, const double& maximumTimeStep)
-    : config_(std::move(config))
+    : pressureConfig_(std::move(pressure)),pressureGamma_(pressureGamma)
     , executable_(equations)
     , numerics_(numerics)
     , solve_(solvePlan)
     , runtime_(requirements)
-    , boundaryApplicator_(config_.boundaries)
+    , boundaryApplicator_(std::move(boundaries))
     , services_(services), state_(&state), realizedState_(realized)
     , maximumTimeStep_(maximumTimeStep) {
-    if (System::requiresProvider(runtime_,"flow.conservative")) {
+    if(!std::isfinite(numerics_.dt.cfl) || numerics_.dt.cfl<=0 || !std::isfinite(numerics_.dt.maxDeltaT) || numerics_.dt.maxDeltaT<=0)
+        throw std::runtime_error("Flow execution requires a finite positive compiled dt policy");
+    if (System::requiredPackedComponents(executable_.state,solve_.compiledProgram,"conservative")>0) {
         equations_=std::make_unique<SF::Equation::Compressible::System>();
     }
-    FDM::validateNumericsConfig(config_.numerics);
-    // compiled authority 与 raw config 必须一致：runtime 只执行 compiled HOW，
-    // 因此这里拒绝"input 说 A、compiled 说 B"的装配。
-    if (numerics_.time.recipe.id() != config_.numerics.timeRecipe.id()
-        || numerics_.dt.cfl != config_.numerics.cfl
-        || numerics_.dt.maxDeltaT != config_.numerics.maxDeltaT) {
-        throw std::runtime_error(
-            "FlowOperations received a compiled numerical system whose "
-            "time/step policy disagrees with its solver configuration.");
-    }
+    if (!equations_ && (System::requiresOperation(runtime_,System::OpIds::FlowStepPrepare)
+        || System::requiresOperation(runtime_,"flow.stage.rhs")
+        || System::requiresOperation(runtime_,System::OpIds::ExplicitStageExecute)))
+        throw std::runtime_error("Requested conservative operations require declared packed conservative STATE backing.");
+
 }
 
 void FlowOperations::bindSolvePlan(
@@ -84,15 +82,8 @@ void FlowOperations::bindSolvePlan(
         if (!reason.empty()) throw std::runtime_error(reason);
     }
     if (requiresOperation(System::OpIds::PressurePrepare)) {
-        const auto binding=std::find_if(
-            runtime_.operationBindings.begin(),runtime_.operationBindings.end(),
-            [](const System::ResolvedOperationBinding& item) {
-                return item.operation==System::OpIds::PressurePrepare;
-            });
-        if (binding==runtime_.operationBindings.end())
-            throw std::runtime_error("Pressure prepare operation has no binding.");
-        auto providers=bindPressureProvider(*binding,numerics_,{
-            config_.boundaries,config_.pressure,config_.numerics.idealGasGamma});
+        auto providers=bindPressureProvider({executable_,numerics_,solve_,runtime_},{
+            boundaryApplicator_.definitions(),pressureConfig_,pressureGamma_});
         pressureOperators_=std::move(providers.constant);
         conservativePressureCorrector_=std::move(providers.conservative);
     }
@@ -121,7 +112,7 @@ void FlowOperations::bindTemporalStateViews() {
             && demand.kind!=System::StateViewKind::Stage) continue;
         if (demand.producer) continue; // Generic producer binding owns derived Stage views.
         if (std::none_of(solve_.compiledProgram.steps.begin(),solve_.compiledProgram.steps.end(),[&](const auto& call) {
-            return call.backendProvider=="flow.conservative" && call.temporalResidual && call.target.symbol==demand.symbol;
+            return call.temporalRhs=="flow.stage.rhs" && call.temporalResidual && call.target.symbol==demand.symbol;
         })) continue;
         for (std::size_t patch=0;patch<state_->patches.size();++patch) {
             if (index==temporalViews_.size())
@@ -162,7 +153,6 @@ void FlowOperations::bindTemporalStateViews() {
             realizedState_.bindView(demand.symbol,demand.kind,view,demand.stage);
         }
     }
-    realizedState_.bindDerivedViews();
 }
 
 void FlowOperations::bindState(State::StateBundle& state) {
@@ -170,7 +160,7 @@ void FlowOperations::bindState(State::StateBundle& state) {
     state.validatePatches();
     if ((requiresOperation(System::OpIds::ExplicitStageExecute) || requiresOperation("flow.stage.rhs"))) {
         ConservativeRHS::validateTimestepState(
-            state,config_,numerics_);
+            state,numerics_);
     }
     if (state_ && state_ != &state) {
         throw std::runtime_error(
@@ -272,11 +262,8 @@ void FlowOperations::bindPressureOps(
         }
         prepareBoundaryState({&field},state_->time,0.0);
         ensureWorkspaces({&field});
-        state_->dt = state_->stateModel
-            ? Numerics::RusanovEOS::deltaT(
-                field,*state_->stateModel,numerics_.dt.cfl)
-            : deltaT(field,numerics_.dt.cfl,
-                     config_.numerics.idealGasGamma);
+        state_->validateThermodynamicBinding();
+        state_->dt=Numerics::RusanovEOS::deltaT(field,*state_->stateModel,numerics_.dt.cfl);
         if (services_.executionRuntime) {
             state_->dt = services_.executionRuntime->globalMinimum(state_->dt);
         }
@@ -285,7 +272,7 @@ void FlowOperations::bindPressureOps(
     });
     operations.bind(System::OpIds::MomentumAssemble,"flow.conservative",[owner=shared_from_this(),this,&field] {
         ConservativeRHS::assembleAllPatches(
-            {&field},workspaces_,config_,numerics_,
+            {&field},workspaces_,numerics_,
             *equations_,*state_,services_,
             boundaryApplicator_,state_->time);
     });
@@ -474,7 +461,7 @@ void FlowOperations::bindExplicitOps(
         HighOrderTrace::beginPhysicalStep(state_->step);
         if (HighOrderTrace::activeFor(state_->step)) {
             HighOrderTrace::conservative("initial Q", fields);
-            HighOrderTrace::gamma(config_, *state_->stateModel);
+            HighOrderTrace::gamma(*state_->stateModel);
         }
         prepareBoundaryState(fields, state_->time, 0.0);
         if (HighOrderTrace::activeFor(state_->step)) {
@@ -497,7 +484,7 @@ void FlowOperations::bindExplicitOps(
                 if (!fields[patch]) continue;
                 const double legacyDt = deltaT(
                     *fields[patch], numerics_.dt.cfl,
-                    config_.numerics.idealGasGamma);
+                    *state_->stateModel->perfectGasGamma());
                 const double equationDt = Numerics::RusanovEOS::deltaT(
                     *fields[patch], *state_->stateModel, numerics_.dt.cfl);
                 std::cout << std::setprecision(17)
@@ -553,7 +540,7 @@ void FlowOperations::executeExplicitStage(int stage) {
                        std::vector<PatchWorkspace>& workspaces,
                        double stageTime) {
                     ConservativeRHS::assembleAllPatches(
-                        patches,workspaces,config_,rhsNumerics(),
+                        patches,workspaces,rhsNumerics(),
                         *equations_,*state_,services_,
                         boundaryApplicator_,stageTime);
                 },
@@ -565,9 +552,22 @@ void FlowOperations::executeExplicitStage(int stage) {
                     validateDensityStateClosure(patches,stage);
                 });
 }
-void FlowOperations::bindStageSources() {
-    if (std::none_of(numerics_.operators.begin(),numerics_.operators.end(),[](const auto& term){return bool(term.stageSource.evaluate);})) return;
+void FlowOperations::bindFieldSources() {
+    if(pressureOperators_)pressureOperators_->bindFieldSources();
+    if(solve_.compiledProgram.temporalParticipants.empty())return;
+    if (std::none_of(numerics_.operators.begin(),numerics_.operators.end(),[](const auto& term){return bool(term.stageSource.evaluate) || bool(term.fieldSource.bind);})) return;
     stageNumerics_=std::make_unique<System::CompiledNumericalSystem>(numerics_);
+    for(auto& term:stageNumerics_->operators)if(term.fieldSource.bind) {
+        std::vector<System::FieldSource::Reader> reads;
+        for(const auto& use:term.fieldSource.inputs)reads.push_back(realizedState_.reader(use,numerics_.time.recipe.stageCount()));
+        const int offset=term.output=="rhoU"?1:4,count=term.output=="rhoU"?3:1;
+        term.conservativeSource=[value=term.fieldSource.bind(std::move(reads)),offset,count](Field& field,Residual& residual) {
+            Math::forFluidInterior(field,[&](int i,int j,int k) {
+                const int cell=field.getIdx(i,j,k);
+                for(int c=0;c<count;++c)residual.source(i,j,k,offset+c)+=value(cell,c);
+            });
+        };
+    }
     for (auto& term:stageNumerics_->operators) if(term.stageSource.evaluate) {
         std::vector<System::StageConservativeSource::Reader> reads;
         for(const auto& symbol:term.stageSource.reads) reads.push_back(realizedState_.stageReader(symbol,numerics_.time.recipe.stageCount()));
@@ -577,7 +577,7 @@ void FlowOperations::bindStageSources() {
 Time::TemporalCallbacks FlowOperations::temporalParticipant() {
     if (state_->patches.size()!=1 || (services_.executionRuntime && services_.executionRuntime->distributed())
         || services_.immersed.boundary || services_.immersed.constraint || services_.immersed.system || services_.equationSystem
-        || (services_.transportModel && !std::any_of(solve_.compiledProgram.steps.begin(),solve_.compiledProgram.steps.end(),[](const auto& call){return call.backendProvider==System::ScalarOps::StageTransportProvider;})))
+        || (services_.transportModel && !std::any_of(solve_.compiledProgram.steps.begin(),solve_.compiledProgram.steps.end(),[](const auto& call){return call.stageLocal && std::find(call.coefficientStates.begin(),call.coefficientStates.end(),"mu_t")!=call.coefficientStates.end();})))
         throw std::runtime_error("Unsupported shared flow stage group: serial single patch without auxiliary/immersed stage treatment required.");
     bindTemporalStateViews();
     auto owner=shared_from_this();Time::TemporalCallbacks result;result.identity="flow.conservative";
@@ -590,7 +590,7 @@ Time::TemporalCallbacks FlowOperations::temporalParticipant() {
     result.rhs=[owner](const auto& c) {
         Time::Explicit::evaluateRHS(owner->explicitWorkspace_,c.stageIndex,owner->state_->patches,owner->workspaces_,*owner->state_,
             [owner](const auto& patches,auto& workspace,double time) {
-                ConservativeRHS::assembleAllPatches(patches,workspace,owner->config_,owner->rhsNumerics(),*owner->equations_,
+                ConservativeRHS::assembleAllPatches(patches,workspace,owner->rhsNumerics(),*owner->equations_,
                     *owner->state_,owner->services_,owner->boundaryApplicator_,time);
             });
         const auto& recipe=System::NumericalCompiler::requireUniqueRecipe(owner->rhsNumerics(),FDM::TermRole::Convection);
@@ -616,7 +616,7 @@ StageMassFluxView FlowOperations::stageMassFlux(StageFluxIdentity stamp) const {
 
 void FlowOperations::resetStep() {
     if ((requiresOperation(System::OpIds::ExplicitStageExecute) || requiresOperation("flow.stage.rhs")))
-        ConservativeRHS::validateTimestepState(*state_,config_,numerics_);
+        ConservativeRHS::validateTimestepState(*state_,numerics_);
     pressureSummary_={};
     immersedCorrection_={};
 }
@@ -625,10 +625,11 @@ void FlowOperations::bindOperations(Run::OpRegistry& operations) {
     if ((requiresOperation(System::OpIds::ExplicitStageExecute) || requiresOperation("flow.stage.rhs")))
         bindExplicitOps(operations,state_->patches,maximumTimeStep_,explicitWorkspace_);
     if (requiresOperation(System::OpIds::PressurePrepare)) {
-        if (System::requiresProvider(runtime_,"flow.pressure-operators"))
+        if (pressureOperators_)
             bindConstantPressureOps(operations,maximumTimeStep_);
-        else if (System::requiresProvider(runtime_,"flow.conservative"))
+        else if (conservativePressureCorrector_)
             bindPressureOps(operations,state_->singlePatch(),maximumTimeStep_,pressureSummary_);
+        else throw std::runtime_error("Requested pressure operations have no bound pressure workspace.");
     }
     auto finalizeFlow=[owner=shared_from_this(),this] {
         ConservativeRHS::publishCorrectedConservativeState(immersedCorrection_.performed,services_);
@@ -647,8 +648,10 @@ void FlowOperations::bindOperations(Run::OpRegistry& operations) {
             if (services_.equationSystem) services_.equationSystem->commitStep(state_->patches,state_->dt);
             prepareBoundaryState(state_->patches,state_->time+state_->dt,state_->dt);
         });
-    auto assigned=System::assignedOperations(runtime_,{"flow.conservative","flow.pressure-operators","flow.rhie-chow"});
-    for (const auto& p:solve_.compiledProgram.temporalParticipants) if (p.provider=="flow.conservative")
+    auto assigned=requiredOperations_;
+    // StageGroup owns temporal callbacks. Keep only requested, non-temporal
+    // operations here; a provider label never acquires an entire operation set.
+    for (const auto& p:solve_.compiledProgram.temporalParticipants)
         assigned.erase(std::remove_if(assigned.begin(),assigned.end(),[&](const auto& op) {
             return op==p.snapshot || op==p.prepareStage || op==p.rhs || op==p.advance || op==p.publish;
         }),assigned.end());

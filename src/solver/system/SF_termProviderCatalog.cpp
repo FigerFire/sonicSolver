@@ -96,6 +96,18 @@ ResolvedTermProvider TermProviderCatalog::resolve(
             result.compiledDataAvailable=true;
         }
         result.primitiveSpatial=candidates.front()->primitiveSpatial;
+        if(candidates.front()->compileFieldSource) {
+            const auto nested=[&](const auto& self,const FormulaExpr& e)->void {
+                for(const auto& b:bindings)if((b.formula==context.formula.id && !b.occurrence.empty() && b.occurrence==e.occurrence())
+                    || (b.formula.empty() && b.operation && *b.operation==e.operation()))
+                    throw std::runtime_error("Field source has no replaceable nested operator: "+context.formula.id+"@"+std::string(context.occurrence)+" nested="+e.occurrence());
+                for(const auto& child:e.arguments())self(self,child);
+            };
+            for(const auto& child:context.expression.arguments())nested(nested,child);
+            result.fieldSource=candidates.front()->compileFieldSource(context);
+            if(!result.fieldSource.bind)throw std::runtime_error("Empty compiled field source");
+            result.compiledDataAvailable=true;
+        }
         result.recipe=candidates.front()->sourceRecipe
             ? candidates.front()->sourceRecipe
             : (context.selectedRecipe

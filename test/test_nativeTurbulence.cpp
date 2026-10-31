@@ -1,3 +1,4 @@
+#include "solver/system/SF_lowering.h"
 #include "test/typedSymbols.h"
 #include "solver/algorithm/transport/SF_transportBinding.h"
 #include "models/turbulence/SF_turbulenceSystemContribution.h"
@@ -45,7 +46,7 @@ int main() {
         }
         ExecutionProgram program;program.root.children=contribution.execution;
         const auto compile=[&](const ExecutionProgram& p,const ExecutableEquationSystem& e) {
-            return compileExecutionProgram(e,p,contribution.numerics,builtinProviders());
+            return Lowering::compileProgram(e,e.state,p,contribution.numerics,builtinProviders());
         };
         const auto compiled=compile(program,system);
         require(compiled.steps.size()==2 && compiled.loweredRoot.children.size()==1
@@ -56,7 +57,7 @@ int main() {
             require(view.owner==StateViewOwner::NumericalProvider,"RAS STATE falsely claims PhysicalState ownership.");
         const auto fails=[&](ExecutionProgram p,ExecutableEquationSystem e,std::vector<NumericalBinding> bindings) {
             bool rejected=false;
-            try { (void)compileExecutionProgram(e,p,bindings,builtinProviders()); }
+            try { (void)Lowering::compileProgram(e,e.state,p,bindings,builtinProviders()); }
             catch (const std::runtime_error&) { rejected=true; }
             require(rejected,"Invalid RAS fusion contract was accepted.");
         };
@@ -140,7 +141,7 @@ int main() {
     bundle.distributed.add(SF::State::conservativeView("conservative",0,field));
     SystemContribution contribution;SF::Turbulence::contribute(contribution,{"kEpsilon",{},false});
     const auto system=equations(contribution);ExecutionProgram program;program.root.children=contribution.execution;
-    const auto compiled=compileExecutionProgram(system,program,contribution.numerics,builtinProviders());
+    const auto compiled=Lowering::compileProgram(system,system.state,program,contribution.numerics,builtinProviders());
     const auto realized=realizeState(system.state,RuntimeRequirements{},bundle,compiled.stateViews);
     const auto& view=realized.view("k",StateViewKind::Physical);
     view.fields[0]->write(0,0,0.25);

@@ -39,6 +39,9 @@ public:
     explicit Applicator(FDM::BoundaryConfig config)
         : config_(std::move(config)) {}
 
+    /// @brief 已绑定边界定义的只读视图，供尚未迁移的压力修正使用。
+    const FDM::BoundaryConfig& definitions() const {return config_;}
+
     // Physical ILW reads tangential neighbours across partition cuts.
     bool readsConservativeHalo() const { return config_.ilwEnabled; }
 

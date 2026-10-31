@@ -1,13 +1,14 @@
+#include "solver/system/SF_numericalCompiler.h"
 #include "solver/system/SF_stateRealizer.h"
 #include "app/application/adapters/SF_scalarResources.h"
 #include "solver/algorithm/transport/SF_transportBinding.h"
 /// @file SF_singleFluid.cpp
-/// @brief 组装 conservative single-field state、providers 与 solver interfaces。
+/// @brief 构造单场 backing、借用模型/边界资源，在 owner 存活期提供执行服务。
 ///
 /// Data flow:
 ///   Field + resolved system + case models
 ///       -> StateBundle / services / equation coupling
-///       -> compiled-plan-bound stepper and flowLoop
+///       -> borrowed resources consumed by the common compiled-plan entry
 ///
 /// 本文件不定义 governing equations、RK 系数或 MPI ownership 规则。
 
@@ -16,7 +17,6 @@
 /*----------code by LPF, 2026.08.04-----------*/
 
 #include "app/application/execution/SF_execution.h"
-#include "app/application/execution/SF_flowLoop.h"
 #include "app/application/execution/SF_flowLoop.h"
 
 #include "SF_resultWriter.h"
@@ -37,7 +37,6 @@
 #include "SF_multiphase.h"
 #include "app/application/output/SF_fields.h"
 #include "SF_pipeline.h"
-#include "solver/algorithm/SF_singleFluidStepper.h"
 #include "app/application/adapters/SF_ibmAdapters.h"
 #include "solver/algorithm/time/SF_time.h"
 #include "SF_turbulence.h"
@@ -51,7 +50,7 @@
 
 namespace SF::Application::Execution::Detail {
 
-int executeConservativeEquations(
+int withSingleFieldResources(
         Field& field,
         ResultWriter& writer,
         Parallel::ParallelContext& parallel,
@@ -62,7 +61,10 @@ int executeConservativeEquations(
         const CaseConfig& caseConfig,
         bool ibmEnabled,
         bool initialOutputOnly,
-        int localBlockId) {
+        int localBlockId,
+        const std::function<int(State::StateBundle&,FDM::SolverServices,
+            const Time::DriverCallbacks&)>& consume) {
+    if(!consume)throw std::runtime_error("Single-field resource assembly requires a bound consumer.");
     using Report::broadcastSolverConfig;
     using Report::formatRunControl;
     using Report::formatTimeStepStatus;
@@ -96,8 +98,10 @@ int executeConservativeEquations(
         System::requiresProvider(system,"equation.level-set");
     const bool usesHomogeneousThermodynamics =
         System::requiresProvider(system,"thermodynamics.homogeneous");
-    const bool constantDensityState =
-        System::requiresProvider(system,"flow.pressure-operators");
+    const auto* pressureInputs=System::requiredPressureInputs(System::programOf(system));
+    const bool constantDensityState=pressureInputs!=nullptr;
+    if(pressureInputs && system.runtime.report.status!=System::RuntimeStatus::Runnable)
+        throw std::runtime_error("Pressure resource assembly unsupported: "+system.runtime.report.reason);
     const bool multiPhaseActive = legacyMultiPhaseActive || thermalActive || interfaceActive;
     if (interfaceActive && !solverConfig.numerics.timeRecipeDeclared) {
         throw std::runtime_error(
@@ -121,12 +125,11 @@ int executeConservativeEquations(
     if ((!legacyMultiPhaseActive && !usesHomogeneousThermodynamics
          && !constantDensityState)
         || interfaceActive) {
-        if (!solverConfig.thermophysical)
+        if (!system.numericalSystem.thermophysical)
             throw std::runtime_error("Single-fluid execution requires frozen thermophysical binding.");
-        solverConfig.validateThermophysicalProjection();
         singleFluidEquations=
             SF::Physics::FluidStateModel::makeSingleFluidPerfectGas(
-                *solverConfig.thermophysical);
+                *system.numericalSystem.thermophysical);
         if (interfaceActive) {
             // OneFluidInterface still advances the conservative density
             // system.  Its level-set coupling is auxiliary state, so bind the
@@ -185,35 +188,20 @@ int executeConservativeEquations(
     ScalarField pressureMultiplier;
     double constantDensityValue=0.0;
     if (constantDensityState) {
-        const auto velocity=std::find_if(
-            system.executableSystem.state.symbols().begin(),
-            system.executableSystem.state.symbols().end(),
-            [](const System::StateSymbol& item) { return item.id=="U"; });
-        const auto density=std::find_if(
-            system.executableSystem.state.symbols().begin(),
-            system.executableSystem.state.symbols().end(),
-            [](const System::StateSymbol& item) { return item.id=="rho"; });
-        if (velocity==system.executableSystem.state.symbols().end()
-            || velocity->components!=3 || velocity->componentOffset!=0
-            || velocity->storageKey!="velocity"
-            || density==system.executableSystem.state.symbols().end()
-            || !density->constantValue) {
-            throw std::runtime_error(
-                "Constant-density state realization lacks U[3]/rhoConst binding.");
-        }
-        constantDensityValue=*density->constantValue;
-        field.resizeConservedVariables(velocity->components);
+        const auto& velocity=system.executableSystem.state.at("U");
+        constantDensityValue=*system.executableSystem.state.at("rho").constantValue;
+        field.resizeConservedVariables(velocity.components);
         for (const auto& initial:solverConfig.initial.velocity) {
             for (int cell:field.getSet(initial.name)) {
                 int i=0,j=0,k=0;
                 field.getIJK(cell,i,j,k);
-                field(i,j,k,velocity->componentOffset+0)=initial.value.x;
-                field(i,j,k,velocity->componentOffset+1)=initial.value.y;
-                field(i,j,k,velocity->componentOffset+2)=initial.value.z;
+                field(i,j,k,velocity.componentOffset+0)=initial.value.x;
+                field(i,j,k,velocity.componentOffset+1)=initial.value.y;
+                field(i,j,k,velocity.componentOffset+2)=initial.value.z;
             }
         }
         pressureMultiplier.setupLike(
-            field,"pressure",solverConfig.pressure.reference.referencePressure);
+            field,"pressure",pressureInputs->reference.referencePressure);
         for (const auto& initial:solverConfig.initial.pressure) {
             for (int cell:field.getSet(initial.name)) {
                 pressureMultiplier.values().at((size_t)cell)=initial.value;
@@ -249,6 +237,7 @@ int executeConservativeEquations(
         throw std::runtime_error("Compiled viscous wall selection differs from the bound IBM implementation.");
     std::shared_ptr<SF::Turbulence::Manager> turbulenceManager;
     std::vector<System::ResourceView> boundModelResources;
+    std::vector<std::shared_ptr<FDM::ScalarEquationData>> modelBoundaryPorts;
     for (const auto& call:plan.compiledProgram.steps) for (const auto& required:call.physicalResources) {
         if (required.owner!="model.turbulence") continue;
         if (required.type!=typeid(FDM::ITransportModel) || !required.writable || required.id!=call.source.occurrence)
@@ -270,16 +259,16 @@ int executeConservativeEquations(
             ? &parallelCoordinator : nullptr);
     IBBoundaryAdapter immersedBoundary(&ibm);
     IBConstraintAdapter immersedConstraint(&ibm);
-    Boundary::Applicator physicalBoundary(solverConfig.boundaries);
-    const int conservativeHaloDepth = std::max(
-        system.numericalSystem.requiredHaloWidth,
-        FDM::requiredGhostLayersForILW(solverConfig.numerics.ilwOrder));
-    Boundary::Pipeline boundaryPipeline({
-        &physicalBoundary,
-        &executionRuntime,
-        ghostIBMActive ? &immersedBoundary : nullptr,
-        ghostIBMActive && parallel.active(),
-        conservativeHaloDepth});
+    std::unique_ptr<Boundary::Applicator> physicalBoundary;
+    std::unique_ptr<Boundary::Pipeline> boundaryPipeline;
+    const int conservativeHaloDepth=pressureInputs?0:std::max(system.numericalSystem.requiredHaloWidth,
+        FDM::requiredGhostLayersForILW(System::NumericalCompiler::requireConservativeInputs(system.numericalSystem).ilwOrder));
+    if(!pressureInputs) {
+        physicalBoundary=std::make_unique<Boundary::Applicator>(solverConfig.boundaries);
+        boundaryPipeline=std::make_unique<Boundary::Pipeline>(Boundary::Pipeline::Services{
+            physicalBoundary.get(),&executionRuntime,ghostIBMActive?&immersedBoundary:nullptr,
+            ghostIBMActive && parallel.active(),conservativeHaloDepth});
+    }
     SF::FDM::FunctionObserver solverObserver([](const SF::FDM::SolverMessage& message) {
         if (message.kind == SF::FDM::SolverMessageKind::TimeStep) {
             SF::broadcast("Step time: ",
@@ -496,6 +485,13 @@ int executeConservativeEquations(
         if (!turbulenceActive) throw std::runtime_error("Required model transport backing could not initialize.");
         turbulenceManager->registerDistributed(stateBundle.distributed,localBlockId,field);
     }
+    for(const auto& call:plan.compiledProgram.steps)for(const auto& need:call.physicalResources)if(need.owner=="model.scalar") {
+        if(!need.fields || need.type!=typeid(FDM::ScalarEquationData) || need.writable || !turbulenceManager || !turbulenceActive)
+            throw std::runtime_error("Unavailable model scalar resource: "+need.id);
+        auto port=std::make_shared<FDM::ScalarEquationData>(turbulenceManager->stageScalarData(field,need.fields->target));
+        boundModelResources.push_back(System::ResourceView::bind(need,port,*port,need.owner));
+        modelBoundaryPorts.push_back(std::move(port));
+    }
     auto declaredResources=bindScalarResources(field,stateBundle,system,caseConfig,localBlockId,boundModelResources);
     for (const auto& view:boundModelResources)
         SF::broadcast("Bound physical resource: ",view.requirement().id+" owner="+view.requirement().owner);
@@ -518,7 +514,7 @@ int executeConservativeEquations(
     } else {
         executionRuntime.prepare({
             "initialized conservative-state halo",
-            {::SF::Execution::readHalo("conservative", conservativeHaloDepth)}});
+            {::SF::Execution::readHalo("conservative",conservativeHaloDepth)}});
     }
 
     if (interfaceCoupling) interfaceCoupling->preparePressureCorrection(field);
@@ -540,17 +536,21 @@ int executeConservativeEquations(
         equationProvider = legacyMultiphaseCoupling.get();
     }
     if (interfaceCoupling) equationProvider = interfaceCoupling.get();
-    const int status = runConservative(
-        solverConfig,system,plan,stateBundle,boundaryPipeline,
-        executionRuntime,solverObserver,immersedPorts,
-        coupledTransport.active() ? &coupledTransport : nullptr,
-        equationProvider,caseConfig.time,
-        "Unified single-field",
-        saveStepVTK,
-        saveTimeVTK,
-        [&](bool finished) {
-            return parallelCoordinator.allRanksAgree(finished);
-        },thermalActive ? &thermalData : nullptr,declaredResources.instances);
+    FDM::SolverServices services;
+    services.boundaryPipeline=boundaryPipeline.get();
+    services.executionRuntime=&executionRuntime;
+    services.observer=&solverObserver;
+    services.immersed=immersedPorts;
+    services.transportModel=coupledTransport.active()?&coupledTransport:nullptr;
+    services.equationSystem=equationProvider;
+    services.levelSet=dynamic_cast<FDM::ILevelSetOperations*>(equationProvider);
+    services.thermalEquation=thermalActive?&thermalData:nullptr;
+    services.scalarInstances=declaredResources.instances;
+    Time::DriverCallbacks callbacks;
+    callbacks.saveStep=saveStepVTK;callbacks.saveTime=saveTimeVTK;
+    callbacks.globallyFinished=[&](bool finished) {return parallelCoordinator.allRanksAgree(finished);};
+    // All owners above outlive binding, plan execution and output callbacks.
+    const int status=consume(stateBundle,std::move(services),callbacks);
     if (std::getenv("SF_LEVEL_SET_CHECKPOINT_DIR")) {
         const auto& counts=executionRuntime.statistics();
         std::cout<<"[SF D1 runtime] haloRequests="<<counts.haloRequests

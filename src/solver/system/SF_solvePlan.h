@@ -3,7 +3,7 @@
 /// @file SF_solvePlan.h
 /// @brief 已编译 method/temporal 控制流到唯一 structured plan。
 
-#include "SF_resolvedSimulationSystem.h"
+#include "core/system/SF_solveProgram.h"
 #include "SF_compiledTimeRecipe.h"
 
 namespace SF::System {
@@ -15,9 +15,8 @@ public:
     ///
     /// HOW/WHICH 已决定顺序、重复次数和 OpId；planner 不推断 target 或旧策略。
     static CompiledSolvePlan compile(
-        const ExecutableEquationSystem& system,
         const CompiledTimeRecipe& timeRecipe,
-        const CompiledExecutionProgram& compiledExecution = {});
+        const CompiledExecutionProgram& compiledExecution);
 };
 
 } // namespace SF::System

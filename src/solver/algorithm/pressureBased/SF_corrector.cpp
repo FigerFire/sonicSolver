@@ -245,7 +245,7 @@ void Corrector::bindStateViews(System::StateRealization& state,Field& geometry) 
         };
         state.bindView(symbol,kind,view);
     };
-    bind(correctionView_,"p",System::StateViewKind::Correction,"pressureCorrection");
+    bind(correctionView_,"deltaP",System::StateViewKind::Correction,"pressureCorrection");
     bind(preparedPressureView_,"p",System::StateViewKind::Working,"preparedPressure");
     bind(fluxValidityView_,"fluxValidity",System::StateViewKind::Workspace,"derivedFluxValidity");
 }

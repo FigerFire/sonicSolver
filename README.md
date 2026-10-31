@@ -1,5 +1,7 @@
 # SonicSolver
 
+2026-10-29：基础方程、显式/压力算法流程及 laminar/SST 套餐默认值恢复为可读的内置 C++ typed 声明，统一生成现有四轴并复用原编译执行链。外部模板加载与部署机制已退役；普通 native 自定义输入和 registry 规则保留。输入迁移与构建边界见 [内置声明说明](docs/builtin.md)。本轮未运行测试或数值验收。
+
 SonicSolver 是科研型结构网格有限差分 CFD 框架。case 组合 WHAT（EquationRegistry 数学方程）、STATE（基础变量注册表与物理存储/closure 契约）、HOW（EquationCall → typed Target、scope-local order 与通用 Loop）、WHICH（时间/空间/通量/线性 numerical providers）。Compiler 接收冻结的 WHAT/STATE/HOW/WHICH，验证 capability、绑定 storage 并 lower 到现有 kernels；它不选择 solver。single-fluid density、常密度压力、Eulerian shared-pressure 和 single-fluid/Eulerian RAS 主路径已迁入此模型；专用 numerical kernels 保留，IBM native contribution 与尚未实现的组合能力分别标注。详见 [架构文档](src/ARCHITECTURE.md) 与 [四模块迁移报告](docs/four-module-state-migration.md)。
 
 目标架构正式定义为 **双数学入口、统一方程驱动**：Equation Input 直接贡献方程；规划中的 Variational Input 通过显式变分规则生成同一 WHAT，复用 STATE/HOW/WHICH、Compiler、Runtime Binding 与 PlanExecutor。变分前端尚未实现，安排在 turbulence、IBM、level-set、Eulerian–Eulerian 的选定能力与验证收口之后。详见 [架构与数学边界](src/ARCHITECTURE.md) 和 [后续实施路线](docs/dual-mathematical-input-roadmap.md)。

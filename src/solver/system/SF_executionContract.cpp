@@ -1,4 +1,5 @@
 #include "SF_executionContract.h"
+#include "SF_scalarMethod.h"
 #include <algorithm>
 #include <functional>
 #include <map>
@@ -215,19 +216,33 @@ std::vector<const CompiledEquationCall*> coefficientPublishers(
     std::vector<const CompiledEquationCall*> publishers;
     for(const auto& call:program.steps) {
         if(call.coefficientProvides.empty()) {
-            if(!call.coefficientStates.empty() || !call.coefficientPrepare.empty() || !call.coefficientPublish.empty())
+            if(!call.coefficientStates.empty() || !call.coefficientPrepare.empty() || !call.coefficientPublish.empty() || !call.coefficientInputs.empty())
                 throw std::runtime_error("Coefficient publication lacks resource: "+call.source.occurrence);
             continue;
         }
         if(call.coefficientProvides.size()!=1 || call.coefficientStates.empty())
             throw std::runtime_error("Coefficient provider requires one explicit resource and its complete state set: "+call.source.occurrence);
+        if(!call.coefficientInputs.empty() && call.coefficientPrepare.empty())
+            throw std::runtime_error("Coefficient inputs require an explicit stage preparation: "+call.source.occurrence);
+        for(const auto& input:call.coefficientInputs) {
+            if(state)state->at(input.symbol);
+            if(input.kind!=TargetKind::Physical || input.halo || !input.snapshot.empty() || input.perIteration
+                || (input.version!=StateVersion::Current && input.version!=StateVersion::Stage))
+                throw std::runtime_error("Unsupported coefficient preparation input version: "+call.source.occurrence+" / "+input.symbol);
+        }
         std::set<std::string> symbols;
         for(const auto& symbol:call.coefficientStates) {
             if(state)state->at(symbol);
             if(!symbols.insert(symbol).second)throw std::runtime_error("Duplicate coefficient state: "+symbol);
         }
+        if(call.stageLocal) {
+            if(!call.source.stageScoped || call.coefficientPrepare!=call.backendOperation || call.coefficientPublish!=call.temporalPublish
+                || call.coefficientInputs.size()!=call.stateUses.size()
+                || !std::equal(call.coefficientInputs.begin(),call.coefficientInputs.end(),call.stateUses.begin(),[](const auto& a,const auto& b){return a.symbol==b.symbol && a.version==StateVersion::Stage && b.version==StateVersion::Stage && a.kind==b.kind && a.halo==b.halo && a.snapshot==b.snapshot;}))
+                throw std::runtime_error("Independent closure preparation differs from its authored Stage call: "+call.source.occurrence);
+        }
         if(call.coefficientVersion==StateVersion::Stage) {
-            if(!call.temporalResidual || call.coefficientPrepare.empty() || call.coefficientPublish.empty())
+            if((!call.temporalResidual && !call.stageLocal) || call.coefficientPrepare.empty() || call.coefficientPublish.empty())
                 throw std::runtime_error("Stage coefficient provider lacks preparation/publication treatment: "+call.source.occurrence);
         } else if(call.coefficientVersion==StateVersion::Frozen) {
             if(!call.coefficientPrepare.empty() || !call.coefficientPublish.empty()
@@ -259,6 +274,12 @@ std::vector<const CompiledEquationCall*> coefficientPublishers(
 void bindCoefficientContracts(const StateRegistry& state,CompiledExecutionProgram& program) {
     const auto publishers=coefficientPublishers(&state,program);
     for(auto& call:program.steps) {
+        // A declared read of an implemented closure output binds its actual publisher,
+        // including ordinary algebraic consumers; no model/field name dispatch.
+        for(const auto& read:call.stateUses)if(std::any_of(publishers.begin(),publishers.end(),[&](const auto* p){
+                return std::find(p->coefficientStates.begin(),p->coefficientStates.end(),read.symbol)!=p->coefficientStates.end();
+            }) && std::none_of(call.coefficientUses.begin(),call.coefficientUses.end(),[&](const auto& use){return use.symbol==read.symbol;}))
+            call.coefficientUses.push_back({read.symbol,{read.version}});
         std::set<std::string> symbols;
         for(auto& use:call.coefficientUses) {
             state.at(use.symbol);
@@ -269,11 +290,12 @@ void bindCoefficientContracts(const StateRegistry& state,CompiledExecutionProgra
             for(const auto* p:publishers) {
                 if(std::find(p->coefficientStates.begin(),p->coefficientStates.end(),use.symbol)==p->coefficientStates.end())continue;
                 if(std::find(use.acceptedVersions.begin(),use.acceptedVersions.end(),p->coefficientVersion)==use.acceptedVersions.end())
-                    throw std::runtime_error("Incompatible coefficient treatment: consumer "+call.source.occurrence+" / "+use.symbol+" cannot read "+toString(p->coefficientVersion));
+                    throw std::runtime_error("Incompatible coefficient treatment: step="+call.source.occurrence+" equation="+call.source.equation+" target="+call.target.symbol+" input="+use.symbol+" cannot read "+toString(p->coefficientVersion));
                 if(selected)throw std::runtime_error("Ambiguous coefficient publisher: "+use.symbol);
                 selected=p;
             }
-            if(!selected)throw std::runtime_error("Missing coefficient publisher: consumer "+call.source.occurrence+" / "+use.symbol);
+            if(!selected)throw std::runtime_error("Missing coefficient publisher: step="+call.source.occurrence+" equation="+call.source.equation+" target="+call.target.symbol+" input="+use.symbol);
+            if(selected->stageLocal && selected>=&call)throw std::runtime_error("Missing preceding closure publication: step="+call.source.occurrence+" input="+use.symbol);
             use.producer=coefficientOwner(*selected);use.resource=selected->coefficientProvides.front();use.version=selected->coefficientVersion;
             const auto read=std::find_if(call.stateUses.begin(),call.stateUses.end(),[&](const auto& r){return r.symbol==use.symbol;});
             if(read==call.stateUses.end())call.stateUses.push_back({use.symbol,use.version,false,use.version==StateVersion::Frozen?use.resource:""});
@@ -314,7 +336,7 @@ void validateCoefficientContracts(const CompiledExecutionProgram& program) {
             if(count!=1)throw std::runtime_error("Coefficient stateUses/version/halo does not match publication: "+use.symbol);
         }
     }
-    if(!program.temporalParticipants.empty())for(const auto* publisher:publishers)if(publisher->coefficientVersion==StateVersion::Stage
+    if(!program.temporalParticipants.empty())for(const auto* publisher:publishers)if(publisher->coefficientVersion==StateVersion::Stage && !publisher->stageLocal
         && std::count_if(program.temporalParticipants.begin(),program.temporalParticipants.end(),[&](const auto& p){return p.identity==coefficientOwner(*publisher);})!=1)
         throw std::runtime_error("Stage coefficient publisher lacks a unique temporal owner: "+coefficientOwner(*publisher));
     for(const auto& participant:program.temporalParticipants) {
@@ -330,11 +352,15 @@ void validateCoefficientContracts(const CompiledExecutionProgram& program) {
         const auto p=std::find_if(publishers.begin(),publishers.end(),[&](const auto* item){return coefficientOwner(*item)==participant.identity;});
         if(p==publishers.end()) {
             if(!participant.coefficientProvides.empty() || !participant.coefficientStates.empty()
-                || !participant.coefficientPrepare.empty() || !participant.coefficientPublish.empty())
+                || !participant.coefficientPrepare.empty() || !participant.coefficientPublish.empty() || !participant.coefficientInputs.empty())
                 throw std::runtime_error("Temporal coefficient publisher has no compiled owner: "+participant.identity);
             continue;
         }
-        if(p==publishers.end() || participant.coefficientVersion!=StateVersion::Stage
+        const auto& inputs=(*p)->coefficientInputs;
+        const bool sameInputs=inputs.size()==participant.coefficientInputs.size() && std::equal(inputs.begin(),inputs.end(),participant.coefficientInputs.begin(),[](const auto& a,const auto& b){
+            return a.symbol==b.symbol && a.version==b.version && a.halo==b.halo && a.snapshot==b.snapshot && a.perIteration==b.perIteration && a.kind==b.kind;
+        });
+        if(!sameInputs || participant.coefficientVersion!=StateVersion::Stage
             || participant.coefficientStates!=(*p)->coefficientStates || participant.coefficientProvides!=(*p)->coefficientProvides
             || participant.coefficientPrepare!=(*p)->coefficientPrepare || participant.coefficientPublish!=(*p)->coefficientPublish)
             throw std::runtime_error("Temporal coefficient publication differs from compiled provider: "+participant.identity);
@@ -367,6 +393,12 @@ void validateDataFlow(const StateRegistry& state,const CompiledExecutionProgram&
     };
     std::map<std::string,Revision> revisions;
     std::map<std::string,std::map<std::string,int>> published;
+    std::map<std::string,std::vector<std::string>> relationInputs;
+    for(const auto& call:program.steps)if(const auto* affine=std::any_cast<CompiledAffineEquation>(&call.providerContract))
+        if(state.at(affine->target).storageBinding==StorageBinding::TransientWorkspace) {
+            auto& inputs=relationInputs[affine->target];
+            for(const auto& use:affine->valueReads)if(use.version==StateVersion::Current)inputs.push_back(use.symbol);
+        }
     std::map<std::string,std::string> invalidLazy;
     std::set<std::string> snapshots;
     std::set<std::string> persistent,invalidated;
@@ -391,6 +423,13 @@ void validateDataFlow(const StateRegistry& state,const CompiledExecutionProgram&
     };
     const auto check=[&](const auto& self,const std::string& id,const std::string& consumer,bool halo)->void {
         const auto& symbol=state.at(id);
+        if(relationInputs.count(id)) {
+            if(!revisions[id].value)throw std::runtime_error("Unpublished relation STATE: "+id+" consumer="+consumer);
+            for(const auto& input:relationInputs[id]) {
+                self(self,input,consumer,false);
+                if(published[id][input]!=version(version,input))throw std::runtime_error("Stale relation STATE: "+id+" input="+input+" consumer="+consumer+"; HOW must recompute");
+            }
+        }
         if (symbol.evaluation==StateEvaluation::Lazy && invalidLazy.count(id))
             throw std::runtime_error("Lazy STATE invalidation missing: consumer '"+consumer+"' reads '"+id+"'; writer '"+invalidLazy[id]+"' did not invalidate its versioned cache.");
         if (halo && revisions[id].halo!=revisions[id].value)
@@ -401,12 +440,45 @@ void validateDataFlow(const StateRegistry& state,const CompiledExecutionProgram&
                 throw std::runtime_error("Stale STATE: consumer '"+consumer+"' requires current '"+id+"'; invalidating writer '"+writer(writer,dependency).second+"' changed '"+dependency+"'; missing publication of '"+id+"'.");
         }
     };
+    const auto applyEffect=[&](const StateEffect& effect,const std::string& writerId) {
+        if (!state.contains(effect.symbol)) {
+            if (!effect.publish) throw std::runtime_error("Unknown STATE write: "+effect.symbol);
+            snapshots.insert(effect.symbol);invalidated.erase(effect.symbol);revisions[effect.symbol].value=++epoch;return;
+        }
+        const auto depends=[&](const auto& walk,const std::string& id)->bool {
+            if (overlaps(id,effect.symbol)) return true;
+            for (const auto& source:state.at(id).dependencies) if (walk(walk,source)) return true;
+            return false;
+        };
+        for (const auto& symbol:state.symbols()) if (symbol.evaluation==StateEvaluation::Lazy && depends(depends,symbol.id)) {
+            if (effect.invalidatesLazy) invalidLazy.erase(symbol.id);
+            else invalidLazy[symbol.id]=writerId;
+        }
+        ++epoch;
+        for (const auto& symbol:state.symbols()) if (overlaps(symbol.id,effect.symbol)) {
+            auto& revision=revisions[symbol.id];revision.value=epoch;revision.writer=writerId;
+            if (effect.halo) revision.halo=revision.value;
+        }
+        if (effect.publish) for (const auto& dependency:state.at(effect.symbol).dependencies)
+            published[effect.symbol][dependency]=version(version,dependency);
+        if(effect.publish && relationInputs.count(effect.symbol))for(const auto& input:relationInputs.at(effect.symbol))
+            published[effect.symbol][input]=version(version,input);
+    };
     const auto execute=[&](const auto& self,const ExecutionScope& node,bool stage)->void {
         if (node.kind==ExecutionKind::Commit) {
+            for(std::size_t i=0;i<node.commitSources.size();++i) {
+                const auto& from=node.commitSources[i];const auto& to=node.commitTargets.at(i);
+                const auto key="state."+from.symbol+(from.kind==TargetKind::Working?".Working":".Correction");
+                if(!snapshots.count(key))throw std::runtime_error("Variable Commit requires accepted Working/Correction publication: "+key);
+                ++epoch;
+                for(const auto& symbol:state.symbols())if(overlaps(symbol.id,to.symbol)) {
+                    revisions[symbol.id].value=epoch;revisions[symbol.id].writer=node.id;
+                }
+            }
             for (const auto& call:program.steps) for (const auto& resource:call.commitRequires)
                 if (!snapshots.count(resource)) throw std::runtime_error("Commit requires unpublished resource: "+resource);
         }
-        if (node.kind==ExecutionKind::EquationCall) {
+        if (node.kind==ExecutionKind::EquationCall || node.kind==ExecutionKind::BlockSolve) {
             const auto at=std::find_if(program.steps.begin(),program.steps.end(),[&](const auto& call){return call.source.occurrence==node.step.occurrence;});
             if (at==program.steps.end()) throw std::runtime_error("Missing compiled occurrence: "+node.step.occurrence);
             // Complete fused groups are one algebraic operation, not sequential partial writes.
@@ -429,7 +501,14 @@ void validateDataFlow(const StateRegistry& state,const CompiledExecutionProgram&
             for (const auto& workspace:at->workspaceRequires) if (!snapshots.count(workspace))
                 throw std::runtime_error("EquationCall '"+node.step.equation+"' requires unavailable workspace '"+workspace+"' in this scope.");
             for (const auto& use:uses) {
+                if(use.kind!=TargetKind::Physical) {
+                    const auto key="state."+use.symbol+(use.kind==TargetKind::Working?".Working":".Correction");
+                    if(use.version!=StateVersion::Current || !snapshots.count(key))throw std::runtime_error("Unpublished Working/Correction STATE input: "+key+" for "+node.step.occurrence);
+                    continue;
+                }
                 if (use.version==StateVersion::Frozen || use.version==StateVersion::OldTime || use.version==StateVersion::Lagged) {
+                    if(use.version==StateVersion::OldTime && stage && use.snapshot.empty() && !use.perIteration && !use.halo
+                        && std::any_of(program.steps.begin(),program.steps.end(),[&](const auto& producer){return producer.temporalResidual && producer.source.target.symbol==use.symbol && !producer.oldTimeWorkspace.empty();}))continue;
                     const auto key=use.snapshot.empty()?use.symbol:use.snapshot;
                     if (!snapshots.count(key)) throw std::runtime_error("Unavailable "+std::string(toString(use.version))+" STATE '"+key+"' for consumer '"+node.step.occurrence+"'.");
                     if (use.perIteration && loops.empty()) throw std::runtime_error("Frozen STATE requires an enclosing iteration: "+key);
@@ -439,10 +518,17 @@ void validateDataFlow(const StateRegistry& state,const CompiledExecutionProgram&
                     frozen[binding]=revisions[key].value;
                 } else {
                     if (!state.contains(use.symbol)) throw std::runtime_error("Unknown STATE use: "+use.symbol);
-                    const bool commonStage=at->temporalResidual && !program.temporalParticipants.empty()
-                        && std::any_of(program.temporalParticipants.begin(),program.temporalParticipants.end(),[&](const auto& p) {
-                            return std::find(p.targets.begin(),p.targets.end(),use.symbol)!=p.targets.end() || std::find(p.coefficientStates.begin(),p.coefficientStates.end(),use.symbol)!=p.coefficientStates.end();
-                        });
+                    const auto available=[&](const auto& self,const std::string& id,std::vector<std::string> path)->bool {
+                        if(std::find(path.begin(),path.end(),id)!=path.end())return false;
+                        if(std::any_of(program.temporalParticipants.begin(),program.temporalParticipants.end(),[&](const auto& p){
+                            return std::find(p.targets.begin(),p.targets.end(),id)!=p.targets.end() || std::find(p.coefficientStates.begin(),p.coefficientStates.end(),id)!=p.coefficientStates.end();}))return true;
+                        if(std::any_of(program.steps.begin(),program.steps.end(),[&](const auto& c){return c.stageLocal && c.target.symbol==id;}))return true;
+                        const auto& s=state.at(id);
+                        if(!s.producer || s.evaluation!=StateEvaluation::Lazy || std::find(s.producer->versions.begin(),s.producer->versions.end(),StateViewKind::Stage)==s.producer->versions.end())return false;
+                        path.push_back(id);
+                        return std::all_of(s.dependencies.begin(),s.dependencies.end(),[&](const auto& dep){return self(self,dep,path);});
+                    };
+                    const bool commonStage=(at->temporalResidual || at->stageLocal) && !program.temporalParticipants.empty() && available(available,use.symbol,{});
                     if (use.version==StateVersion::Stage && !stage && !commonStage)
                         throw std::runtime_error("Unsupported stage STATE use outside declared StageLoop: "+node.step.occurrence);
                     // Common RHS calls read one prepared epoch. A coefficient
@@ -450,11 +536,11 @@ void validateDataFlow(const StateRegistry& state,const CompiledExecutionProgram&
                     // source HOW members whose writes commit after the barrier.
                     const auto coefficient=std::find_if(coefficientUses.begin(),coefficientUses.end(),[&](const auto& item){return item.symbol==use.symbol && item.version==StateVersion::Stage;});
                     if(use.version==StateVersion::Stage && commonStage && coefficient!=coefficientUses.end()) {
-                        if(use.halo || std::none_of(program.temporalParticipants.begin(),program.temporalParticipants.end(),[&](const auto& p){
+                        if(use.halo || (std::none_of(program.steps.begin(),program.steps.end(),[&](const auto& p){return p.stageLocal && coefficientOwner(p)==coefficient->producer && &p<&*at && std::find(p.coefficientStates.begin(),p.coefficientStates.end(),use.symbol)!=p.coefficientStates.end();}) && std::none_of(program.temporalParticipants.begin(),program.temporalParticipants.end(),[&](const auto& p){
                             return p.identity==coefficient->producer && !p.coefficientPrepare.empty()
                                 && std::find(p.coefficientProvides.begin(),p.coefficientProvides.end(),coefficient->resource)!=p.coefficientProvides.end()
                                 && std::find(p.coefficientStates.begin(),p.coefficientStates.end(),use.symbol)!=p.coefficientStates.end();
-                        }))throw std::runtime_error("Missing bound stage coefficient publication: "+use.symbol);
+                        })))throw std::runtime_error("Missing bound stage coefficient publication: "+use.symbol);
                     } else check(check,use.symbol,node.step.occurrence,use.halo);
                 }
             }
@@ -470,26 +556,14 @@ void validateDataFlow(const StateRegistry& state,const CompiledExecutionProgram&
                 }
             }
             for (const auto& effect:effects) {
-                if (!state.contains(effect.symbol)) {
-                    if (!effect.publish) throw std::runtime_error("Unknown STATE write: "+effect.symbol);
-                    snapshots.insert(effect.symbol);invalidated.erase(effect.symbol);revisions[effect.symbol].value=++epoch;continue;
-                }
-                const auto depends=[&](const auto& walk,const std::string& id)->bool {
-                    if (overlaps(id,effect.symbol)) return true;
-                    for (const auto& source:state.at(id).dependencies) if (walk(walk,source)) return true;
-                    return false;
-                };
-                for (const auto& symbol:state.symbols()) if (symbol.evaluation==StateEvaluation::Lazy && depends(depends,symbol.id)) {
-                    if (effect.invalidatesLazy) invalidLazy.erase(symbol.id);
-                    else invalidLazy[symbol.id]=node.step.occurrence;
-                }
-                ++epoch;
-                for (const auto& symbol:state.symbols()) if (overlaps(symbol.id,effect.symbol)) {
-                    auto& revision=revisions[symbol.id];revision.value=epoch;revision.writer=node.step.occurrence;
-                    if (effect.halo) revision.halo=revision.value;
-                }
-                if (effect.publish) for (const auto& dependency:state.at(effect.symbol).dependencies)
-                    published[effect.symbol][dependency]=version(version,dependency);
+                // In a compiled common Stage, temporal calls evaluate RHS only.
+                // Primary writes happen together at the enclosing advance barrier.
+                const bool deferred=stage && at->temporalResidual && effect.symbol==at->target.symbol
+                    && std::any_of(program.temporalParticipants.begin(),program.temporalParticipants.end(),[&](const auto& participant) {
+                        return participant.identity==coefficientOwner(*at)
+                            && std::find(participant.targets.begin(),participant.targets.end(),effect.symbol)!=participant.targets.end();
+                    });
+                if(!deferred)applyEffect(effect,node.step.occurrence);
             }
             for (std::size_t i=0;i<members;++i) {
                 const auto& member=*(at+i);
@@ -512,7 +586,19 @@ void validateDataFlow(const StateRegistry& state,const CompiledExecutionProgram&
             if (iterative) for (auto at=frozen.begin();at!=frozen.end();) {
                 if (at->first.rfind(label+"/iteration/",0)==0) at=frozen.erase(at);else ++at;
             }
+            if(node.kind==ExecutionKind::StageLoop) {
+                // The existing recipe prepares these coefficients before its authored body.
+                for(const auto& participant:program.temporalParticipants)if(!participant.coefficientPrepare.empty())
+                    for(const auto& id:participant.coefficientStates)applyEffect({id,false,false,true},participant.identity);
+                for(const auto& participant:program.temporalParticipants)if(!participant.coefficientPrepare.empty())
+                    for(const auto& id:participant.coefficientStates)for(const auto& dependency:state.at(id).dependencies)
+                        published[id][dependency]=version(version,dependency);
+            }
             for (const auto& child:node.children) self(self,child,stage || node.kind==ExecutionKind::StageLoop);
+            if(node.kind==ExecutionKind::StageLoop) {
+                for(const auto& participant:program.temporalParticipants)for(const auto& id:participant.targets)
+                    applyEffect({id,false,false,true},participant.identity);
+            }
         }
         if (iterative) loops.pop_back();
         // Workspaces produced inside a control scope do not escape into siblings.

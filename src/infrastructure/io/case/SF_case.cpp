@@ -289,7 +289,7 @@ Model::Description read(const std::string& path) {
     if(meta.object!="case"||meta.type!="registry")throw std::runtime_error("case.yaml: expected object case type registry");
     Model::Schema{{{"formatVersion","integer",true},{"name","string",true}},false}.validate(meta.body,"case.yaml");
     model.formatVersion=meta.body.at("formatVersion");model.name=meta.body.at("name");
-    if(model.formatVersion!=1)throw std::runtime_error("case.yaml: unsupported formatVersion "+std::to_string(model.formatVersion));
+    if(model.formatVersion!=1 && model.formatVersion!=2)throw std::runtime_error("case.yaml: unsupported formatVersion "+std::to_string(model.formatVersion));
     dispatch("mesh/mesh.yaml","","mesh","registry","");
     dispatch("fields/fields.yaml","","fields","registry","");
     dispatch("solvers/solvers.yaml","","solver","registry","");

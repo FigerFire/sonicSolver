@@ -38,7 +38,6 @@ void addWriteOnce(std::vector<Execution::FieldAccess>& writes,
 
 void validateTimestepState(
         const State::StateBundle& state,
-        const FDM::SolverConfig& config,
         const System::CompiledNumericalSystem& numericalSystem) {
     state.validateThermodynamicBinding();
     const auto& convection = System::NumericalCompiler::requireUniqueRecipe(
@@ -57,18 +56,22 @@ void validateTimestepState(
         throw std::runtime_error(
             message.str());
     }
-    const double tolerance = 64.0 * std::numeric_limits<double>::epsilon()
-        * std::max({1.0, std::abs(*gamma),
-                    std::abs(config.numerics.idealGasGamma)});
-    if (std::abs(*gamma - config.numerics.idealGasGamma) > tolerance) {
-        std::ostringstream message;
-        message << "Density-based reconstructed convection '"
-                << FDM::toString(convection.id())
-                << "' received PerfectGas FluidStateModel gamma=" << *gamma
-                << " but configured characteristic flux gamma="
-                << config.numerics.idealGasGamma
-                << "; no fixed-gamma fallback is permitted.";
-        throw std::runtime_error(message.str());
+    const auto& inputs=System::NumericalCompiler::requireConservativeInputs(numericalSystem);
+    // This compares the actual resource with its declaration, not two configurations.
+    if(numericalSystem.thermophysical && numericalSystem.thermophysical->selection.equationOfState=="perfectGas") {
+        const double tolerance = 64.0 * std::numeric_limits<double>::epsilon()
+            * std::max({1.0, std::abs(*gamma),
+                        std::abs(inputs.caloricGamma)});
+        if (std::abs(*gamma - inputs.caloricGamma) > tolerance) {
+            std::ostringstream message;
+            message << "Density-based reconstructed convection '"
+                    << FDM::toString(convection.id())
+                    << "' received PerfectGas FluidStateModel gamma=" << *gamma
+                    << " but declared thermophysical gamma="
+                    << inputs.caloricGamma
+                    << "; no fixed-gamma fallback is permitted.";
+            throw std::runtime_error(message.str());
+        }
     }
 }
 
@@ -106,7 +109,6 @@ void prepareBoundaryState(
 void assembleAllPatches(
         const std::vector<Field*>& fields,
         std::vector<PatchWorkspace>& workspaces,
-        const FDM::SolverConfig& config,
         const System::CompiledNumericalSystem& numericalSystem,
         SF::Equation::Compressible::System& equations,
         State::StateBundle& state,
@@ -162,15 +164,11 @@ void assembleAllPatches(
                 +"' has no compiled execution kernel.");
         boundSources.push_back(term.conservativeSource);
     }
-    config.validateThermophysicalProjection();
-    const auto* thermo=config.thermophysical.get();
+    const auto& inputs=System::NumericalCompiler::requireConservativeInputs(numericalSystem);
     const SF::Equation::Compressible::AssemblyContext assembly{
         &convectionRecipe,diffusionRecipe,&boundSources,
-        state.dt,config.numerics.ibmBoundary,config.numerics.ilwOrder,
-        thermo?thermo->dynamicViscosity:config.numerics.dynamicViscosity,
-        thermo?thermo->prandtl:config.numerics.prandtl,
-        thermo?thermo->gamma:config.numerics.idealGasGamma,
-        thermo?thermo->gasConstant:config.numerics.idealGasConstant,
+        state.dt,inputs.ibmBoundary,inputs.ilwOrder,
+        inputs.molecularViscosity,inputs.prandtl,inputs.caloricGamma,inputs.gasConstant,
         nullptr,state.stateModel.get()};
 
     for (size_t index = 0; index < fields.size(); ++index) {

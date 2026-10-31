@@ -1,0 +1,88 @@
+{
+  "SonicFile": {
+    "object": "solver",
+    "type": "equationRegistry"
+  },
+  "use": [
+    "Momentum",
+    "Continuity",
+    "damping"
+  ],
+  "add": {
+    "damping": {
+      "lhs": {
+        "symbol": "acceleration"
+      },
+      "rhs": {
+        "op": "multiply",
+        "args": [
+          {
+            "constant": -0.2,
+            "dimensions": [
+              0,
+              0,
+              -1,
+              0,
+              0,
+              0,
+              0
+            ]
+          },
+          {
+            "op": "component",
+            "args": [
+              {
+                "symbol": "U"
+              },
+              {
+                "constant": 0
+              }
+            ]
+          }
+        ]
+      }
+    }
+  },
+  "extend": {
+    "momentum": {
+      "rhs": {
+        "op": "source",
+        "args": [
+          {
+            "op": "vector",
+            "args": [
+              {
+                "symbol": "acceleration"
+              },
+              {
+                "constant": 0,
+                "dimensions": [
+                  0,
+                  1,
+                  -2,
+                  0,
+                  0,
+                  0,
+                  0
+                ]
+              },
+              {
+                "constant": 0,
+                "dimensions": [
+                  0,
+                  1,
+                  -2,
+                  0,
+                  0,
+                  0,
+                  0
+                ]
+              }
+            ]
+          }
+        ],
+        "occurrence": "damping.source"
+      }
+    }
+  }
+}

@@ -132,6 +132,10 @@ FormulaExpr FormulaExpr::zeroLike(const FormulaExpr& other) {
     FormulaExpr result;result.signature_=other.signature_;result.literalZero_=false;return result;
 }
 FormulaExpr FormulaExpr::make(Math::Op operation,std::vector<FormulaExpr> args,std::string occurrence) {
+    if(operation==Math::Op::Component && (args.size()!=2 || args[1].kind()!=Kind::Constant
+        || args[1].constant()!=std::floor(args[1].constant()) || args[1].constant()<0
+        || args[1].constant()>=args[0].signature().extent))
+        throw std::runtime_error("component index must be an in-range constant integer");
     if(operation==Math::Op::Pow) {
         if(args.size()!=2 || args[1].kind()!=Kind::Constant)throw std::runtime_error("Power needs a constant exponent");
         Math::requireCompatible(args[1].signature(),Math::signature(0,{}),"power exponent");

@@ -1,0 +1,30 @@
+{
+  "SonicFile": {
+    "object": "solver",
+    "type": "state"
+  },
+  "use": [
+    "U",
+    "p"
+  ],
+  "calls": [
+    {
+      "call": "damping.update",
+      "reads": [
+        {
+          "symbol": "U",
+          "version": "Current"
+        }
+      ]
+    },
+    {
+      "call": "predictor",
+      "reads": [
+        {
+          "symbol": "acceleration",
+          "version": "Current"
+        }
+      ]
+    }
+  ]
+}
