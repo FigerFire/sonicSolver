@@ -258,7 +258,7 @@ Explain 显示同一资源需求、窄输入与仍有限的实现能力，不宣
 
 ## 四轴动态反馈切片（2026-11-01）
 
-本轮结构完成，数值闭环待验收。实际链为 native typed WHAT/HOW/STATE/WHICH → Lowering → 已选数值函数 → 编译资源 → 原 binder/PlanExecutor → 原 RHS。`LocalAffine`、`ConservativeResidual` 及恒密度压力方法已退出 IProvider/ProviderRegistry；按 WHICH 的精确方法身份直接编译，不从模型名称选择实现。已迁移操作按方法/过程实际声明的 operation/owner 冻结，不依赖旧 ProviderCatalog 的模型准入。未迁移消费者才走旧 registry/catalog 验证；不是编译失败后回退。
+结构完成，随后两组明确获授权的串行闭环及限定指标/trace 对照已完成，见 loop.md；不代表任意组合或 MPI 验收。实际链为 native typed WHAT/HOW/STATE/WHICH → Lowering → 已选数值函数 → 编译资源 → 原 binder/PlanExecutor → 原 RHS。`LocalAffine`、`ConservativeResidual` 及恒密度压力方法已退出 IProvider/ProviderRegistry；按 WHICH 的精确方法身份直接编译，不从模型名称选择实现。已迁移操作按方法/过程实际声明的 operation/owner 冻结，不依赖旧 ProviderCatalog 的模型准入。未迁移消费者才走旧 registry/catalog 验证；不是编译失败后回退。
 
 HOW 的 recipe scope 依据所选实现返回的 temporalResidual 分类，不能仅因 WHAT 有 ddt 就把固定时间压力 predictor 包进 RK。共同阶段仍由原 recipe、一次融合 RHS、Ready/RhsReady/advance/Close 屏障生成，普通关系按明确 Stage/Step 位置求值；相邻融合成员限制不变。统一时间计划在编译后与实际 StageGroup 绑定时均校验。
 
@@ -268,4 +268,7 @@ HOW 的 recipe scope 依据所选实现返回的 temporalResidual 分类，不�
 
 密度路径仍固定五变量 rho/rhoU/rhoE 与原可用 EOS/边界/空间方法；恒密度压力仍固定 U/p/rho/phi/deltaP、PrimitiveUpwind1/Central2、rhoConst 和持久 Rhie-Chow 通量。压力动量按项消费；压力修正/速度/压力/通量/松弛等剩余固定 kernel 以结构及扩展规则检查保护，不将新公式只打印后忽略。源项可重复显式相加；重复对流/扩散在融合方法尚无累加实现时拒绝。
 
-两条真实数据流、准备输入和未验证范围见 [loop.md](../docs/loop.md)。普通关系/反馈绑定当前限串行单 patch；密度 field source 需要实际 synchronous stage group，旧 unsplit fused executor 未提供其 reader 端口时拒绝；不宣称压力可耦合任意时间输运。once-step RAS、Eulerian、IBM、Level-set、thermal/mixture、普通显式输运/线性块等仍有旧 provider 消费者，后续按实际数值方法迁移。旧四条 SST 关系、独立非局部闭合、NearestInterior 延拓和最终重求顺序没有重做。生产构建不代替数值验收，历史压力 MPI 阈值与 Level-set 参考问题保留。
+两条真实数据流、准备输入和未验证范围见 [loop.md](../docs/loop.md)。普通关系/反馈绑定当前限串行单 patch；密度 field source 需要实际 synchronous stage group，旧 unsplit fused executor 未提供其 reader 端口时拒绝；不宣称压力可耦合任意时间输运。once-step RAS、Eulerian、IBM、Level-set、thermal/mixture、普通显式输运/线性块等仍有旧 provider 消费者，后续按实际数值方法迁移。旧四条 SST 关系、独立非局部闭合、NearestInterior 延拓和最终重求顺序没有重做。生产构建与数值结果分别记录。获授权的 uniform RK4/source 与 PISO/damping 四配置已到1 s/10 s，解析/预算/过程及有限通量一致性指标通过；历史压力 MPI 阈值与 Level-set 参考问题仍保留。
+
+
+授权验收补齐了 native reader 的一个真实缺口：STATE 已显式选择或读取的 builtin unknown，其签名现在可进入同一公式符号表，不要求为 rhoU 等 packed 分量伪造 fields 数组。只借用 BuiltinStateCatalog 的元数据，不创建存储或默认 EOS，不新增名字分支。压力 traceState 为环境开关控制的只读快照，宿主传入原 step/time；不更新数学、clock 或同步。数值证据与范围见 loop.md；四配置之外未运行回归。

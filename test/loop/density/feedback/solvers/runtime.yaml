@@ -8,13 +8,13 @@
   "endStep": 10000,
   "CFL": 0.5,
   "maxDeltaT": 0.025,
-  "createMesh": true,
+  "createMesh": false,
   "writeControl": "timeStep",
   "writeInterval": 1,
   "writeInitial": true,
   "output": {
     "jobName": "DensityLoop",
-    "outputDir": "result"
+    "outputDir": "result/trace-04"
   },
   "parallel": {
     "enabled": false,

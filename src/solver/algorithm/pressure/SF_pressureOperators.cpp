@@ -16,6 +16,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
+#include <set>
 #include <unordered_map>
 #include <stdexcept>
 
@@ -734,6 +735,46 @@ void PressureOperators::traceAssembly() const {
         }
     }
     if (!output) throw std::runtime_error("Pressure assembly trace write failed.");
+}
+
+void PressureOperators::traceState(const char* phase,int step,double time) const {
+    const char* directory=std::getenv("SF_PRESSURE_TRACE_DIR");
+    const char* selected=std::getenv("SF_PRESSURE_TRACE_STEP");
+    if(!directory || !*directory || !selected || !*selected)return;
+    std::size_t parsed=0;const int wanted=std::stoi(selected,&parsed);
+    if(selected[parsed]!='\0' || wanted<0)throw std::runtime_error("Invalid pressure trace step");
+    if(step!=0 && step!=wanted)return;
+    if(runtime_->distributed())throw std::runtime_error("Pressure verification snapshots require serial execution; distributed snapshot ownership is not implemented");
+    std::filesystem::create_directories(directory);
+    const auto prefix=std::filesystem::path(directory)/("state-"+std::to_string(step)+"-"+std::to_string(traceStateIndex_++)+"-"+phase);
+    std::ofstream cells(prefix.string()+".csv");
+    cells<<std::setprecision(17)<<"cell,i,j,k,x,y,z,solved,inverseVolume,dt,U0,U1,U2,p,H0,H1,H2,rAU,deltaP\n";
+    for(int cell=0;cell<geometry_->TotalSize();++cell) {
+        int i,j,k;geometry_->getIJK(cell,i,j,k);
+        cells<<cell<<','<<i<<','<<j<<','<<k<<','<<geometry_->X(i,j,k)<<','<<geometry_->Y(i,j,k)<<','<<geometry_->Z(i,j,k)<<','<<solved(cell)<<','<<geometry_->Jac(i,j,k)<<','<<dt_;
+        for(int c=0;c<3;++c)cells<<','<<velocity_->read(cell,c);
+        cells<<','<<pressure_->read(cell,0);
+        for(int c=0;c<3;++c)cells<<','<<hByA_[(size_t)c*geometry_->TotalSize()+cell];
+        cells<<','<<rAU_[cell]<<','<<correction_[cell]<<'\n';
+    }
+    std::ofstream faces(prefix.string()+"-faces.csv");
+    faces<<std::setprecision(17)<<"axis,lower,upper,Ax,Ay,Az,response,flux,predicted,deltaL,deltaR\n";
+    std::set<std::pair<int,int>> visited;
+    for(int cell:cells_)for(int axis=0;axis<3;++axis)if(Math::isDirectionActiveIndex(axis))for(int sign:{-1,1}) {
+        const int lower=sign>0?cell:adjacent(cell,axis,-1),upper=adjacent(lower,axis,1);
+        if(!visited.emplace(axis,lower).second)continue;
+        const auto index=faceIndex(axis,lower);const auto area=faceArea(axis,lower);
+        faces<<axis<<','<<lower<<','<<upper<<','<<area[0]<<','<<area[1]<<','<<area[2]<<','<<faceResponse_[index]<<','<<correctedFlux_[index]<<','<<predictedFlux_[index]<<','<<correction_[lower]<<','<<correction_[upper]<<'\n';
+    }
+    if(std::string_view(phase)=="accepted") {
+        std::ofstream matrix(prefix.string()+"-matrix.csv");matrix<<std::setprecision(17)<<"row,column,coefficient,rhs,solution\n";
+        for(size_t n=0;n<pressureMatrix_.rows.size();++n) {
+            const auto& row=pressureMatrix_.rows[n];
+            for(const auto& entry:row.coefficients())matrix<<row.row().value()<<','<<entry.column.value()<<','<<entry.value<<','<<row.rightHandSide()<<','<<pressureResult_.solution.at(n)<<'\n';
+        }
+        if(!matrix)throw std::runtime_error("Pressure trace matrix write failed");
+    }
+    if(!cells || !faces)throw std::runtime_error("Pressure trace state write failed");
 }
 
 void PressureOperators::solvePressure() {

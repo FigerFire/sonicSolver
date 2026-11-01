@@ -1,20 +1,25 @@
-SonicFile:
-  object: solver
-  type: runtime
-startTime: 0
-endTime: 10.0
-endStep: 2200
-CFL: 0.5
-maxDeltaT: 0.1
-writeControl: timeStep
-writeInterval: 1000
-writeInitial: false
-createMesh: true
-output:
-  jobName: Poiseuille
-  outputDir: result
-parallel:
-  enabled: false
-  nProcs: 1
-  split: auto
-  haloTolerance: 1e-5
+{
+  "SonicFile": {
+    "object": "solver",
+    "type": "runtime"
+  },
+  "startTime": 0,
+  "endTime": 10,
+  "endStep": 2200,
+  "CFL": 0.5,
+  "maxDeltaT": 0.1,
+  "writeControl": "runTime",
+  "writeInterval": 10,
+  "writeInitial": false,
+  "createMesh": false,
+  "output": {
+    "jobName": "Poiseuille",
+    "outputDir": "result/trace-04"
+  },
+  "parallel": {
+    "enabled": false,
+    "nProcs": 1,
+    "split": "auto",
+    "haloTolerance": 1e-05
+  }
+}

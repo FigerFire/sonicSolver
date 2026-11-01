@@ -98,12 +98,27 @@ CaseConfig CaseAdapter::build(const Model::Description& m) {
     std::string equationSource;
     System::SystemContribution nativeContribution;
     System::FormulaSymbols symbols;
+    std::set<std::string> mathematicalSymbols;
     for(const auto& field:m.fields) {
         if(!field.dimensions.is_array() || field.dimensions.size()!=7)continue;
         const int rank=field.type==Model::ValueType::Scalar?0:field.type==Model::ValueType::Vector?1:2;
         auto signature=Math::signature(rank,field.dimensions.get<std::array<double,7>>());
         if(field.type==Model::ValueType::SymmetricTensor)signature.structure=Math::TensorStructure::Symmetric;
-        symbols.add(field.symbol,signature);
+        symbols.add(field.symbol,signature);mathematicalSymbols.insert(field.symbol);
+    }
+    // Explicit STATE references may name packed unknowns without a redundant
+    // fields file. This supplies signatures only, never storage or execution.
+    const System::BuiltinStateCatalog builtinSymbols;
+    const auto declare=[&](std::string id) {
+        if(!id.empty() && id.back()=='\'')id.pop_back();
+        id=System::targetFromSyntax(std::move(id)).symbol;
+        if(builtinSymbols.contains(id) && mathematicalSymbols.insert(id).second)
+            symbols.add(id,builtinSymbols.at(id).signature);
+    };
+    for(const auto& object:m.objects)if(object.type=="stateRegistry") {
+        for(const auto& id:object.parameters.at("use"))declare(id.get<std::string>());
+        if(object.parameters.contains("calls"))for(const auto& call:object.parameters.at("calls"))
+            for(const auto& read:call.at("reads"))declare(read.at("symbol").get<std::string>());
     }
 
     // 语义角色 → parameters。同一个角色只能被一个对象占用。

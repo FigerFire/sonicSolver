@@ -55,6 +55,8 @@ public:
     void evaluateConvergence();
     void endIteration();
     void commitStep();
+    /// @brief 可选只读验收快照，使用宿主现有 step/time；不改变状态、通量或求解顺序。
+    void traceState(const char* phase,int step,double time) const;
 
     const std::vector<double>& correctedFaceFlux() const {
         return correctedFlux_;
@@ -92,6 +94,7 @@ private:
     void requireCollectively(bool valid,const char* reason) const;
     void traceAssembly() const;
     mutable unsigned long long traceAssemblyIndex_ = 0;
+    mutable unsigned long long traceStateIndex_ = 0;
     System::StateRealization* stateViews_ = nullptr;
     State::DistributedFieldView correctionView_;
     State::DistributedFieldView fluxView_;

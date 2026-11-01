@@ -352,6 +352,7 @@ void FlowOperations::bindConstantPressureOps(
     });
     operations.bind(System::OpIds::MomentumAssemble,"flow.pressure-operators",[owner=shared_from_this(),this] {
         pressureOperators_->assembleMomentum();
+        pressureOperators_->traceState("momentum",state_->step,state_->time);
     });
     operations.bind(System::OpIds::MomentumSolve,"flow.pressure-operators",[owner=shared_from_this(),this](const Run::ExecutionContext& context) {
         if (!context.target)
@@ -378,7 +379,9 @@ void FlowOperations::bindConstantPressureOps(
         state_->distributed.markModified("velocity");
     });
     operations.bind(System::OpIds::FluxCorrect,"flow.rhie-chow",[owner=shared_from_this(),this] {
+        pressureOperators_->traceState("flux-before",state_->step,state_->time+state_->dt);
         pressureOperators_->correctFlux();
+        pressureOperators_->traceState("flux-after",state_->step,state_->time+state_->dt);
     });
     operations.bind(System::OpIds::PressureCorrectionCommit,"flow.pressure-operators",[owner=shared_from_this(),this] {
         const auto summary=pressureOperators_->commitCorrection();
@@ -444,6 +447,7 @@ void FlowOperations::bindConstantPressureOps(
     });
     operations.bind(System::OpIds::PressureStepCommit,"flow.pressure-operators",[owner=shared_from_this(),this] {
         pressureOperators_->commitStep();
+        pressureOperators_->traceState("accepted",state_->step,state_->time+state_->dt);
     });
 }
 

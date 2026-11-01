@@ -715,3 +715,6 @@ test/loop/**/mesh/*.vtm
 # Keep metadata excluded after fixture extension exceptions.
 ._*
 .DS_Store
+!test/loop/metrics.py
+# Registered input meshes make the frozen cases runnable from a fresh checkout.
+!test/loop/**/mesh/mesh.sfm
