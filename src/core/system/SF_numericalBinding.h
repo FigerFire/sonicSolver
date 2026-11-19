@@ -34,6 +34,9 @@ struct NumericalBinding {
     bool inputsDeclared=false;
     /// @brief 用户 WHICH 选择覆盖贡献提供的默认；来源类别不决定优先级。
     bool explicitChoice=false;
+    /// @brief 引用提供数值响应的 HOW occurrence，不按 equation ID 或默认名称猜测。
+    std::string response;
+    bool responseDeclared=false;
 };
 
 }

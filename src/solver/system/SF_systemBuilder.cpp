@@ -1,3 +1,4 @@
+#include "models/physics/SF_sourceContribution.h"
 #include "solver/system/SF_lowering.h"
 #include "core/system/SF_operationIds.h"
 /// @file SF_systemBuilder.cpp
@@ -14,7 +15,6 @@
 #include "SF_pressureCoupling.h"
 #include "SF_builtinState.h"
 #include "SF_executionComposition.h"
-#include "SF_scalarMethod.h"
 #include "SF_immersedMethods.h"
 #include "SF_eulerianRelations.h"
 #include "SF_providerResolver.h"
@@ -142,10 +142,16 @@ void validateSemanticComposition(const EquationCompositionConfig& composition,bo
     if(!fluidPreset)return;
     const bool continuity = usesEquation(composition,"Continuity");
     const bool momentum = usesEquation(composition,"Momentum");
+    const bool explicitPredictor=!composition.predictorEquation.empty();
+    if(explicitPredictor && (momentum || !usesEquation(composition,composition.predictorEquation)
+        || composition.thermoDynamics.equationOfState!="rhoConst"
+        || std::find(composition.solutionVariables.begin(),composition.solutionVariables.end(),"U")==composition.solutionVariables.end()))
+        throw std::runtime_error("Pressure predictorEquation="+composition.predictorEquation+
+            " requires rhoConst, solution U and its own WHAT selection in place of Momentum.");
     const bool energy = usesEquation(composition,"Energy");
-    if (!continuity || !momentum) {
+    if (!continuity || (!momentum && !explicitPredictor)) {
         throw std::runtime_error(
-            "Current single-fluid composition requires Continuity and Momentum.");
+            "Current single-fluid composition requires Continuity and Momentum or an explicit predictorEquation.");
     }
     if (composition.thermoDynamics.equationOfState.empty()) {
         throw std::runtime_error(
@@ -256,7 +262,7 @@ ResolvedSimulationSystem build(
             throw std::runtime_error(reason);
         if (selection.declared && includes("U")) {
             if (!includes("p")) throw std::runtime_error("Pressure constraint requires selected solution p; HOW cannot add a solution unknown.");
-            Compose::addConstantDensityFluid(builtin,selection,legacyFluidDiffusion);
+            Compose::addConstantDensityFluid(builtin,selection,legacyFluidDiffusion,config.numerics.dynamicViscosity);
         } else if (request.pressureConstraint || selection.compatibilityPressureConstraint
             || usesEquation(selection,"PressureConstraint")) {
             Compose::addPressureConstraintFluid(builtin,PressureConstraintSpec{legacyFluidDiffusion},selection);
@@ -312,7 +318,17 @@ ResolvedSimulationSystem build(
         users.applyModification(modification);
     }
 
-    for (auto* module:{&builtin,&models,&users}) module->finalizeMathematics();
+    SystemCompositionBuilder sources(result.rawSystem,transformationRequests,{OriginKind::Model,"configured source targets"});
+    if(request.configuredSources && !config.sources.enabled.empty()) {
+        SystemContribution contribution;
+        Physics::SourceContribution::contribute(contribution,config.sources,Physics::SourceContribution::targets(result.rawSystem.registry));
+        sources.applyContribution(std::move(contribution));
+    }
+    if(!selection.predictorEquation.empty()
+        && (!builtin.pressureInputs || !request.coupling
+            || !result.rawSystem.registry.contains(selection.predictorEquation)))
+        throw std::runtime_error("Pressure predictor reference does not bind a declared equation in the selected pressure preset: "+selection.predictorEquation);
+    for (auto* module:{&builtin,&sources,&models,&users}) module->finalizeMathematics();
     const BuiltinStateCatalog stateCatalog;
     for (const auto* module:{&builtin,&models,&users})
         for (const auto& symbol:module->requiredStates)
@@ -363,6 +379,10 @@ ResolvedSimulationSystem build(
         result.coupling.reason =
             "superseded by the monolithic KKT/DLM constraint contribution";
     }
+    if(selection.declared)for(const auto& id:selection.equations) {
+        if(id=="Momentum" || id=="Continuity" || id=="Energy" || id=="PressureConstraint")continue;
+        if(!result.rawSystem.registry.contains(id))throw std::runtime_error("Selected WHAT equation has no registered mathematical contribution: "+id);
+    }
     result.executableSystem = TransformationPipeline::apply(
         result.rawSystem,transformationRequests,transformers,
         result.transformations);
@@ -384,12 +404,32 @@ ResolvedSimulationSystem build(
         const auto requirements=executionProgram.requirements;
         executionProgram=*request.authoredExecution;
         executionProgram.explicitOrder=true;
-        executionProgram.requirements.insert(executionProgram.requirements.end(),requirements.begin(),requirements.end());
+        // Preset slots compose only the preset's tree. Authored HOW has its
+        // own order and is checked against the compiled STATE dependencies.
+        for(const auto& requirement:requirements)
+            if(requirement.scope.rfind("slot:",0)!=0)
+                executionProgram.requirements.push_back(requirement);
         equationMethods.clear();
+    }
+    for(const auto* module:{&builtin,&models,&users})for(const auto& residual:module->residuals) {
+        auto previous=std::find_if(executionProgram.residuals.begin(),executionProgram.residuals.end(),[&](const auto& value){return value.id==residual.id;});
+        if(previous==executionProgram.residuals.end())executionProgram.residuals.push_back(residual);
+        else if(previous->origin.kind!=OriginKind::User && residual.origin.kind==OriginKind::User)*previous=residual;
+        else if(previous->origin.kind==OriginKind::User && residual.origin.kind!=OriginKind::User)continue;
+        else throw std::runtime_error("Conflicting residual definitions: "+residual.id+" from "+previous->origin.source+" and "+residual.origin.source);
     }
     equationMethods.insert(equationMethods.end(),explicitBindings.begin(),explicitBindings.end());
     result.numericalSelection=selectNumerics(config,request,result.executableSystem,std::move(equationMethods));
     // Source composition is complete; the compiler receives immutable WHAT/HOW/WHICH.
+    // Built-in algorithms are clients of the same public interval declaration.
+    // Their composition still locates the terminal publication before freezing.
+    if(!request.authoredExecution && !executionProgram.root.children.empty()) {
+        auto& last=executionProgram.root.children.back();
+        if(last.kind==ExecutionKind::Commit && last.commitSources.empty()) {
+            executionProgram.root.children.pop_back();
+            executionProgram.root.kind=ExecutionKind::Push;
+        }
+    }
     Lowering::compileSystem(result,executionProgram,result.numericalSelection,
         request.additionalExecutionContributions);
     for (const auto& provider:result.numericalSystem.providerRequirements)
@@ -484,7 +524,7 @@ ResolvedSimulationSystem build(
     }
     deriveExecutionComposition(result,request);
     if (std::any_of(result.solvePlan.compiledProgram.steps.begin(),result.solvePlan.compiledProgram.steps.end(),
-        [](const auto& call) {return call.backendProvider=="equation.thermal" || call.backendProvider==ScalarOps::Provider || call.backendProvider==ScalarOps::TransportProvider || call.backendProvider==ScalarOps::SharedFluxProvider || call.backendProvider==ScalarOps::CapacityProvider;})) {
+        [](const auto& call) {return call.backendProvider==ScalarOps::Provider || call.backendProvider==ScalarOps::TransportProvider || call.backendProvider==ScalarOps::SharedFluxProvider || call.backendProvider==ScalarOps::CapacityProvider;})) {
         if (request.parallel) throw std::runtime_error("Unsupported: scalar provider is serial single patch; MPI execution unavailable.");
         if (!std::isfinite(config.numerics.maxDeltaT) || config.numerics.maxDeltaT<=0)
             throw std::runtime_error("Scalar explicit fixed dt must be finite and positive.");

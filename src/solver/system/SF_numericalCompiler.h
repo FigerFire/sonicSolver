@@ -16,7 +16,7 @@ void resolveConservativeInputs(const FDM::SolverConfig&,CompiledNumericalSystem&
 const ConservativeExecutionInputs& requireConservativeInputs(const CompiledNumericalSystem&);
 CompiledNumericalSystem compile(
     const ExecutableEquationSystem& equations,
-    const CompiledExecutionProgram& program,
+    CompiledExecutionProgram& program,
     const FDM::NumericalRecipeSet& recipes,
     const TermProviderCatalog& catalog,
     const CompiledTimeRecipe& time,

@@ -1752,12 +1752,30 @@ void CaseAdapter::decodeTurbulenceSection() {
         valueWordList(jsonValueAfterKey(text, "phases"));
     turbulence.wallPatches =
         valueWordList(jsonValueAfterKey(text, "walls"));
+    turbulence.closureDensity=valueUnquote(jsonValueAfterKey(text,"closureDensity"));
+    turbulence.closureVelocity=valueUnquote(jsonValueAfterKey(text,"closureVelocity"));
+    if(turbulence.closureDensity.empty()!=turbulence.closureVelocity.empty())throw std::runtime_error("SST closureDensity/closureVelocity must be selected together");
     value=jsonValueAfterKey(text,"transportMethod");
     if(!value.empty()) {
         const auto method=valueUnquote(value);
-        if(method!="stageConservative" && method!="legacyOnceStep")throw std::runtime_error("Unknown turbulence transportMethod: "+method);
+        if(method!="stageConservative" && method!="legacyOnceStep" && method!="fixedVolume")throw std::runtime_error("Unknown turbulence transportMethod: "+method);
         turbulence.stageConservativeTransport=method=="stageConservative";
+        turbulence.fixedVolumeTransport=method=="fixedVolume";
+        turbulence.sharedVolumeFlux=valueUnquote(jsonValueAfterKey(text,"sharedVolumeFlux"));
     }
+    if(sections_.turbulence.contains("momentumStress")) {
+        const auto& target=sections_.turbulence.at("momentumStress");
+        Model::Schema{{{"equation","string",true},{"occurrence","string",true}},false}.validate(target,"turbulence/momentumStress");
+        turbulence.stressEquation=target.at("equation").get<std::string>();
+        turbulence.stressOccurrence=target.at("occurrence").get<std::string>();
+        if(turbulence.stressEquation.empty() || turbulence.stressOccurrence.empty())
+            throw std::runtime_error("turbulence/momentumStress requires nonempty equation and occurrence");
+    }
+    turbulence.viscosityOutput=sections_.turbulence.value("viscosityOutput",std::string{});
+    turbulence.viscosityEquation=sections_.turbulence.value("viscosityEquation",std::string{});
+    for(const auto key:{"viscosityOutput","viscosityEquation"})
+        if(sections_.turbulence.contains(key) && sections_.turbulence.at(key).get<std::string>().empty())
+            throw std::runtime_error(std::string("turbulence/")+key+" requires a nonempty reference");
     value = jsonValueAfterKey(text, "turbulentPrandtl");
     if (!value.empty()) {
         turbulence.turbulentPrandtl =

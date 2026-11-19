@@ -1,4 +1,5 @@
 #include "SF_multiphaseSystemContribution.h"
+#include "core/interfaces/SF_scalarEquationData.h"
 #include <stdexcept>
 #include <algorithm>
 #include <map>
@@ -84,7 +85,12 @@ void contributeThermal(System::SystemContribution& system,const MultiPhaseConfig
     const auto& t=config.temperature;
     if (!t.enabled) throw std::runtime_error("Thermal equation requires an enabled transported temperature.");
     system.recordContribution("model.thermal","independent transported temperature; does not replace EOS T");
-    addState(system,"thermal.T",t.fieldName,0,1,false);
+    System::StateSymbol temperature;temperature.id="thermal.T";temperature.name=t.fieldName;
+    temperature.signature=signature("thermal.T");temperature.role=System::StateRole::Transported;
+    temperature.storageBinding=System::StorageBinding::NamedDistributed;temperature.storageKey=t.fieldName;temperature.restartEligible=false;
+    auto input=std::make_shared<FDM::ScalarFieldInput>();input->initial=t.defaultValue;input->positiveInitial=true;
+    input->initialConditions=t.initialConditions;input->boundaries=t.boundaryConditions;temperature.fieldInput=std::move(input);
+    system.addState(std::move(temperature));
     if(t.transportEnabled)system.requireState("U");
     auto lhs=E::op(Math::Op::Ddt,{symbol("thermal.T")});
     if (t.transportEnabled) lhs=E::add(std::move(lhs),E::op(Math::Op::Div,{symbol("U"),symbol("thermal.T")}));
@@ -97,12 +103,14 @@ void contributeThermal(System::SystemContribution& system,const MultiPhaseConfig
         (mode=="diagnose" || mode=="warn" || mode.empty()) ? 1. :
         (mode=="project" || mode=="clip" || mode=="bounded") ? 2. : -1.;
     if(boundMode<0)throw std::runtime_error("Unknown thermal boundMode: "+t.boundMode);
-    System::NumericalBinding binding{"thermalTemperature","ThermalEulerTransport"};
-    binding.parameters={{"convection",t.transportEnabled?1.:0.},{"diffusion",t.diffusionEnabled?1.:0.},
-        {"D",t.diffusivity},{"bounded",t.bounded?1.:0.},{"lower",t.lowerBound},{"upper",t.upperBound},
+    System::NumericalBinding binding{"thermalTemperature","ScalarMetricUpwindCentral2"};
+    binding.parameters={{"bounded",t.bounded?1.:0.},{"lower",t.lowerBound},{"upper",t.upperBound},
         {"boundMode",boundMode},
         {"ilw",ilw?1.:0.},{"ilwOrder",(double)order}};
     system.bindNumerics(std::move(binding));
+    System::CallInputs inputs;inputs.call="thermalTemperature";inputs.reads={{"thermal.T",System::StateVersion::Stage}};
+    if(t.transportEnabled)inputs.reads.push_back({"U",System::StateVersion::Current});
+    system.bindInputs(std::move(inputs));
 }
 void contributeMixture(System::SystemContribution& system,const MultiPhaseConfig& config) {
     if (config.alpha.phaseName.empty()) throw std::runtime_error("Mixture contribution requires a tracked phase.");

@@ -15,15 +15,6 @@
 
 namespace SF::FDM {
 
-/// @brief 求解器可见的有效输运闭合接口。
-struct TransportStageCoefficients {
-    double dynamicViscosity=0;
-    std::array<double,2> production{};
-    /// @brief 原模型实际使用的层流动力黏度；绑定时核对 WHAT 常量来源。
-    double molecularViscosity=0;
-    double crossSource=0,blending1=0,blending2=0;
-};
-using TransportStageSamples=std::array<std::function<double(int,int,int)>,2>;
 /// @brief 原位两标量输运的局部物理闭合；无dt、无状态写回或时间循环。
 struct TransportCellClosure {
     double density=0;
@@ -54,16 +45,13 @@ public:
                                     int i, int j, int k,
                                     double laminarMu) const = 0;
 
+    /// @brief 是否已连接可供守恒黏性消费者读取的阶段发布。
+    virtual bool hasStageViscosityPublication() const { return false; }
+
     /// @brief 只提供指定 stage 的闭合，不积分输运未知量。
     virtual std::vector<std::string> stageScalarTargets() const {return {};}
-    virtual TransportStageCoefficients stageCoefficients(const Field&,const TransportStageSamples&,int,int,int) const {
-        throw std::runtime_error("Transport model has no stage coefficient implementation.");
-    }
     virtual ScalarEquationData stageScalarData(const Field&,const std::string&) const {
         throw std::runtime_error("Transport model has no stage scalar boundary port.");
-    }
-    virtual void publishStageViscosity(const Field&,const std::vector<double>&) {
-        throw std::runtime_error("Transport model has no stage viscosity publication.");
     }
     /// @brief 输运/闭合前需要新鲜 halo 的模型自管字段。
     virtual std::vector<std::string> distributedReadFields() const {

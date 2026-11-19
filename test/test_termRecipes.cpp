@@ -80,7 +80,7 @@ int main() {
         FDM::resolveConvectionTermRecipe("weno7Rusanov");
     const auto stegerRecipe =
         FDM::resolveConvectionTermRecipe("weno7Steger");
-    const auto rusanov = System::build(
+    auto rusanov = System::build(
         explicitConfig(rusanovRecipe),inviscid);
     auto overrideRequest=inviscid;
     overrideRequest.operatorBindings={{"","div","convection.conservativeFlux"},
@@ -247,7 +247,7 @@ int main() {
     auto sourceRequest=inviscid;
     System::SystemContribution sourceContribution;
     Physics::SourceContribution::contribute(
-        sourceContribution,sourceConfig.sources);
+        sourceContribution,sourceConfig.sources,{{"momentum",Physics::SourceContribution::Form::ForceDensity}});
     sourceRequest.modelContributions.push_back(std::move(sourceContribution));
     for (auto descriptor:Physics::MRF::termProviders(
              sourceConfig.sources.rotating))

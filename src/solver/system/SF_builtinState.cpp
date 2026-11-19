@@ -69,7 +69,8 @@ StateSymbol builtinState(BuiltinState variable) {
     case BuiltinState::FaceFlux:
         symbol.id="phi";symbol.name="canonical volume face flux";
         symbol.location=VariableLocation::EulerianFace;
-        symbol.ownership=OwnershipKind::CanonicalFace;symbol.storageKey="pressureFaceFlux";break;
+        symbol.ownership=OwnershipKind::CanonicalFace;symbol.storageKey="pressureFaceFlux";
+        symbol.outputEligible=false;symbol.restartEligible=false;break;
     case BuiltinState::VolumeFraction:
         symbol.id="alpha";symbol.name="volume fraction";symbol.storageKey="alpha";break;
     case BuiltinState::TurbulentEnergy:

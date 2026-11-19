@@ -184,24 +184,13 @@ double Manager::dynamicViscosity(const Field& field,
     int ii = clampToInterior(i, field.NG(), field.NG() + field.NX() - 1);
     int jj = clampToInterior(j, field.NG(), field.NG() + field.NY() - 1);
     int kk = clampToInterior(k, field.NG(), field.NG() + field.NZ() - 1);
-    if (wall_ || stageClosurePublished_) return laminarMu+state_.EddyMu(ii,jj,kk);
+    if (wall_ || (viscosityPublished_ && viscosityPublished_())) return laminarMu+state_.EddyMu(ii,jj,kk);
     return laminarMu + std::max(model_->eddyDynamicViscosity(field, state_, config_, ii, jj, kk), 0.0);
 }
 
 std::vector<std::string> Manager::stageScalarTargets() const {
     if(model_ && config_.model==FDM::TurbulenceModelKind::kOmegaSST && !wall_)return {"k","omega"};
     return {};
-}
-FDM::TransportStageCoefficients Manager::stageCoefficients(const Field& field,
-        const FDM::TransportStageSamples& samples,int i,int j,int k) const {
-    if(stageScalarTargets().empty())throw std::runtime_error("Unsupported stage turbulence closure/model/immersed wall.");
-    return model_->stageCoefficients(field,samples,config_,i,j,k);
-}
-void Manager::publishStageViscosity(const Field& field,const std::vector<double>& values) {
-    if(stageScalarTargets().empty() || values.size()!=static_cast<std::size_t>(field.TotalSize()))
-        throw std::runtime_error("Stage viscosity publication model/layout mismatch.");
-    for(double v:values)if(!std::isfinite(v) || v<0)throw std::runtime_error("Stage eddy viscosity invalid.");
-    std::copy(values.begin(),values.end(),state_.values(ScalarSlot::EddyMu).begin());stageClosurePublished_=true;
 }
 FDM::ScalarEquationData Manager::stageScalarData(const Field& field,const std::string& name) const {
     if(stageScalarTargets().empty() || (name!="k" && name!="omega"))throw std::runtime_error("Unsupported stage scalar boundary target.");
@@ -265,12 +254,24 @@ int Manager::distributedHaloDepth() const {
 }
 
 void Manager::registerDistributed(State::DistributedFieldRegistry& registry,
-                                 int blockId, Field& geometry) {
-    for (const auto& name:distributedWriteFields()) {
-        const auto slot=name=="k" ? ScalarSlot::K
-            : name=="epsilon" ? ScalarSlot::Epsilon
-            : name=="omega" ? ScalarSlot::Omega : ScalarSlot::EddyMu;
-        registry.add(State::workspaceView(name,blockId,geometry,state_.values(slot),1));
+        int blockId,Field& geometry,const std::vector<System::FieldPublication>& publications) {
+    for (const auto& key:distributedWriteFields()) {
+        const auto slot=key=="k" ? ScalarSlot::K
+            : key=="epsilon" ? ScalarSlot::Epsilon
+            : key=="omega" ? ScalarSlot::Omega : ScalarSlot::EddyMu;
+        registry.add(State::workspaceView(key,blockId,geometry,state_.values(slot),1));
+        for(const auto& publication:publications) {
+            const auto& backing=publication.backing;
+            if(backing.storage!=key)continue;
+            if(backing.componentOffset!=0 || backing.components!=1 || backing.kind!=System::StateViewKind::Physical)
+                throw std::runtime_error("Invalid model storage slice for "+backing.symbol+" at "+publication.occurrence);
+            if(slot!=ScalarSlot::EddyMu)continue;
+            if(viscosityPublished_)throw std::runtime_error("Multiple publishers for Manager storage "+key);
+            // Until the first publication, retain the original startup sampling.
+            const auto generation=registry.generation(key,blockId);
+            viscosityPublished_=[&registry,blockId,key,generation] {return registry.generation(key,blockId)>generation;};
+            stageViscosity_=publication.version==System::StateVersion::Stage;
+        }
     }
 }
 

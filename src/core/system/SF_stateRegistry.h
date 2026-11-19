@@ -14,6 +14,7 @@
 #include <string_view>
 #include <vector>
 
+namespace SF::FDM {struct ScalarFieldInput;}
 namespace SF::System {
 struct StateProducer;
 /// @brief 跨轴身份显式区分命名空间，不根据名字或前缀猜测引用类别。
@@ -82,6 +83,8 @@ struct StateSymbol {
     std::vector<std::string> dependencies;
     /// @brief 模块提供的不可变生产者；不持有物理数组、不选择更新顺序。
     std::shared_ptr<const StateProducer> producer;
+    /// @brief 可选模型初边值输入；数组由普通字段binder唯一持有。
+    std::shared_ptr<const FDM::ScalarFieldInput> fieldInput;
     /// @brief 仅选定数值 workspace 请求；先求内部最终值，再准备空间读取区域。
     WorkspaceBoundary workspaceBoundary=WorkspaceBoundary::None;
     bool readOnly() const { return constantValue.has_value() || producer; }

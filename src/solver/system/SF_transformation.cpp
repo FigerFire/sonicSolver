@@ -58,8 +58,11 @@ public:
         const bool primitiveTarget=inputs_.representation==PressurePredictorKind::Velocity;
         if (inputs_.predictorTarget.symbol!=(primitiveTarget ? "U" : "rhoU"))
             throw std::runtime_error("Pressure transformation requires an explicit momentum solution target.");
-        const auto relation=[&](const EquationCall& call,Equation equation) {
+        const auto relation=[&](const EquationCall& call,Equation equation,bool builtinDefault=false) {
             if (call.equation.empty()) throw std::runtime_error("Pressure transformation requires an explicit relation reference.");
+            // Authored flux mathematics is retained and checked by the selected
+            // numerical method, never overwritten by the preset declaration.
+            if(builtinDefault && executable.system().registry.contains(call.equation))return;
             equation.id=call.equation;executable.addEquation(std::move(equation));
         };
         if (!primitiveTarget) {
@@ -78,6 +81,8 @@ public:
             // These formulas describe the operations implemented by the
             // current pressure provider. rAU, HbyA, and faceResponse are
             // derived numerical workspace, not physical state authorities.
+            relation(inputs_.fluxPrediction,{"predictFlux",PressureMathematics::symbol("phi"),
+                Expr::op(Math::Op::SurfaceFlux,{PressureMathematics::symbol("U")},"face.volume"),origin},true);
             relation(inputs_.correction,{"pSimple",
                 Expr::negate(Expr::op(Math::Op::Div,{
                     Expr::multiply(PressureMathematics::symbol("faceResponse"),
@@ -96,7 +101,7 @@ public:
                 Expr::subtract(PressureMathematics::symbol("phi"),
                     PressureMathematics::op("pressureFlux",{
                         PressureMathematics::symbol("faceResponse"),PressureMathematics::symbol("deltaP")},
-                        "correction.faceFlux")),origin});
+                        "correction.faceFlux")),origin},true);
         }
         if (primitiveTarget && fixedTime_) {
             using Expr=FormulaExpr;

@@ -39,7 +39,8 @@ std::vector<ResultWriter::ScalarField> registeredStateFields(
         if (!storage || storage->location!=State::FieldLocation::Cell
             || symbol.componentOffset+symbol.components>storage->components)
             throw std::runtime_error("No registered physical output binding: "+symbol.id);
-        ResultWriter::ScalarField view;view.name=symbol.id;view.components=symbol.components;
+        ResultWriter::ScalarField view;view.name=symbol.fieldInput?symbol.name:symbol.id;view.components=symbol.components;
+        view.writesTemperatureBoundaryId=symbol.signature.rank==0 && symbol.signature.dimensions.exponent==std::array<double,7>{0,0,0,1,0,0,0};
         view.componentAt=[storage,offset=symbol.componentOffset](int i,int j,int k,int c) {
             return storage->read(storage->geometry->getIdx(i,j,k),offset+c);
         };
@@ -163,16 +164,6 @@ std::vector<ResultWriter::ScalarField> multiPhaseVTKScalars(
                 },
                 temperature});
         }
-    }
-    if (model.isThermal()) {
-        if (!registry && model.hasTemperature()) {
-            const std::string name = model.temperature().name().empty()
-                ? "T" : model.temperature().name();
-            scalars.push_back({name, [modelPtr](int i, int j, int k) {
-                return modelPtr->temperature()(i, j, k);
-            }, true});
-        }
-        return scalars;
     }
     if (model.isMixture()) {
         const std::string alphaName = model.alpha().name().empty()

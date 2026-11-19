@@ -51,7 +51,7 @@ int executeSingle(
     if (resources.instances.empty() || field.NVar()!=0 || field.stateModel())
         throw std::runtime_error("Compiled system has no implemented physical-resource assembly for its frozen requirements.");
     for (const auto& symbol:system.executableSystem.state.symbols())
-        if (!symbol.constantValue && !symbol.producer
+        if (symbol.runtimeStorageRequired && !symbol.constantValue && !symbol.producer
             && state.distributed.select(symbol.storageKey,State::HaloSyncStage::None).empty())
             throw std::runtime_error("Unbound physical STATE: "+symbol.id);
     FDM::SolverServices services;::SF::Execution::LocalRuntime runtime;

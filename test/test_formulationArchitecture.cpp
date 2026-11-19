@@ -97,7 +97,7 @@ int main() {
         // 1. 两种 incompressible 来源必须落到同一个约束/动量结构上。
         SF::System::BuildRequest manual = incompressibleCompositionRequest();
         manual.coupling = SF::System::couplingRequestFrom(
-            baseConfig().pressure.coupling,true);
+            baseConfig().pressure,true);
         manual.coupling->presetKind = SF::FDM::PressureCouplingPreset::PISO;
         SF::System::BuildRequest builtin = pressureConstraintRequest();
         builtin.coupling = manual.coupling;
@@ -219,9 +219,9 @@ int main() {
         //    触发 density-solver 分支，也不是静默忽略。
         SF::System::BuildRequest conservative = conservativeRequest();
         conservative.coupling = SF::System::couplingRequestFrom(
-            baseConfig().pressure.coupling,true);
+            baseConfig().pressure,true);
         conservative.coupling->presetKind = SF::FDM::PressureCouplingPreset::SIMPLE;
-        const auto conservativeSystem =
+        auto conservativeSystem =
             SF::System::build(baseConfig(),conservative);
         require(conservativeSystem.executableSystem.registry.entries().size()==3
                 && conservativeSystem.solvePlan.sourceProgram.root.children.size()==4
@@ -334,7 +334,7 @@ int main() {
         //    "pressure-based solver not implemented"。
         SF::System::BuildRequest pisoManual = incompressibleCompositionRequest();
         pisoManual.coupling = SF::System::couplingRequestFrom(
-            baseConfig().pressure.coupling,true);
+            baseConfig().pressure,true);
         pisoManual.coupling->presetKind = SF::FDM::PressureCouplingPreset::PISO;
         const auto pisoSystem = SF::System::build(baseConfig(),pisoManual);
         if (pisoSystem.runtime.report.status

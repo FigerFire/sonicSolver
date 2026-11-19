@@ -1,5 +1,6 @@
 #include "SF_numericalSelection.h"
 #include "SF_buildRequest.h"
+#include "SF_cell.h"
 #include "SF_runtimeRequirements.h"
 #include "core/system/SF_operationIds.h"
 #include <cmath>
@@ -17,6 +18,7 @@ void overlay(NumericalBinding& destination,const NumericalBinding& source) {
     if(source.inputsDeclared || !source.inputs.empty()){destination.inputs=source.inputs;destination.inputsDeclared=true;}
     for(const auto& parameter:source.parameters)destination.parameters[parameter.first]=parameter.second;
     if(source.time)destination.time=source.time;
+    if(source.responseDeclared || !source.response.empty()){destination.response=source.response;destination.responseDeclared=true;}
     for(const auto& op:source.operators) {
         const auto same=[&](const auto& previous){return previous.formula==op.formula && previous.occurrence==op.occurrence && previous.operation==op.operation;};
         destination.operators.erase(std::remove_if(destination.operators.begin(),destination.operators.end(),same),destination.operators.end());
@@ -57,6 +59,7 @@ ResolvedBinding resolveNumerics(const EquationCall& call,const std::vector<Numer
                 if(!a.method.empty() && !b.method.empty() && covering.method.empty())return true;
                 if(a.inputs!=b.inputs && !covering.inputsDeclared && covering.inputs.empty())return true;
                 if(a.time!=b.time && !covering.time)return true;
+                if(a.response!=b.response && !covering.responseDeclared && covering.response.empty())return true;
                 auto parameters=a.parameters;for(const auto& item:b.parameters)parameters.emplace(item);
                 for(const auto& item:parameters)if(!covering.parameters.count(item.first)
                     && (a.parameters.count(item.first)!=b.parameters.count(item.first)
@@ -74,6 +77,7 @@ ResolvedBinding resolveNumerics(const EquationCall& call,const std::vector<Numer
         if(!authored.empty()) {apply(result.value,*authored.front());result.origins.push_back(authored.front()->origin);}
     }
     if(result.value.method.empty())throw std::runtime_error("Implementation capability missing: no provider for equation occurrence "+call.equation+" / "+call.occurrence+(block?"; whole block requires an explicit Step binding":""));
+    if((result.value.responseDeclared || !result.value.response.empty()) && result.value.method!="RhieChow")throw std::runtime_error("Selected method has no response-reference input: "+result.value.method+" / "+call.occurrence);
     result.value.equation=call.equation;result.value.occurrence=call.occurrence;
     return result;
 }
@@ -100,15 +104,20 @@ void resolveOperatorReferences(const ExecutableEquationSystem& system,const Equa
 }
 
 const PressureNumericalConfig* requiredPressureInputs(const Program& program) {
+    if(!std::any_of(program.solve.compiledProgram.steps.begin(),program.solve.compiledProgram.steps.end(),
+        [](const auto& call){return call.equationMethod=="PressureCorrection";}))return nullptr;
+    if(!program.numerics.facePrediction || program.numerics.facePrediction->response.empty())
+        throw std::runtime_error("Pressure correction needs an explicit predictor response occurrence");
+    const auto& response=program.numerics.facePrediction->response;
     const auto predictor=std::find_if(program.solve.compiledProgram.steps.begin(),program.solve.compiledProgram.steps.end(),
-        [](const auto& call){return call.equationMethod=="PressureMomentum";});
-    if(predictor==program.solve.compiledProgram.steps.end())return nullptr;
-    const auto context="Pressure resources step="+predictor->source.occurrence+" equation="+predictor->source.equation+": ";
-    if(!program.numerics.pressureMomentum || program.numerics.pressureMomentum->equation!=predictor->source.equation
-        || program.numerics.pressureMomentum->occurrence!=predictor->source.occurrence)
-        throw std::runtime_error(context+"missing/mismatched frozen momentum term contract.");
-    if(!program.numerics.pressureOperator || program.numerics.pressureFaceCoupling!=PressureFaceCoupling::RhieChow)
-        throw std::runtime_error(context+"missing frozen pressure inputs or persistent Rhie-Chow face-flux treatment.");
+        [&](const auto& call){return call.source.occurrence==response;});
+    if(predictor==program.solve.compiledProgram.steps.end() || !cellEquation(*predictor))
+        throw std::runtime_error("Unbound pressure response occurrence: "+response);
+    const auto& cell=*cellEquation(*predictor);
+    const auto context="Pressure resources step="+response+" equation="+predictor->source.equation+": ";
+    if(!program.numerics.pressureOperator)throw std::runtime_error(context+"missing pressure numerical inputs");
+    if(cell.potential!="p" || cell.capacity!="rho")
+        throw std::runtime_error(context+"correction needs an explicit grad(p)/rho response");
     for(const char* symbol:{"U","p","rho","phi"})if(!program.state.contains(symbol))
         throw std::runtime_error(context+"missing required STATE: "+symbol);
     const auto& velocity=program.state.at("U");const auto& pressure=program.state.at("p");
@@ -122,14 +131,14 @@ const PressureNumericalConfig* requiredPressureInputs(const Program& program) {
         throw std::runtime_error(context+"requires writable U[3]/velocity and p[1]/pressure, and positive declared rhoConst; conservative Q and phase layouts are distinct.");
     if(flux.location!=VariableLocation::EulerianFace || flux.ownership!=OwnershipKind::CanonicalFace
         || flux.storageKey!="pressureFaceFlux")
-        throw std::runtime_error(context+"requires canonical pressureFaceFlux owned by the pressure workspace.");
+        throw std::runtime_error(context+"requires canonical pressureFaceFlux supplied by the bound face numerical resource.");
     const auto hasView=[&](std::string_view symbol,StateViewKind kind) {
         return std::any_of(program.solve.compiledProgram.stateViews.begin(),program.solve.compiledProgram.stateViews.end(),
             [&](const auto& view){return view.symbol==symbol && view.kind==kind && view.owner==StateViewOwner::NumericalProvider;});
     };
-    if(!hasView("deltaP",StateViewKind::Correction) || !hasView(flux.id,StateViewKind::Physical))
-        throw std::runtime_error(context+"requires numerical-owner deltaP Correction and persistent physical face-flux views.");
-    for(const char* id:{OpIds::PressurePrepare,OpIds::MomentumAssemble,OpIds::MomentumSolve,
+    if(!hasView("deltaP",StateViewKind::Correction) || !hasView(flux.id,StateViewKind::Physical) || !hasView(flux.id,StateViewKind::Working))
+        throw std::runtime_error(context+"requires numerical-owner deltaP Correction, predicted Working and persistent physical face-flux views.");
+    for(const char* id:{OpIds::PressurePrepare,OpIds::CellPrepare,OpIds::CellAccept,OpIds::FaceFluxPredict,
             OpIds::PressureBoundaryPrepare,OpIds::PressureAssemble,OpIds::PressureSolve,OpIds::PressureUpdatePrepare,
             OpIds::VelocityCorrect,OpIds::FluxCorrect,OpIds::PressureCorrectionCommit,OpIds::PressureStepCommit,OpIds::TimeCommit}) {
         const auto binding=std::find_if(program.runtime.operationBindings.begin(),program.runtime.operationBindings.end(),
@@ -137,8 +146,9 @@ const PressureNumericalConfig* requiredPressureInputs(const Program& program) {
         if(!requiresOperation(program.runtime,id) || binding==program.runtime.operationBindings.end())
             throw std::runtime_error(context+"missing pressure operation requirement/binding: "+id);
         // Labels verify the frozen implementation, never select an application family.
-        const auto expected=std::string_view(id)==OpIds::FluxCorrect?"flow.rhie-chow":"flow.pressure-operators";
-        if(binding->status==BindingStatus::Resolved && binding->provider!=expected)
+        const auto expected=(std::string_view(id)==OpIds::FluxCorrect || std::string_view(id)==OpIds::FaceFluxPredict)?"flow.rhie-chow"
+            :(std::string_view(id)==OpIds::CellPrepare || std::string_view(id)==OpIds::CellAccept)?"equation.cell-explicit":"flow.pressure-operators";
+        if(binding->status==BindingStatus::Resolved && binding->provider!=expected && !(std::string_view(id)==OpIds::TimeCommit && binding->provider==TemporalOps::Provider))
             throw std::runtime_error(context+"conflicting operation/face-flux owner: "+id);
     }
     return &*program.numerics.pressureOperator;
@@ -159,19 +169,14 @@ NumericalSelection selectNumerics(const FDM::SolverConfig& config,const BuildReq
     selection.termProviders=request.termProviders;
     selection.operatorBindings=request.operatorBindings;
     if (std::any_of(selection.bindings.begin(),selection.bindings.end(),[](const auto& binding) {
-            return binding.method=="PressureMomentum";
+            return binding.method=="PressureCorrection";
         })) {
-        selection.pressureFaceCoupling=PressureFaceCoupling::RhieChow;
+
         PressureNumericalConfig pressure;
-        pressure.dynamicViscosity=config.numerics.dynamicViscosity;
         pressure.velocityRelaxation=config.pressure.coupling.momentumRelaxation;
         pressure.pressureRelaxation=config.pressure.coupling.pressureRelaxation;
-        pressure.relativeTolerance=config.pressure.relativeTolerance;
-        pressure.absoluteTolerance=config.pressure.absoluteTolerance;
         pressure.reference=config.pressure.reference;
         pressure.pressureLinear=config.pressure.linear.pressure;
-        pressure.velocityBoundary=config.boundaries.velocity;
-        pressure.pressureBoundary=config.boundaries.pressure;
         selection.pressureOperator=std::move(pressure);
     }
     if(std::any_of(selection.bindings.begin(),selection.bindings.end(),[](const auto& binding) {

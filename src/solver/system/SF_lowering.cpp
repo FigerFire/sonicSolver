@@ -20,6 +20,49 @@ namespace SF::System::Lowering {
 namespace {
 SolvePlanNode lowerTree(const CompiledExecutionProgram&);
 
+// Push只划定已有物理区间；数值方法声明准备/接受，唯一recipe负责阶段。
+ExecutionScope processRoot(const ExecutionProgram& program) {
+    auto root=program.root;
+    int pushes=0;
+    const auto visit=[&](const auto& self,ExecutionScope& node,bool inside)->void {
+        if(node.kind==ExecutionKind::Push) {
+            if(++pushes>1 || inside || &node!=&root)
+                throw std::runtime_error("Only one root Push physical interval is implemented; nested/multiple Push and subcycling are unsupported");
+            if(node.children.empty() || node.repetitions!=1 || node.frequency!=ExecutionFrequency::Inherit)
+                throw std::runtime_error("Push requires a nonempty body and the configured unique time recipe/dt");
+            node.kind=ExecutionKind::Sequence;
+            for(auto& child:node.children)self(self,child,true);
+            ExecutionScope accept;accept.kind=ExecutionKind::Commit;accept.id=node.id+".accept";accept.order=1000000000;
+            accept.origin={OriginKind::Generated,"Push successful exit: physical publication and unique clock"};
+            node.children.push_back(std::move(accept));
+            return;
+        }
+        if(inside && node.kind==ExecutionKind::Commit && node.commitSources.empty())
+            throw std::runtime_error("Physical Commit inside Push is retired; Push owns the single physical exit (variable sources/targets acceptance remains explicit)");
+        if(node.kind==ExecutionKind::While) {
+            if(node.condition.size()<6 || node.condition.rfind("res(",0)!=0 || node.condition.back()!=')')
+                throw std::runtime_error("While condition requires res(id) or an unambiguous res(target): "+node.id);
+            const auto ref=node.condition.substr(4,node.condition.size()-5);
+            std::vector<const ResidualDefinition*> matches;
+            for(const auto& residual:program.residuals)if(residual.id==ref)matches.push_back(&residual);
+            if(matches.empty())for(const auto& residual:program.residuals)if(residual.members.empty() && residual.target==ref)matches.push_back(&residual);
+            if(matches.size()!=1)throw std::runtime_error("While residual reference missing/ambiguous: "+node.condition+"; select a registered residual id explicitly");
+            if(!node.residuals.empty() || !node.terminationSignal.empty())throw std::runtime_error("While has a second stopping condition: "+node.id);
+            const auto& selected=*matches.front();node.residualAll=selected.all;
+            node.residuals=selected.members.empty()?std::vector<std::string>{selected.id}:selected.members;
+            for(const auto& id:node.residuals) {
+                const auto criterion=std::find_if(program.residuals.begin(),program.residuals.end(),[&](const auto& r){return r.id==id;});
+                if(criterion==program.residuals.end() || !criterion->members.empty())throw std::runtime_error("Residual groups require explicit leaf members (nested groups/cycles unsupported): "+id);
+            }
+            node.kind=ExecutionKind::Loop;node.checkAtEntry=true;
+        }
+        for(auto& child:node.children)self(self,child,inside);
+    };
+    visit(visit,root,false);
+    return root;
+}
+
+
 void expandRecipeScope(ExecutionScope& root,const std::vector<CompiledEquationCall>& calls) {
     const auto temporal=[&](const auto& self,const ExecutionScope& node)->bool {
         if(node.kind==ExecutionKind::StageLoop)throw std::runtime_error("Recipe-owned HOW cannot contain another authored StageLoop");
@@ -210,7 +253,7 @@ SolvePlanNode lowerTree(const CompiledExecutionProgram& program) {
     std::set<std::string> iterations;
     std::map<std::string,const ExecutionScope*> iterationScopes;
     const auto scopeOf=[&](const auto& self,const ExecutionScope& node,const ExecutionScope* nearest,const ExecutionScope* signal)->void {
-        if(node.kind==ExecutionKind::Loop){nearest=&node;if(!node.terminationSignal.empty())signal=&node;}
+        if(node.kind==ExecutionKind::Loop){nearest=&node;if(!node.terminationSignal.empty() || !node.residuals.empty())signal=&node;}
         if(node.kind==ExecutionKind::EquationCall || node.kind==ExecutionKind::BlockSolve) {
             const auto id=node.kind==ExecutionKind::BlockSolve?node.id:node.step.occurrence;
             const auto call=std::find_if(program.steps.begin(),program.steps.end(),[&](const auto& c){return c.source.occurrence==id;});
@@ -225,6 +268,7 @@ SolvePlanNode lowerTree(const CompiledExecutionProgram& program) {
             case ExecutionKind::Sequence: result.kind=PlanNodeKind::Sequence;break;
             case ExecutionKind::Loop: result.kind=PlanNodeKind::Loop;break;
             case ExecutionKind::StageLoop: result.kind=PlanNodeKind::StageLoop;break;
+            case ExecutionKind::Push: case ExecutionKind::While: throw std::runtime_error("Unlowered public process scope");
             case ExecutionKind::EquationCall: result.kind=PlanNodeKind::Update;break;
             case ExecutionKind::Commit: result.kind=PlanNodeKind::Sequence;break;
             case ExecutionKind::BlockSolve: result.kind=PlanNodeKind::BlockSolve;break;
@@ -232,7 +276,7 @@ SolvePlanNode lowerTree(const CompiledExecutionProgram& program) {
         result.repetitions=source.repetitions;
         result.terminationSignal=source.terminationSignal;
         result.minimumIterations=source.minimumIterations;
-        result.residualAll=source.residualAll;result.failOnMaximum=source.failOnMaximum;
+        result.residualAll=source.residualAll;result.failOnMaximum=source.failOnMaximum;result.checkAtEntry=source.checkAtEntry;
         for(const auto& id:source.residuals) {
             const auto at=std::find_if(program.residuals.begin(),program.residuals.end(),[&](const auto& r){return r.id==id;});
             if(at==program.residuals.end())throw std::runtime_error("Missing compiled residual: "+id);
@@ -339,9 +383,8 @@ SolvePlanNode lowerTree(const CompiledExecutionProgram& program) {
                 if(publication.operation.empty())continue;
                 if(i>=next)throw std::runtime_error("HOW Commit precedes its required result: "+call.source.occurrence);
                 append(result.children,{publication},true);
-                if(!synchronous && !clockOwner.empty() && clockOwner!=publication.provider)
-                    throw std::runtime_error("Physical Commit has incompatible publication/clock owners: "+source.id);
-                clockOwner=publication.provider;
+                if(clockOwner.empty())clockOwner=publication.provider;
+                else if(clockOwner!=publication.provider)clockOwner=TemporalOps::Provider;
             }
             if(!result.children.empty()) {
                 SolvePlanNode clock;clock.kind=PlanNodeKind::Commit;clock.id=clock.name=clock.operation=OpIds::TimeCommit;
@@ -370,7 +413,7 @@ CompiledExecutionProgram compileProgram(
         const CompiledTimeRecipe* time,
         const ITemporalMethod* temporalMethod) {
     CompiledExecutionProgram result;
-    ExecutionScope root=program.root;
+    ExecutionScope root=processRoot(program);
     if (!program.explicitOrder) {
         orderExecution(root);
         composeDefaultPlacement(program,root);
@@ -391,17 +434,22 @@ CompiledExecutionProgram compileProgram(
     };
     const bool recipeScope=program.recipeScopes || explicitFrequency(explicitFrequency,root);
     result.root=root;
-    result.residuals=program.residuals;
+    std::set<std::string> declaredResiduals;
+    for(const auto& residual:program.residuals) {
+        if(residual.id.empty() || !declaredResiduals.insert(residual.id).second)throw std::runtime_error("Duplicate/empty residual definition: "+residual.id);
+        if(residual.members.empty())result.residuals.push_back(residual);
+    }
     std::vector<EquationCall*> steps;
     std::vector<const ExecutionScope*> parents;
     std::map<const EquationCall*,const ExecutionScope*> blocks;
-    const auto collect=[&](const auto& self,ExecutionScope& node,const ExecutionScope* parent,bool stage=false)->void {
+    const auto collect=[&](const auto& self,ExecutionScope& node,const ExecutionScope* parent,bool stage=false,bool step=false)->void {
         stage=stage || node.kind==ExecutionKind::StageLoop || node.frequency==ExecutionFrequency::Stage;
+        step=node.frequency==ExecutionFrequency::Step || (step && node.frequency==ExecutionFrequency::Inherit);
         if (node.kind==ExecutionKind::EquationCall) {
             if(!node.step.inputs.empty())throw std::runtime_error("HOW cannot declare input versions; bind the occurrence in STATE.");
             if (!node.children.empty())
                 throw std::runtime_error("HOW Step cannot contain child nodes.");
-            node.step.stageScoped=stage;
+            node.step.stageScoped=stage;node.step.stepScoped=step && !stage;
             steps.push_back(&node.step);
             parents.push_back(parent);
             return;
@@ -430,7 +478,7 @@ CompiledExecutionProgram compileProgram(
         }
         if (node.kind==ExecutionKind::Loop
             && (node.repetitions<1 || node.children.empty()
-                || node.minimumIterations<1 || node.minimumIterations>node.repetitions))
+                || node.minimumIterations<(node.checkAtEntry?0:1) || node.minimumIterations>node.repetitions))
             throw std::runtime_error("HOW Loop requires a body and valid iteration limits.");
         if(node.kind==ExecutionKind::BlockSolve) {
             if(node.equations.empty() || node.unknowns.empty())throw std::runtime_error("Implicit block requires equations and unknowns");
@@ -442,7 +490,7 @@ CompiledExecutionProgram compileProgram(
             node.step={node.equations.front(),{node.unknowns.front()},node.id};node.step.stageScoped=stage;
             blocks.emplace(&node.step,&node);steps.push_back(&node.step);parents.push_back(parent);return;
         }
-        for (auto& child:node.children) self(self,child,&node,stage);
+        for (auto& child:node.children) self(self,child,&node,stage,step);
     };
     collect(collect,result.root,nullptr);
     std::vector<std::string> occurrences;
@@ -455,7 +503,7 @@ CompiledExecutionProgram compileProgram(
     }
     resolveCallInputs(state,steps);
     for (const auto& binding:bindings) {
-        if (binding.equation.empty() || (binding.method.empty() && binding.occurrence.empty()))
+        if (binding.equation.empty() || (binding.method.empty() && binding.occurrence.empty() && binding.operators.empty()))
             throw std::runtime_error("Numerical binding requires equation and provider.");
         if (std::none_of(steps.begin(),steps.end(),
             [&](const EquationCall* call) {
@@ -601,22 +649,50 @@ CompiledExecutionProgram compileProgram(
                 throw std::runtime_error("Provider fusion requires adjacent HOW siblings.");
         i+=n-1;
     }
-    for(auto& call:result.steps)for(const auto& read:call.stateUses)if(read.kind!=TargetKind::Physical) {
-        CompiledTarget target;target.symbol=read.symbol;target.kind=read.kind;
-        target.workspace="state."+read.symbol+(read.kind==TargetKind::Working?".Working":".Correction");
-        auto view=realizeTarget(state,target);
-        if(view.owner!=StateViewOwner::CompilerWorkspace)throw std::runtime_error("Working STATE input requires compiler-owned workspace: "+read.symbol);
-        const auto found=std::find_if(result.stateViews.begin(),result.stateViews.end(),[&](const auto& item){return item.symbol==view.symbol && item.kind==view.kind;});
-        if(found==result.stateViews.end())result.stateViews.push_back(std::move(view));
-        else if(found->storage!=view.storage || found->owner!=view.owner)throw std::runtime_error("Conflicting Working STATE resource: "+read.symbol);
+    // Supplemental numerical views allocate only for a real reader/target.
+    // This is local demand elimination, not a physical-state memory planner.
+    for(auto& call:result.steps)call.viewOutputs.erase(std::remove_if(call.viewOutputs.begin(),call.viewOutputs.end(),[&](const auto& view){
+        if(view.kind!=StateViewKind::Working)return false;
+        if(call.target.kind==TargetKind::Working && call.target.symbol==view.symbol)return false;
+        return std::none_of(result.steps.begin(),result.steps.end(),[&](const auto& consumer){return std::any_of(consumer.stateUses.begin(),consumer.stateUses.end(),[&](const auto& use){return use.symbol==view.symbol && use.kind==TargetKind::Working;});});
+    }),call.viewOutputs.end());
+    for(auto& call:result.steps)for(const auto& output:call.viewOutputs) {
+        const bool entrySnapshot=output.kind==StateViewKind::OldTime && output.symbol==call.target.symbol
+            && output.storage==call.oldTimeWorkspace && !call.temporalResidual
+            && std::any_of(call.stepInputs.begin(),call.stepInputs.end(),[](const auto& input){return input.beginsPhysicalInterval;});
+        if((output.kind!=StateViewKind::Working && !entrySnapshot) || output.owner!=StateViewOwner::NumericalProvider
+            || output.storage.empty() || output.components!=state.at(output.symbol).components)
+            throw std::runtime_error("Invalid additional numerical output view: "+call.source.occurrence+" / "+output.symbol);
+        const auto found=std::find_if(result.stateViews.begin(),result.stateViews.end(),[&](const auto& v){return v.symbol==output.symbol && v.kind==output.kind;});
+        if(found==result.stateViews.end())result.stateViews.push_back(output);
+        else if(found->storage!=output.storage || found->owner!=output.owner || found->components!=output.components)
+            throw std::runtime_error("Conflicting numerical output view: "+call.source.occurrence+" / "+output.symbol);
+        // Entry snapshots publish in the interval preparation, never on each
+        // repeated mathematical call. Runtime readers check the physical epoch.
+        if(entrySnapshot)continue;
+        const auto key=stateViewPublication(output.symbol,output.kind);
+        call.workspaceInvalidates.push_back(key);call.workspaceProvides.push_back(key);call.stepWorkspaces.push_back(key);
     }
-    for (auto& call:result.steps) for (auto& read:call.viewReads) {
+    for(const auto& call:result.steps) {
+        for(const auto& read:call.stateUses)if(read.kind!=TargetKind::Physical) {
+            const auto kind=read.kind==TargetKind::Working?StateViewKind::Working:StateViewKind::Correction;
+            const auto found=std::find_if(result.stateViews.begin(),result.stateViews.end(),[&](const auto& view) {
+                return view.symbol==read.symbol && view.kind==kind;
+            });
+            if(found==result.stateViews.end()) {
+                CompiledTarget target;target.symbol=read.symbol;target.kind=read.kind;
+                target.workspace=stateViewPublication(read.symbol,kind);
+                result.stateViews.push_back(realizeTarget(state,target));
+            }
+        }
+    }
+    for(const auto& call:result.steps)for(const auto& read:call.borrowedViews) {
+        const auto kind=read.kind==TargetKind::Working?StateViewKind::Working:StateViewKind::Correction;
         const auto bound=std::find_if(result.stateViews.begin(),result.stateViews.end(),[&](const auto& view) {
-            return view.symbol==read.symbol && view.kind==read.kind && view.stage==read.stage;
+            return view.symbol==read.symbol && view.kind==kind;
         });
-        if (bound==result.stateViews.end() || (bound->owner!=StateViewOwner::NumericalProvider && bound->owner!=StateViewOwner::CompilerWorkspace))
-            throw std::runtime_error("Missing provider-owned input view: "+call.source.occurrence+" / "+read.symbol+" / "+toString(read.kind));
-        read=*bound;
+        if(bound==result.stateViews.end() || (bound->owner!=StateViewOwner::NumericalProvider && bound->owner!=StateViewOwner::CompilerWorkspace))
+            throw std::runtime_error("Missing provider-owned input view: "+call.source.occurrence+" / "+targetText(read));
     }
     std::set<std::string> residualIds;
     for(auto& residual:result.residuals) {
@@ -634,9 +710,15 @@ CompiledExecutionProgram compileProgram(
             throw std::runtime_error("Selected provider cannot compute requested residual kind: "+residual.id+" / "+call.equationMethod);
         if(call.backendOperation.empty())throw std::runtime_error("Selected residual has no bounded evaluation operation: "+residual.id);
         residual.occurrence=call.source.occurrence;residual.producerOperation=call.backendOperation;
-        residual.provider=call.backendProvider;residual.target=call.target.symbol;
+        const auto& residualTarget=call.residualTarget.empty()?call.target.symbol:call.residualTarget;
+        if(!residual.target.empty() && residual.target!=residualTarget)
+            throw std::runtime_error("Residual target differs from occurrence output: "+residual.id);
+        if(residual.view!=(call.residualTarget.empty()?call.target.kind:TargetKind::Physical))
+            throw std::runtime_error("Residual view is not provided by selected occurrence: "+residual.id);
+        if(residual.component<-1 || residual.component>=call.residualComponents
+            || (call.residualComponents>1 && residual.component<0))throw std::runtime_error("Residual requires an explicit implemented sample component: "+residual.id);
+        residual.provider=call.backendProvider;residual.target=residualTarget;
     }
-    std::set<std::string> usedResiduals;
     const auto controls=[&](const auto& self,const ExecutionScope& scope,std::vector<std::string> activeSignals)->void {
         if(!scope.residuals.empty() && (scope.kind!=ExecutionKind::Loop || !scope.terminationSignal.empty()))
             throw std::runtime_error("Typed residual control requires an ordinary Loop without another termination signal: "+scope.id);
@@ -654,12 +736,10 @@ CompiledExecutionProgram compileProgram(
                 return std::any_of(n.children.begin(),n.children.end(),[&](const auto& child){return walk(walk,child);});
             };
             if(!owns(owns,scope))throw std::runtime_error("Residual producer is outside its Loop scope: "+id);
-            usedResiduals.insert(id);
         }
         for(const auto& child:scope.children)self(self,child,activeSignals);
     };
     controls(controls,result.root,{});
-    if(usedResiduals.size()!=result.residuals.size())throw std::runtime_error("Unconsumed residual definition; bind every criterion to a HOW Loop.");
     compileFieldResources(state,result);
     bindCoefficientContracts(state,result);
     for(const auto& call:result.steps) {
@@ -717,24 +797,19 @@ CompiledExecutionProgram compileProgram(
         };
         if (!compatible(compatible,result.root))
             throw std::runtime_error("Implementation capability missing: fused temporal provider cannot lower the authored HOW topology.");
-        CompiledEquationCall fused;
-        fused.temporalResidual=true;
-        fused.backendOperation=transient.front()->backendOperation;
-        fused.backendProvider=transient.front()->backendProvider;
-        fused.temporalPreparation=transient.front()->temporalPreparation;
-        fused.temporalStepSize=transient.front()->temporalStepSize;
-        fused.temporalSnapshot=transient.front()->temporalSnapshot;
+        const auto& firstResidual=*transient.front();
+        std::vector<CompiledMathRef> residualCalls;
         const bool phased=stageBody || std::any_of(transient.begin(),transient.end(),[](const auto* call) {
             return call->synchronousStages;
         });
         for (auto* call:transient) {
-            if (!phased && (call->backendOperation!=fused.backendOperation
-                || call->backendProvider!=fused.backendProvider
-                || call->temporalPreparation!=fused.temporalPreparation
-                || call->temporalStepSize!=fused.temporalStepSize
-                || call->temporalSnapshot!=fused.temporalSnapshot))
+            if (!phased && (call->backendOperation!=firstResidual.backendOperation
+                || call->backendProvider!=firstResidual.backendProvider
+                || call->temporalPreparation!=firstResidual.temporalPreparation
+                || call->temporalStepSize!=firstResidual.temporalStepSize
+                || call->temporalSnapshot!=firstResidual.temporalSnapshot))
                 throw std::runtime_error("Unsupported: temporal providers declare incompatible fusion backends.");
-            fused.calls.insert(fused.calls.end(),call->calls.begin(),call->calls.end());
+            residualCalls.insert(residualCalls.end(),call->calls.begin(),call->calls.end());
             call->temporalMethod=FDM::toString(time->id());
         }
         if (phased) {
@@ -752,17 +827,18 @@ CompiledExecutionProgram compileProgram(
                 }
                 written.push_back(call->target.symbol);
                 const auto identity=call->temporalOwner.empty()?call->source.occurrence:call->temporalOwner;
-                auto found=std::find_if(fused.temporalParticipants.begin(),fused.temporalParticipants.end(),
+                auto found=std::find_if(result.temporalParticipants.begin(),result.temporalParticipants.end(),
                     [&](const auto& p) {return p.identity==identity;});
-                if (found==fused.temporalParticipants.end()) {
+                if (found==result.temporalParticipants.end()) {
                     TemporalParticipant p;p.identity=identity;p.provider=call->backendProvider;
                     p.preparation=call->temporalPreparation;p.stepSize=call->temporalStepSize;
                     p.snapshot=call->temporalSnapshot;p.prepareStage=call->temporalStagePrepare;
                     p.coefficientPrepare=call->coefficientPrepare;p.coefficientPublish=call->coefficientPublish;
                     p.coefficientProvides=call->coefficientProvides;p.coefficientStates=call->coefficientStates;
-                    p.coefficientVersion=call->coefficientVersion;p.coefficientInputs=call->coefficientInputs;
+                    p.coefficientVersion=call->coefficientVersion;
+                    if(!call->coefficientPrepare.empty())p.coefficientInputs=call->stateUses;
                     p.rhs=call->temporalRhs;p.advance=call->temporalAdvance;p.publish=call->temporalPublish;
-                    fused.temporalParticipants.push_back(std::move(p));found=fused.temporalParticipants.end()-1;
+                    result.temporalParticipants.push_back(std::move(p));found=result.temporalParticipants.end()-1;
                 } else if (found->provider!=call->backendProvider || found->prepareStage!=call->temporalStagePrepare
                     || found->rhs!=call->temporalRhs || found->advance!=call->temporalAdvance || found->publish!=call->temporalPublish
                     || found->preparation!=call->temporalPreparation || found->stepSize!=call->temporalStepSize || found->snapshot!=call->temporalSnapshot
@@ -776,7 +852,7 @@ CompiledExecutionProgram compileProgram(
             }
             // A shared numerical owner is one RHS, so its mathematical calls must
             // be adjacent siblings even when no algebraic Stage call is present.
-            for(const auto& participant:fused.temporalParticipants) {
+            for(const auto& participant:result.temporalParticipants) {
                 std::vector<std::size_t> members;
                 for(std::size_t i=0;i<result.steps.size();++i)if(result.steps[i].temporalResidual
                     && (result.steps[i].temporalOwner.empty()?result.steps[i].source.occurrence:result.steps[i].temporalOwner)==participant.identity)members.push_back(i);
@@ -794,7 +870,7 @@ CompiledExecutionProgram compileProgram(
                 if(std::find(available.begin(),available.end(),resource)!=available.end())throw std::runtime_error("Duplicate same-stage coefficient producer: "+resource);
                 available.push_back(resource);
             }
-            for(const auto& participant:fused.temporalParticipants) {
+            for(const auto& participant:result.temporalParticipants) {
                 for(const auto& resource:participant.stageRequires)
                     if(std::find(available.begin(),available.end(),resource)==available.end())
                         throw std::runtime_error("Temporal occurrence '"+participant.identity+"' provider '"+participant.provider
@@ -808,7 +884,6 @@ CompiledExecutionProgram compileProgram(
             if (result.root.children.empty() || result.root.children.back().kind!=ExecutionKind::Commit
                 || std::count_if(result.root.children.begin(),result.root.children.end(),[](const auto& n){return n.kind==ExecutionKind::Commit;})!=1)
                 throw std::runtime_error("Common temporal group requires one terminal physical Commit.");
-            result.temporalParticipants=fused.temporalParticipants;
             validateCoefficientInputs(state,result);
             for(const char* op:{TemporalOps::Dt,TemporalOps::Open,TemporalOps::Ready,TemporalOps::RhsReady,
                     TemporalOps::Close,TemporalOps::PublishReady})
@@ -849,11 +924,11 @@ CompiledExecutionProgram compileProgram(
         if(stageBody || transient.size()!=result.steps.size()) {
             auto placement=stepPlacement(result);prefix=std::move(placement.first);suffix=std::move(placement.second);
         }
-        result.temporalRoot=temporalMethod->compileFragment(*time,fused,prefix);
+        result.temporalRoot=temporalMethod->compileFragment(*time,firstResidual,residualCalls,result.temporalParticipants,prefix);
         if(stageBody) {
             auto at=std::find_if(result.temporalRoot.children.begin(),result.temporalRoot.children.end(),[](const auto& n){return n.kind==PlanNodeKind::StageLoop;});
             if(at==result.temporalRoot.children.end())throw std::runtime_error("Selected recipe omitted its StageLoop");
-            auto first=std::find_if(at->children.begin(),at->children.end(),[&](const auto& n){return n.operation==fused.temporalParticipants.front().rhs;});
+            auto first=std::find_if(at->children.begin(),at->children.end(),[&](const auto& n){return n.operation==result.temporalParticipants.front().rhs;});
             auto last=std::find_if(first,at->children.end(),[](const auto& n){return n.operation==TemporalOps::RhsReady;});
             if(first==at->children.end() || last==at->children.end())throw std::runtime_error("Selected recipe omitted its RHS barriers");
             // Preparation/coefficient publication stays before this interval, unchanged.
@@ -865,12 +940,12 @@ CompiledExecutionProgram compileProgram(
             SolvePlanNode barrier;barrier.id=barrier.operation=TemporalOps::PublishReady;
             barrier.name=barrier.id;barrier.kind=PlanNodeKind::Commit;barrier.provider=TemporalOps::Provider;
             result.temporalRoot.children.push_back(barrier);
-            for (const auto& p:fused.temporalParticipants) {
+            for (const auto& p:result.temporalParticipants) {
                 SolvePlanNode publish;publish.kind=PlanNodeKind::Commit;publish.id=publish.name=publish.operation=p.publish;
                 publish.provider=p.provider;publish.occurrence=p.identity;publish.equationCalls=p.calls;
                 result.temporalRoot.children.push_back(std::move(publish));
             }
-            for(const auto& p:fused.temporalParticipants)if(!p.coefficientPublish.empty()) {
+            for(const auto& p:result.temporalParticipants)if(!p.coefficientPublish.empty()) {
                 SolvePlanNode publish;publish.kind=PlanNodeKind::Commit;publish.id=publish.name=publish.operation=p.coefficientPublish;publish.provider=p.provider;
                 result.temporalRoot.children.push_back(std::move(publish));
             }
@@ -897,7 +972,7 @@ CompiledExecutionProgram compileProgram(
         "advance the unique physical clock",OperationStage::StepCommit,{OperationCapability::PhysicalTimeCommit},
         {OriginKind::Generated,"HOW physical Commit"}});
     validateDataFlow(state,result);
-    if (time) realizeTemporalViews(state,result,time->stageCount());
+    realizeTemporalViews(state,result,time?time->stageCount():0);
     compileDerivedViews(state,result.stateViews);
     return result;
 }
@@ -910,7 +985,7 @@ std::string validateTemporalPlan(const CompiledSolvePlan& plan,int stages) {
     const auto add=[&](const auto& id,const auto& provider){expected.emplace_back(id,provider);};
     const auto loopKey=[](const SolvePlanNode& n) {
         std::ostringstream key;key<<std::setprecision(17)<<n.id<<':'<<n.repetitions<<':'<<n.minimumIterations
-            <<':'<<n.terminationSignal<<':'<<n.residualAll<<':'<<n.failOnMaximum;
+            <<':'<<n.terminationSignal<<':'<<n.residualAll<<':'<<n.failOnMaximum<<':'<<n.checkAtEntry;
         for(const auto& r:n.residuals)key<<':'<<r.id<<':'<<r.occurrence<<':'<<r.producerOperation<<':'<<r.provider
             <<':'<<static_cast<int>(r.kind)<<':'<<static_cast<int>(r.norm)<<':'<<static_cast<int>(r.normalization)
             <<':'<<r.absoluteTolerance<<':'<<r.relativeTolerance<<':'<<r.scale;
@@ -1005,7 +1080,6 @@ void compileSystem(ResolvedSimulationSystem& result,const ExecutionProgram& exec
         selected.recipes,termProviders,compiledTime,builtinProviders(),selected.operatorBindings);
     result.numericalSystem.dt=selected.dt;
     result.numericalSystem.phaseTransport=selected.phaseTransport;
-    result.numericalSystem.pressureFaceCoupling=selected.pressureFaceCoupling;
     result.numericalSystem.pressureOperator=selected.pressureOperator;
     result.numericalSystem.phaseOperator=selected.phaseOperator;
     result.executableSystem.operations.insert(result.executableSystem.operations.end(),
@@ -1021,6 +1095,7 @@ void compileSystem(ResolvedSimulationSystem& result,const ExecutionProgram& exec
     for (auto& step:compiledExecution.steps) {
         for (const auto& call:step.calls) {
             for (const auto& term:result.numericalSystem.operators) {
+                if(!term.callOccurrence.empty() && term.callOccurrence!=step.source.occurrence)continue;
                 if ((term.formulaId!=call.equation
                         && std::find(step.sourceMathInputs.begin(),
                             step.sourceMathInputs.end(),term.formulaId)
@@ -1045,6 +1120,14 @@ void compileSystem(ResolvedSimulationSystem& result,const ExecutionProgram& exec
         compiledExecution);
     result.solvePlan.sourceProgram=executionProgram;
     result.solvePlan.sourceProgram.root=compiledExecution.root;
+    if(executionProgram.root.kind==ExecutionKind::Push) {
+        auto& source=result.solvePlan.sourceProgram.root;source.kind=ExecutionKind::Push;
+        if(!source.children.empty() && source.children.back().kind==ExecutionKind::Commit && source.children.back().commitSources.empty())source.children.pop_back();
+    }
+    const auto publicWhile=[&](const auto& self,ExecutionScope& node)->void {
+        if(node.checkAtEntry && !node.condition.empty())node.kind=ExecutionKind::While;
+        for(auto& child:node.children)self(self,child);
+    };publicWhile(publicWhile,result.solvePlan.sourceProgram.root);
     result.solvePlan.compiledProgram=std::move(compiledExecution);
     result.runtime.capabilities=compileExecutionCapabilities(
         result.executableSystem,&result.solvePlan);

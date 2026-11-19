@@ -13,14 +13,11 @@
 #include "SF_termProviderCatalog.h"
 #include "app/application/model/SF_model.h"
 #include "app/application/model/SF_runtimeConfig.h"
-#include "models/physics/SF_sourceContribution.h"
 #include "models/physics/gravity/SF_accelerationProvider.h"
 #include "models/physics/mrf/SF_frameProvider.h"
 #include "models/physics/heat/SF_wallFluxProvider.h"
-#include "models/physics/interfaceModel/levelSet/SF_levelSetSystemContribution.h"
 #include "models/physics/multiphase/SF_multiphaseSystemContribution.h"
 #include "models/ibm/SF_ibmSystemContribution.h"
-#include "models/turbulence/SF_turbulenceSystemContribution.h"
 
 #include <algorithm>
 #include <stdexcept>
@@ -68,17 +65,6 @@ System::PhysicsTemplateKind resolvePhysics(const CaseConfig& config) {
     throw std::runtime_error("Unknown physical system contribution: "+type);
 }
 
-// @brief 将 turbulence model 枚举转换为字符串，便于在 CaseInspection 中使用。
-std::string turbulenceName(FDM::TurbulenceModelKind model) {
-    switch (model) {
-        case FDM::TurbulenceModelKind::None: return "none";
-        case FDM::TurbulenceModelKind::kEpsilon: return "kEpsilon";
-        case FDM::TurbulenceModelKind::kOmegaSST: return "kOmegaSST";
-        case FDM::TurbulenceModelKind::Smagorinsky: return "Smagorinsky";
-        case FDM::TurbulenceModelKind::DNS: return "DNS";
-    }
-    throw std::runtime_error("Unknown turbulence model.");
-}
 
 } // namespace
 
@@ -108,8 +94,11 @@ CaseInspection inspectCase(const CaseConfig& config) {
     // legacy WorkflowPlan.kind 决定。
     FDM::ImmersedAlgorithmDescriptor immersedDescriptor;
     System::BuildRequest systemRequest;
+    systemRequest.configuredSources=true;
     systemRequest.userContributions=config.userContributions;
-    if(!config.userContributions.empty()) {
+    // Explicit WHAT decides whether the default fluid bundle is present;
+    // adding an unrelated user source must not change storage selection.
+    if(config.composition.declared || !config.userContributions.empty()) {
         systemRequest.includeDefaultFluidPreset=std::any_of(config.composition.equations.begin(),config.composition.equations.end(),[](const auto& name) {
             return name=="Continuity" || name=="Momentum" || name=="Energy" || name=="PressureConstraint";
         });
@@ -122,59 +111,21 @@ CaseInspection inspectCase(const CaseConfig& config) {
     systemRequest.referencePhase = config.multiPhase.eulerianEulerian.referencePhase;
     const bool levelSet = config.multiPhaseEnabled && config.multiPhase.enabled
         && Physics::Multiphase::isLevelSetType(config.multiPhase.type);
-    if (levelSet) {
-        System::SystemContribution contribution;
-        Physics::InterfaceModels::LevelSetContribution::contribute(
-            contribution,{Physics::Multiphase::normalizeModelType(
-                config.multiPhase.levelSet.surfaceTensionModel)=="ghostfluid",
-                config.multiPhase.levelSet.advectionOrder,
-                config.multiPhase.levelSet.reinitializationOrder,
-                config.multiPhase.levelSet.reinitializationSteps,
-                config.multiPhase.levelSet.pseudoTimeStep,
-                config.multiPhase.levelSet.wenoEpsilon,
-                config.multiPhase.levelSet.wenoPower,
-                config.multiPhase.levelSet.signSmoothingFactor,
-                Physics::Multiphase::normalizeModelType(config.multiPhase.levelSet.surfaceTensionModel)=="csf",
-                config.multiPhase.levelSet.surfaceTension,config.multiPhase.levelSet.interfaceThickness});
-        systemRequest.modelContributions.push_back(std::move(contribution));
-    }
-    if (config.multiPhaseEnabled && config.multiPhase.enabled && Physics::Multiphase::isThermalType(config.multiPhase.type)) {
-        if (config.parallel.enabled || config.meshFiles.size()!=1)
-            throw std::runtime_error("Unsupported thermal transport: serial single patch boundary/halo binding required.");
-        System::SystemContribution contribution;
-        Physics::Multiphase::contributeThermal(contribution,config.multiPhase,
-            config.solver.boundaries.ilwEnabled,config.solver.boundaries.ilwOrder);
-        systemRequest.modelContributions.push_back(std::move(contribution));
-    }
+    if (config.multiPhaseEnabled && config.multiPhase.enabled && Physics::Multiphase::isThermalType(config.multiPhase.type)
+        && (config.parallel.enabled || config.meshFiles.size()!=1))
+        throw std::runtime_error("Unsupported thermal transport: serial single patch boundary/halo binding required.");
     systemRequest.homogeneousThermodynamics =
         config.multiPhaseEnabled && config.multiPhase.enabled
         && Physics::Multiphase::isHomogeneousType(config.multiPhase.type);
     systemRequest.legacyMixture =
         config.multiPhaseEnabled && config.multiPhase.enabled
         && Physics::Multiphase::isMixtureType(config.multiPhase.type);
-    if (systemRequest.homogeneousThermodynamics || systemRequest.legacyMixture) {
-        System::SystemContribution contribution;
-        if (systemRequest.homogeneousThermodynamics)
-            Physics::Multiphase::contributeHomogeneous(contribution,config.multiPhase);
-        else Physics::Multiphase::contributeMixture(contribution,config.multiPhase);
-        systemRequest.modelContributions.push_back(std::move(contribution));
-    }
     systemRequest.phaseChange = config.multiPhase.phaseChange.enabled;
     systemRequest.transportedLegacyAlpha =
         systemRequest.legacyMixture
         && config.multiPhase.alpha.transportEnabled;
-    if (config.solver.turbulence.enabled) {
-        systemRequest.homogeneousTurbulenceUnsupported =
-            config.solver.turbulence.family != FDM::TurbulenceFamily::DNS;
-        System::SystemContribution contribution;
-        Turbulence::contribute(contribution,Turbulence::SystemContributionSpec{
-            turbulenceName(config.solver.turbulence.model),
-            config.solver.turbulence.phaseNames,
-            systemRequest.templateOrigin
-                == System::PhysicsTemplateKind::EulerianEulerian,
-            systemRequest.phaseNames,config.solver.turbulence.stageConservativeTransport,config.solver.turbulence.laminarDynamicViscosity});
-        systemRequest.modelContributions.push_back(std::move(contribution));
-    }
+    systemRequest.homogeneousTurbulenceUnsupported = config.solver.turbulence.enabled
+        && config.solver.turbulence.family != FDM::TurbulenceFamily::DNS;
     systemRequest.modelRequiresDiffusion =
         config.solver.turbulence.enabled || systemRequest.legacyMixture
         || levelSet;
@@ -191,29 +142,17 @@ CaseInspection inspectCase(const CaseConfig& config) {
         // 显式注册的 coupling preset：是否生效由 resolved equation system
         // 决定，状态在 explain/validation 中显式报告。
         systemRequest.coupling = System::couplingRequestFrom(
-            config.solver.pressure.coupling,true);
+            config.solver.pressure,true);
     }
     systemRequest.parallel = config.parallel.enabled;
     // host backend 能力来自真实链接的 backend，而不是 SystemBuilder 的假设。
     systemRequest.capabilities = detectBuildCapabilities();
     systemRequest.composition = config.composition;
-    {
-        System::SystemContribution contribution;
-        Physics::SourceContribution::contribute(
-            contribution,config.solver.sources,
-            std::find(config.composition.solutionVariables.begin(),config.composition.solutionVariables.end(),"U")!=config.composition.solutionVariables.end()
-                ? Math::signature(1,{0,1,-2,0,0,0,0}) : Math::signature(1,{1,-2,-2,0,0,0,0}));
-        systemRequest.modelContributions.insert(
-            systemRequest.modelContributions.begin(),std::move(contribution));
-    }
+    systemRequest.modelContributions=ModelLoader::modelDeclarations(config);
     if (result.ibm.enabled) {
         immersedDescriptor = result.ibm.method == FDM::IBMMethod::Ghost
-            ? IBM::Descriptor::ghostCell()
-            : IBM::Descriptor::variational(result.ibm.forcing);
+            ? IBM::Descriptor::ghostCell() : IBM::Descriptor::variational(result.ibm.forcing);
         immersedDescriptor.wallClosure=config.solver.ibm.wallClosure;
-        System::SystemContribution contribution;
-        IBM::SystemContribution::contribute(contribution,immersedDescriptor);
-        systemRequest.modelContributions.push_back(std::move(contribution));
     }
     systemRequest.additionalExecutionContributions = result.ibm.enabled
         || config.solver.turbulence.enabled || levelSet
@@ -265,6 +204,12 @@ CaseInspection inspectCase(const CaseConfig& config) {
             result.mesh.configuredSetNames.push_back(item.key());result.mesh.physicalBoundaryNames.push_back(item.key());
         }
     }
+    for(const auto& symbol:result.system.executableSystem.state.symbols())if(symbol.fieldInput) {
+        for(const auto& value:symbol.fieldInput->initialConditions)result.mesh.configuredSetNames.push_back(value.name);
+        for(const auto& value:symbol.fieldInput->boundaries) {
+            result.mesh.configuredSetNames.push_back(value.name);result.mesh.physicalBoundaryNames.push_back(value.name);
+        }
+    }
     result.ibm = Runtime::makeIBMRuntimeConfig(
         config.solver,result.system.numericalSystem.requiredHaloWidth);
 
@@ -282,7 +227,7 @@ std::string describeCase(const CaseInspection& inspection) {
         out << "  " << target << " <- " << source << "\n";
     const auto& config=inspection.config.solver;
     out << "  actual turbulence: " << (config.turbulence.enabled ? "active" : "inactive (laminar/no turbulence transport)")
-        << "; model=" << turbulenceName(config.turbulence.model) << "\n";
+        << "; model=" << FDM::toString(config.turbulence.model) << "\n";
     out << "  actual source contributors: gravity=" << config.sources.gravity.size()
         << " MRF=" << config.sources.rotating.size() << " wallHeat=" << config.sources.wallHeat.size() << "\n";
     out << "  inactive model parameters/field files may remain authored; compiled consumers determine resources.\n";

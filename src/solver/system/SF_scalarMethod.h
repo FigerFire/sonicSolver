@@ -2,17 +2,6 @@
 #include "SF_methodObjects.h"
 #include "solver/discretization/SF_formulaOperator.h"
 namespace SF::System {
-namespace ScalarOps {
-inline constexpr const char* Dt="scalar.dt.fixed";
-inline constexpr const char* Begin="scalar.snapshot";
-inline constexpr const char* Stage="scalar.stage";
-inline constexpr const char* Commit="scalar.publish";
-inline constexpr const char* Provider="equation.scalar-central2";
-inline constexpr const char* TransportProvider="equation.scalar-transport";
-inline constexpr const char* CapacityProvider="equation.capacity-transport";
-inline constexpr const char* ClosureProvider="closure.sst-nonlocal";
-inline constexpr const char* SharedFluxProvider="equation.scalar-shared-flux";
-}
 /// Immutable AST lowering output. No physical storage or temporal coefficients.
 struct CompiledScalarEquation {
     std::string target;
@@ -21,6 +10,12 @@ struct CompiledScalarEquation {
     std::vector<Diffusion> diffusions;
     int components=1;
     bool conservativeTransport=false;
+    /// @brief 显式 HOW Step 的一次 ForwardEuler 求值/发布；不拥有 clock。
+    bool sequential=false;
+    bool fixedTime=false;double relaxation=1.0;
+    /// @brief 显式metric实现及原集合边界/bounds选项；非热模型身份。
+    std::optional<FDM::ScalarBoundaryOptions> metric;
+    std::string volumeFlux,fluxVelocity;
     bool sharedMassFlux=false;
     bool primitiveStorage=false;
 
@@ -28,6 +23,8 @@ struct CompiledScalarEquation {
     std::vector<std::string> sources;
     /// @brief 借用所选版本的输入，不要求每个读取对象都有演化方程。
     std::vector<StateUse> valueReads;
+    /// @brief 真正读取相邻节点的操作数；局部代数输入没有此需求。
+    std::vector<StateUse> stencilReads;
     /// @brief 显式选择节点系数的算术面值；不猜测不连续物性的平均规则。
     bool arithmeticFaces=false;
     FormulaValueKernel rhs;
@@ -35,21 +32,5 @@ struct CompiledScalarEquation {
     bool nonlinear=false;
     std::vector<std::string> lowering;
 };
-/// @brief 原非局部闭合的明确数值契约，不参与时间积分。
-struct CompiledStageClosure {std::vector<std::string> targets;};
-/// @brief 针对HOW目标的局部仿射数值实现；WHAT仍保存原等式。
-struct CompiledAffineEquation {
-    std::string target;
-    std::vector<StateUse> valueReads;
-    WorkspaceBoundary boundaryPreparation=WorkspaceBoundary::None;
-    FormulaValueKernel coefficient,remainder;
-};
-/// @brief 串行标量块的不可变AST lowering；行标签来自唯一主扩散目标。
-struct CompiledLinearBlock {
-    std::vector<std::string> equations,targets,rowTargets;
-    std::vector<StateUse> valueReads;
-    std::vector<FormulaLinearKernel> rows;
-    FDM::LinearSolverConfig linear;
-};
-void addScalarMethod(ProviderRegistry& registry);
+std::optional<CompiledEquationCall> compileScalarEquation(const ExecutableEquationSystem&,const EquationCall&,const NumericalBinding&);
 }

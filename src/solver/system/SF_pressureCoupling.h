@@ -31,7 +31,7 @@ struct PressureCouplingInputs {
     std::string constraint;
     std::vector<EquationCall> fusedBalances;
     std::string replacedCommit;
-    EquationCall correction,velocityUpdate,pressureUpdate,fluxUpdate,publication;
+    EquationCall fluxPrediction,correction,velocityUpdate,pressureUpdate,fluxUpdate,publication;
     EquationCall relaxation,fluxConsistency,convergence;
 };
 /// @brief 内置方案的声明默认；显式 C++ 组装可以提供其他 equation/occurrence 引用。
@@ -94,7 +94,7 @@ CouplingReport contributePressureCoupling(
 
 /// @brief 从 case 输入解析 coupling preset 请求。
 CouplingPresetRequest couplingRequestFrom(
-    const FDM::PressureCouplingConfig& coupling,
+    const FDM::PressureCorrectionConfig& pressure,
     bool explicitlyRegistered);
 
 /// Single-fluid coupling contributes HOW directly. The

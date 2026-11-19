@@ -16,6 +16,12 @@ namespace SF::System {
 struct MathematicalExtension {
     std::vector<std::string> families;
     FormulaExpr rhs;
+    /// @brief 精确方程引用与历史family前缀扩展分开，避免逐目标重复叠加。
+    bool exactEquation=false;
+    /// @brief 控制声明替换现有算子occurrence；空值仍为加性贡献。
+    std::string replaceOccurrence;
+    /// @brief 替换只能占用所声明的原算子位置。
+    std::optional<Math::Op> replacedOperator;
 };
 
 struct ContributionProviderRequirement {
@@ -27,6 +33,7 @@ struct ContributionProviderRequirement {
 class SystemContribution {
 public:
     SystemContribution() = default;
+    std::vector<ResidualDefinition> residuals;
     void recordContribution(std::string module, std::string name,std::string instance={}) {
         const auto id=instance.empty()?module:module+"@"+instance;
         records.push_back({id,std::move(name),{},std::move(module)});

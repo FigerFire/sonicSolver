@@ -7,10 +7,10 @@
 #include <stdexcept>
 
 namespace SF::FDM {
-/// @brief 已实现并验证的 built-in 时间离散配方标识。
-enum class TimeRecipeId { ForwardEuler, SSPRK3, ClassicalRK4 };
-enum class TimeFamily { RungeKutta };
-enum class TimeTopology { ExplicitStages };
+/// @brief 已实现的 built-in 时间离散配方标识；验收范围见各方法报告。
+enum class TimeRecipeId { ForwardEuler, SSPRK3, ClassicalRK4, PartitionedFixedEuler };
+enum class TimeFamily { RungeKutta, FixedPoint };
+enum class TimeTopology { ExplicitStages, FixedInterval };
 
 /// @brief 不可变的时间数值 contract；调用方只能整体选择 built-in 配方。
 class TimeRecipe {
@@ -19,6 +19,8 @@ public:
 
     static constexpr TimeRecipe builtIn(TimeRecipeId id) {
         switch (id) {
+            case TimeRecipeId::PartitionedFixedEuler:
+                return {id,TimeFamily::FixedPoint,TimeTopology::FixedInterval,1,1};
             case TimeRecipeId::ForwardEuler:
                 return {id,TimeFamily::RungeKutta,
                         TimeTopology::ExplicitStages,1,1};
@@ -59,6 +61,7 @@ constexpr TimeRecipe builtInTimeRecipe(TimeRecipeId id) {
 /// @return Stable string used in logs and dispatch bridges.
 inline const char* toString(TimeRecipeId id) {
     switch (id) {
+        case TimeRecipeId::PartitionedFixedEuler: return "partitionedFixedEuler";
         case TimeRecipeId::ForwardEuler: return "forwardEuler";
         case TimeRecipeId::SSPRK3: return "SSPRK3";
         case TimeRecipeId::ClassicalRK4: return "classicalRK4";
@@ -67,12 +70,14 @@ inline const char* toString(TimeRecipeId id) {
 }
 inline const char* toString(TimeFamily family) {
     switch (family) {
+        case TimeFamily::FixedPoint: return "FixedPoint";
         case TimeFamily::RungeKutta: return "RungeKutta";
     }
     return "unknown";
 }
 inline const char* toString(TimeTopology topology) {
     switch (topology) {
+        case TimeTopology::FixedInterval: return "FixedInterval";
         case TimeTopology::ExplicitStages: return "ExplicitStages";
     }
     return "unknown";

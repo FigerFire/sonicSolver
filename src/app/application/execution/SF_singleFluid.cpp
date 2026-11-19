@@ -1,4 +1,6 @@
+#include "core/interfaces/SF_scalarEquationData.h"
 #include "solver/system/SF_numericalCompiler.h"
+#include "solver/system/SF_stateRealization.h"
 #include "solver/system/SF_stateRealizer.h"
 #include "app/application/adapters/SF_scalarResources.h"
 #include "solver/algorithm/transport/SF_transportBinding.h"
@@ -93,7 +95,6 @@ int withSingleFieldResources(
     std::unique_ptr<SF::Physics::InterfaceModels::Model> interfaceModel;
     const bool legacyMultiPhaseActive =
         System::requiresProvider(system,"equation.mixture");
-    const bool thermalActive = System::requiresProvider(system,"equation.thermal");
     const bool interfaceActive =
         System::requiresProvider(system,"equation.level-set");
     const bool usesHomogeneousThermodynamics =
@@ -102,7 +103,7 @@ int withSingleFieldResources(
     const bool constantDensityState=pressureInputs!=nullptr;
     if(pressureInputs && system.runtime.report.status!=System::RuntimeStatus::Runnable)
         throw std::runtime_error("Pressure resource assembly unsupported: "+system.runtime.report.reason);
-    const bool multiPhaseActive = legacyMultiPhaseActive || thermalActive || interfaceActive;
+    const bool multiPhaseActive = legacyMultiPhaseActive || interfaceActive;
     if (interfaceActive && !solverConfig.numerics.timeRecipeDeclared) {
         throw std::runtime_error(
             "OneFluidInterface requires an explicit "
@@ -167,7 +168,7 @@ int withSingleFieldResources(
                 "singleFluid/perfectGas cold start");
         }
     }
-    if (legacyMultiPhaseActive || thermalActive) {
+    if (legacyMultiPhaseActive) {
         multiPhaseModel.configure(caseConfig.multiPhase);
         multiPhaseModel.configureBoundaryNumerics(
             solverConfig.boundaries.ilwEnabled,
@@ -239,15 +240,15 @@ int withSingleFieldResources(
     std::vector<System::ResourceView> boundModelResources;
     std::vector<std::shared_ptr<FDM::ScalarEquationData>> modelBoundaryPorts;
     for (const auto& call:plan.compiledProgram.steps) for (const auto& required:call.physicalResources) {
-        if (required.owner!="model.turbulence") continue;
-        if (required.type!=typeid(FDM::ITransportModel) || !required.writable || required.id!=call.source.occurrence)
+        if (required.owner!="model.turbulence" && required.owner!="model.scalar") continue;
+        if (required.owner=="model.turbulence" && (required.type!=typeid(FDM::ITransportModel) || !required.writable || required.id!=call.source.occurrence))
             throw std::runtime_error("Invalid model transport resource contract: "+required.id);
         if (!turbulenceManager) {
             if (!solverConfig.turbulence.enabled) throw std::runtime_error("Required model transport configuration is inactive.");
             turbulenceManager=std::make_shared<SF::Turbulence::Manager>(solverConfig.turbulence,
                 viscousImmersedWall && solverConfig.turbulence.model==FDM::TurbulenceModelKind::kOmegaSST?&ibm:nullptr);
         }
-        boundModelResources.push_back(System::ResourceView::bind(required,turbulenceManager,
+        if(required.owner=="model.turbulence")boundModelResources.push_back(System::ResourceView::bind(required,turbulenceManager,
             static_cast<FDM::ITransportModel&>(*turbulenceManager),required.owner));
     }
     CompositeTransportProvider coupledTransport;
@@ -286,14 +287,6 @@ int withSingleFieldResources(
     if (forcingIBMActive) {
         immersedPorts.constraint = &immersedConstraint;
         immersedPorts.system = &ibm;
-    }
-    FDM::ThermalEquationData thermalData;
-    if(thermalActive) {
-        thermalData.temperature=&multiPhaseModel.temperature();
-        thermalData.boundaries=caseConfig.multiPhase.temperature.boundaryConditions;
-        State::VariableDescriptor variable;variable.name=multiPhaseModel.temperature().name();
-        variable.updatePolicy=State::UpdatePolicy::ExternalExplicit;variable.unit="K";
-        stateBundle.transported.add(variable,*thermalData.temperature);
     }
     std::vector<double> multiPhaseAlphaRHS;
     std::unique_ptr<MixtureEquationProvider>
@@ -411,7 +404,7 @@ int withSingleFieldResources(
             }});
         }
         std::vector<SF::ResultWriter::ScalarField> phaseScalars;
-        if (legacyMultiPhaseActive || thermalActive) {
+        if (legacyMultiPhaseActive) {
             phaseScalars = multiPhaseVTKScalars(
                 multiPhaseModel, &stateBundle.transported);
         } else if (interfaceActive) {
@@ -483,7 +476,8 @@ int withSingleFieldResources(
     }
     if (turbulenceManager) {
         if (!turbulenceActive) throw std::runtime_error("Required model transport backing could not initialize.");
-        turbulenceManager->registerDistributed(stateBundle.distributed,localBlockId,field);
+        turbulenceManager->registerDistributed(stateBundle.distributed,localBlockId,field,
+            System::fieldPublications(system.executableSystem.state,plan.compiledProgram));
     }
     for(const auto& call:plan.compiledProgram.steps)for(const auto& need:call.physicalResources)if(need.owner=="model.scalar") {
         if(!need.fields || need.type!=typeid(FDM::ScalarEquationData) || need.writable || !turbulenceManager || !turbulenceActive)
@@ -544,7 +538,6 @@ int withSingleFieldResources(
     services.transportModel=coupledTransport.active()?&coupledTransport:nullptr;
     services.equationSystem=equationProvider;
     services.levelSet=dynamic_cast<FDM::ILevelSetOperations*>(equationProvider);
-    services.thermalEquation=thermalActive?&thermalData:nullptr;
     services.scalarInstances=declaredResources.instances;
     Time::DriverCallbacks callbacks;
     callbacks.saveStep=saveStepVTK;callbacks.saveTime=saveTimeVTK;

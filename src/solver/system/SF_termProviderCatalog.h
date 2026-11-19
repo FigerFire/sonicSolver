@@ -32,6 +32,7 @@ struct TermProviderDescriptor {
     /// @brief 数值实现支持的数学身份；matcher继续校验布局/系数/具体结构。
     std::vector<Math::Op> operations;
     std::function<FieldSource(const TermMatchContext&)> compileFieldSource;
+    Discretization::CellEquation::GradientKernel gradient=nullptr;
 };
 
 struct ResolvedTermProvider {
@@ -46,6 +47,7 @@ struct ResolvedTermProvider {
     std::string owner;
     bool compiledDataAvailable = false;
     FieldSource fieldSource;
+    Discretization::CellEquation::GradientKernel gradient=nullptr;
 };
 
 /// @brief Open registrations; zero/one/multiple matches have explicit outcomes.

@@ -4,6 +4,7 @@
 /// @file SF_stateViews.h
 /// @brief Compiler output: lazily requested versions of base STATE symbols.
 #include "core/system/SF_stateRegistry.h"
+#include "core/interfaces/SF_scalarEquationData.h"
 #include <functional>
 #include <typeindex>
 
@@ -11,7 +12,7 @@ namespace SF { class Field; namespace State { struct DistributedFieldView; } }
 
 namespace SF::System {
 /// @brief Stage/OldTime are temporal lowering output, never user registrations.
-enum class StateViewKind { Physical, Working, Correction, OldTime, Stage, Workspace };
+enum class StateViewKind { Physical, Working, Correction, OldTime, Stage, Workspace, Frozen };
 /// @brief Only one storage authority supplies a view; aliases never own another Q.
 enum class StateViewOwner { PhysicalState, CompilerWorkspace, NumericalProvider };
 
@@ -26,6 +27,11 @@ struct StateProducer {
 };
 inline bool producedBy(const StateSymbol& state,std::string_view id) {
     return state.producer && state.producer->id==id;
+}
+
+/// @brief 非物理视图的发布身份，与实际 backing 名和数学符号独立。
+inline std::string stateViewPublication(std::string_view symbol,StateViewKind kind) {
+    return "state."+std::string(symbol)+(kind==StateViewKind::Working?".Working":".Correction");
 }
 
 /// @brief No ordering data lives in the state-view allocation contract.
@@ -44,11 +50,20 @@ struct CompiledStateView {
     bool haloRequired=false;
 };
 
+/// @brief 编译过程向物理存储提供者声明的结果发布。
+struct FieldPublication {
+    CompiledStateView backing;
+    std::string occurrence;
+    StateVersion version=StateVersion::Current;
+};
+
 /// @brief 已有字段端口的实际 backing 需求；数值方法声明，binder不再反推方程数学。
 struct FieldDataRequirement {
     std::string target;
     std::vector<std::string> states,boundaries,sources;
     bool localOnly=false,boundaryRequired=false;
+    bool cellVolumeBoundary=false;
+    std::optional<FDM::ScalarBoundaryOptions> setBoundaryOptions;
 };
 
 /// @brief 非数学资源的编译需求；不伪装成 Field 或 STATE symbol。
@@ -101,6 +116,7 @@ inline const char* toString(StateViewKind kind) {
     case StateViewKind::OldTime:return "OldTime";
     case StateViewKind::Stage:return "Stage";
     case StateViewKind::Workspace:return "Workspace";
+    case StateViewKind::Frozen:return "Frozen";
     }
     return "invalid";
 }

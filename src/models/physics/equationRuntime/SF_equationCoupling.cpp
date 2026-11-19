@@ -51,13 +51,7 @@ void registerMixtureState(
         }
         return;
     }
-    if (model.isThermal() && model.hasTemperature()) {
-        registry.add(
-            descriptor(model.temperature().name(),
-                       State::ConservationKind::Algorithmic,
-                       State::UpdatePolicy::ExternalExplicit, "K"),
-            model.temperature());
-    }
+
 }
 
 void CompositeTransportProvider::setTurbulence(FDM::ITransportModel* model) {
@@ -105,6 +99,10 @@ double CompositeTransportProvider::dynamicViscosity(
     return mu;
 }
 
+bool CompositeTransportProvider::hasStageViscosityPublication() const {
+    return turbulence_ && turbulence_->hasStageViscosityPublication();
+}
+
 std::vector<std::string> CompositeTransportProvider::stageScalarTargets() const {
     // The current stage coefficient port has one molecular transport binding.
     // Mixture/interface combinations require their own resolved coefficient port.
@@ -115,15 +113,8 @@ FDM::ITransportModel& CompositeTransportProvider::stageTransport() const {
     if(stageScalarTargets().empty())throw std::runtime_error("Unsupported composite stage coefficient port: requires one active transport model, no mixture/interface coefficient composition.");
     return *turbulence_;
 }
-FDM::TransportStageCoefficients CompositeTransportProvider::stageCoefficients(const Field& field,
-        const FDM::TransportStageSamples& samples,int i,int j,int k) const {
-    return stageTransport().stageCoefficients(field,samples,i,j,k);
-}
 FDM::ScalarEquationData CompositeTransportProvider::stageScalarData(const Field& field,const std::string& target) const {
     return stageTransport().stageScalarData(field,target);
-}
-void CompositeTransportProvider::publishStageViscosity(const Field& field,const std::vector<double>& values) {
-    stageTransport().publishStageViscosity(field,values);
 }
 
 namespace {

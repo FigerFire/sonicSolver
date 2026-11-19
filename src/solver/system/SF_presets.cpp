@@ -83,22 +83,29 @@ void addPressureConstraintFluid(
 void addConstantDensityFluid(
         SystemCompositionBuilder& system,
         const EquationCompositionConfig& composition,
-        bool includeDiffusion) {
+        bool includeDiffusion,double dynamicViscosity) {
     system.recordContribution("builtin.continuity","builtin incompressibility constraint");
-    system.recordContribution("builtin.momentum","builtin Momentum equation");
     system.recordContribution("model.rhoConst","constant-density EOS closure");
-    if (includeDiffusion) system.requireState("nu");
-    auto momentumFormula=FormulaExpr::add(
-        FormulaExpr::op(Math::Op::Ddt,{BuiltinStateCatalog().expression("U")},"momentum.time"),
-        FormulaExpr::op(Math::Op::Div,{FormulaExpr::symbol("momentumFlux",Math::signature(2,{0,2,-2,0,0,0,0}))},
-                        "momentum.convection"));
-    if (includeDiffusion)
-        momentumFormula=FormulaExpr::add(std::move(momentumFormula),
-            FormulaExpr::op(Math::Op::Diffusion,
-                {BuiltinStateCatalog().expression("nu"),BuiltinStateCatalog().expression("U")},
-                "momentum.diffusion"));
-    system.addEquation({"momentum",std::move(momentumFormula),
-        FormulaExpr::constantValue(0.0),{}});
+    using E=FormulaExpr;
+    const auto u=BuiltinStateCatalog().expression("U");
+    const auto p=BuiltinStateCatalog().expression("p");
+    const auto rho=BuiltinStateCatalog().expression("rho");
+    const auto& predictor=composition.predictorEquation;
+    if(predictor.empty()) {
+        system.recordContribution("builtin.PressureMomentum","typed constant-density momentum declaration");
+        auto spatial=E::negate(E::op(Math::Op::Div,{E::op(Math::Op::Outer,{u,u})},"momentum.convection"));
+        if(includeDiffusion) {
+            if(composition.thermoDynamics.transport!="const")throw std::runtime_error("Cell explicit constant-density preset needs a constant transport coefficient; no variable-property response is implemented");
+            auto nu=BuiltinStateCatalog().at("nu");nu.producer.reset();nu.evaluation=StateEvaluation::Direct;
+            nu.constantValue=dynamicViscosity/composition.thermoDynamics.constantDensity;
+            nu.storageBinding=StorageBinding::SpecializedExecutor;nu.storageKey="nuConst";
+            nu.runtimeStorageRequired=nu.initializationRequired=nu.boundaryRequired=nu.outputEligible=nu.restartEligible=false;
+            system.addState(nu);
+            spatial=E::add(std::move(spatial),E::op(Math::Op::Diffusion,{nu.expression(),u},pressureMomentumDiffusion));
+        }
+        const auto force=E::negate(E::divide(E::op(Math::Op::Grad,{p},"momentum.pressureGradient"),rho));
+        system.addEquation({pressureMomentumEquation,E::op(Math::Op::Ddt,{u},"momentum.time"),E::add(std::move(spatial),force),{}});
+    }
     system.addEquation({"continuity",
         FormulaExpr::op(Math::Op::Div,{BuiltinStateCatalog().expression("U")},"continuity.constraint"),
         FormulaExpr::constantValue(0.0),{}});
@@ -106,7 +113,7 @@ void addConstantDensityFluid(
     call.kind=ExecutionKind::EquationCall;
     call.order=20;
     call.id="momentum.default";
-    call.step={"momentum",{"U"}};
+    call.step={predictor.empty()?pressureMomentumEquation:predictor,{"U"}};
     call.origin={OriginKind::BuiltinPreset,"NavierStokes"};
     system.pressureInputs=pressureCouplingInputs(call.step,PressurePredictorKind::Velocity);
     system.addExecution(std::move(call));

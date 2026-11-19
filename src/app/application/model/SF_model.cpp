@@ -2,11 +2,29 @@
 #include "compatibility/SF_compatibility.h"
 #include "infrastructure/io/case/SF_case.h"
 #include "solver/system/SF_singleFluidPreset.h"
+#include "solver/system/SF_presets.h"
+#include "models/physics/interfaceModel/levelSet/SF_levelSetSystemContribution.h"
+#include "models/physics/multiphase/SF_multiphaseSystemContribution.h"
+#include "models/turbulence/SF_turbulenceSystemContribution.h"
+#include "models/ibm/SF_ibmSystemContribution.h"
+#include "models/ibm/descriptor/SF_algorithmDescriptor.h"
+#include <algorithm>
 #include <filesystem>
 #include <cctype>
 namespace SF::Application::ModelLoader {
 namespace {
 using P=Model::Parameters;
+std::string turbulenceName(FDM::TurbulenceModelKind model) {
+    switch (model) {
+        case FDM::TurbulenceModelKind::None: return "none";
+        case FDM::TurbulenceModelKind::kEpsilon: return "kEpsilon";
+        case FDM::TurbulenceModelKind::kOmegaSST: return "kOmegaSST";
+        case FDM::TurbulenceModelKind::Smagorinsky: return "Smagorinsky";
+        case FDM::TurbulenceModelKind::DNS: return "DNS";
+    }
+    throw std::runtime_error("Unknown turbulence model.");
+}
+
 Model::Description expandPresets(const Model::Description& input) {
     auto result=input;
     std::map<std::string,Model::ObjectDescriptor> defaults;
@@ -112,6 +130,90 @@ Model::Description expandPresets(const Model::Description& input) {
     return result;
 }
 } // namespace
+std::vector<System::SystemContribution> modelDeclarations(const CaseConfig& config) {
+    std::vector<System::SystemContribution> contributions;
+    const bool active=config.multiPhaseEnabled && config.multiPhase.enabled;
+    const bool levelSet=active && Physics::Multiphase::isLevelSetType(config.multiPhase.type);
+    const bool homogeneous=active && Physics::Multiphase::isHomogeneousType(config.multiPhase.type);
+    const bool mixture=active && Physics::Multiphase::isMixtureType(config.multiPhase.type);
+    const bool eulerian=active && Physics::Multiphase::isEulerianEulerianType(config.multiPhase.type);
+    if (levelSet) {
+        System::SystemContribution contribution;
+        Physics::InterfaceModels::LevelSetContribution::contribute(
+            contribution,{Physics::Multiphase::normalizeModelType(
+                config.multiPhase.levelSet.surfaceTensionModel)=="ghostfluid",
+                config.multiPhase.levelSet.advectionOrder,
+                config.multiPhase.levelSet.reinitializationOrder,
+                config.multiPhase.levelSet.reinitializationSteps,
+                config.multiPhase.levelSet.pseudoTimeStep,
+                config.multiPhase.levelSet.wenoEpsilon,
+                config.multiPhase.levelSet.wenoPower,
+                config.multiPhase.levelSet.signSmoothingFactor,
+                Physics::Multiphase::normalizeModelType(config.multiPhase.levelSet.surfaceTensionModel)=="csf",
+                config.multiPhase.levelSet.surfaceTension,config.multiPhase.levelSet.interfaceThickness});
+        contributions.push_back(std::move(contribution));
+    }
+    if (config.multiPhaseEnabled && config.multiPhase.enabled && Physics::Multiphase::isThermalType(config.multiPhase.type)) {
+        System::SystemContribution contribution;
+        Physics::Multiphase::contributeThermal(contribution,config.multiPhase,
+            config.solver.boundaries.ilwEnabled,config.solver.boundaries.ilwOrder);
+        contributions.push_back(std::move(contribution));
+    }
+    if (homogeneous || mixture) {
+        System::SystemContribution contribution;
+        if (homogeneous)
+            Physics::Multiphase::contributeHomogeneous(contribution,config.multiPhase);
+        else Physics::Multiphase::contributeMixture(contribution,config.multiPhase);
+        contributions.push_back(std::move(contribution));
+    }
+    if (config.solver.turbulence.enabled) {
+        if(config.solver.turbulence.fixedVolumeTransport) {
+            if(!config.solver.thermophysical || config.solver.thermophysical->selection.equationOfState!="rhoConst")
+                throw std::runtime_error("fixedVolume SST requires an explicitly declared rhoConst closure; variable capacity/mass transport is not implemented");
+            if(config.solver.turbulence.coupleEnergy)
+                throw std::runtime_error("fixedVolume SST has no energy transport feedback; explicitly disable coupleEnergy");
+            if(!config.solver.turbulence.closureDensity.empty() && config.solver.turbulence.closureDensity!="rho")
+                throw std::runtime_error("fixedVolume SST currently consumes the declared rhoConst symbol rho; alternate capacity mapping is not implemented");
+        }
+        System::SystemContribution contribution;
+        const auto& turbulence=config.solver.turbulence;
+        Turbulence::SystemContributionSpec spec{
+            turbulenceName(turbulence.model),turbulence.phaseNames,eulerian,
+            config.multiPhase.eulerianEulerian.phaseNames,turbulence.stageConservativeTransport,
+            turbulence.laminarDynamicViscosity,turbulence.coefficients.omegaFloor,
+            turbulence.closureDensity,turbulence.closureVelocity,turbulence.fixedVolumeTransport,turbulence.sharedVolumeFlux};
+        spec.viscosityOutput=turbulence.viscosityOutput;
+        spec.viscosityEquation=turbulence.viscosityEquation;
+        const bool explicitStress=!turbulence.stressEquation.empty() || !turbulence.stressOccurrence.empty();
+        if(turbulence.fixedVolumeTransport && turbulence.coupleMomentum) {
+            if(explicitStress) {
+                if(turbulence.stressEquation.empty() || turbulence.stressOccurrence.empty())
+                    throw std::runtime_error("momentumStress requires both equation and occurrence");
+                spec.stressTarget=std::pair{turbulence.stressEquation,turbulence.stressOccurrence};
+            } else {
+                if(!config.composition.predictorEquation.empty())
+                    throw std::runtime_error("Explicit pressure predictor="+config.composition.predictorEquation+
+                        " requires turbulence/momentumStress with its actual equation and occurrence");
+                spec.stressTarget=std::pair{System::Compose::pressureMomentumEquation,System::Compose::pressureMomentumDiffusion};
+            }
+        } else if(explicitStress) {
+            throw std::runtime_error("momentumStress requires active fixedVolume momentum coupling");
+        }
+        Turbulence::contribute(contribution,spec);
+        contributions.push_back(std::move(contribution));
+    }
+    if (config.solver.ibm.enabled) {
+        auto immersedDescriptor = config.solver.ibm.method == FDM::IBMMethod::Ghost
+            ? IBM::Descriptor::ghostCell()
+            : IBM::Descriptor::variational(config.solver.ibm.forcing);
+        immersedDescriptor.wallClosure=config.solver.ibm.wallClosure;
+        System::SystemContribution contribution;
+        IBM::SystemContribution::contribute(contribution,immersedDescriptor);
+        contributions.push_back(std::move(contribution));
+    }
+    return contributions;
+}
+
 std::vector<EquationSystemInstanceConfig> equationInstances(
         const Model::Description& model) {
     std::vector<EquationSystemInstanceConfig> result;

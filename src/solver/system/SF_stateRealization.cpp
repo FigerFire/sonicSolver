@@ -2,6 +2,7 @@
 /// @brief STATE REALIZATION 编译实现（role 分组只读 executable system）。
 
 #include "SF_stateRealization.h"
+#include "core/interfaces/SF_scalarEquationData.h"
 
 #include <algorithm>
 #include <stdexcept>
@@ -69,6 +70,15 @@ void resolveCallInputs(const StateRegistry& state,const std::vector<EquationCall
             throw std::runtime_error("Duplicate STATE input binding for occurrence: "+step->occurrence);
         step->inputs=binding.reads;
     }
+}
+
+ResourceViewRequirement equationFieldResource(std::string id,const std::string& target,
+        const std::vector<StateUse>& reads,std::vector<std::string> boundaries,
+        std::vector<std::string> sources,bool local) {
+    FieldDataRequirement fields;fields.target=target;fields.states={target};fields.localOnly=local;
+    for(const auto& read:reads)fields.states.push_back(read.symbol);
+    fields.boundaries=std::move(boundaries);fields.sources=std::move(sources);
+    return {std::move(id),"native.scalar",typeid(FDM::ScalarEquationData),false,std::move(fields)};
 }
 
 void compileFieldResources(const StateRegistry& state,CompiledExecutionProgram& program) {
@@ -247,9 +257,48 @@ CompiledStateView realizeTarget(const StateRegistry& state,CompiledTarget& targe
     return view;
 }
 
+std::vector<FieldPublication> fieldPublications(const StateRegistry& state,const CompiledExecutionProgram& program) {
+    std::vector<FieldPublication> publications;
+    for(const auto& call:program.steps) {
+        // Legacy whole-model operations publish their own storage. They do not
+        // transfer authority for the arrays to independent numerical calls.
+        if(call.legacyProvider)continue;
+        for(const auto& effect:call.stateEffects) {
+            if(!effect.publish || !state.contains(effect.symbol))continue;
+            const auto& symbol=state.at(effect.symbol);
+            if(symbol.storageBinding!=StorageBinding::ProviderDistributed
+                || symbol.evaluation!=StateEvaluation::Materialized)continue;
+            const auto physical=std::find_if(program.stateViews.begin(),program.stateViews.end(),[&](const auto& view) {
+                return view.symbol==symbol.id && view.kind==StateViewKind::Physical;
+            });
+            CompiledStateView backing;
+            if(physical!=program.stateViews.end())backing=*physical;
+            else {
+                // A grouped operation can publish more than its primary target.
+                CompiledTarget target;
+                target.symbol=symbol.id;
+                target.producer=symbol.producer;
+                backing=realizeTarget(state,target);
+            }
+            const auto collision=std::find_if(publications.begin(),publications.end(),[&](const auto& item) {
+                const auto& previous=item.backing;
+                return previous.storage==backing.storage
+                    && previous.componentOffset<backing.componentOffset+backing.components
+                    && backing.componentOffset<previous.componentOffset+previous.components;
+            });
+            if(collision!=publications.end())
+                throw std::runtime_error("Overlapping field publications for storage="+backing.storage+
+                    ": "+collision->occurrence+" / "+call.source.occurrence);
+            publications.push_back({std::move(backing),call.source.occurrence,
+                call.stageLocal?StateVersion::Stage:StateVersion::Current});
+        }
+    }
+    return publications;
+}
+
 void realizeTemporalViews(const StateRegistry& state,CompiledExecutionProgram& program,
         int stages) {
-    for(const auto& participant:program.steps)if(participant.coefficientVersion==StateVersion::Stage)for(const auto& name:participant.coefficientStates) {
+    for(const auto& participant:program.steps)if(participant.coefficientVersion==StateVersion::Stage || participant.coefficientVersion==StateVersion::Current)for(const auto& name:participant.coefficientStates) {
         const auto& symbol=state.at(name);
         if(symbol.storageBinding==StorageBinding::TransientWorkspace && std::none_of(program.stateViews.begin(),program.stateViews.end(),[&](const auto& v){return v.symbol==name && v.kind==StateViewKind::Physical;})) {
             CompiledStateView physical;physical.symbol=name;physical.kind=StateViewKind::Physical;
@@ -257,7 +306,7 @@ void realizeTemporalViews(const StateRegistry& state,CompiledExecutionProgram& p
             physical.location=symbol.location;physical.ownership=symbol.ownership;physical.owner=StateViewOwner::NumericalProvider;
             program.stateViews.push_back(std::move(physical));
         }
-        for(int stage=0;stage<stages;++stage) {
+        for(int stage=0;participant.coefficientVersion==StateVersion::Stage && stage<stages;++stage) {
             CompiledStateView view;view.symbol=name;view.kind=StateViewKind::Stage;view.stage=stage;
             view.storage=symbol.storageKey+".stage-coefficient";view.components=symbol.components;view.componentOffset=symbol.componentOffset;
             view.location=symbol.location;view.ownership=symbol.ownership;view.owner=StateViewOwner::NumericalProvider;program.stateViews.push_back(std::move(view));
@@ -296,6 +345,21 @@ void realizeTemporalViews(const StateRegistry& state,CompiledExecutionProgram& p
             for(int stage=0;stage<stages;++stage)
                 if(std::none_of(program.stateViews.begin(),program.stateViews.end(),[&](const auto& v){return v.symbol==read.symbol && v.kind==StateViewKind::Stage && v.stage==stage;}))
                     throw std::runtime_error("Missing Stage publisher: step="+call.source.occurrence+" equation="+call.source.equation+" target="+call.target.symbol+" input="+read.symbol+" stage="+std::to_string(stage));
+    for(const auto& call:program.steps)for(const auto& read:call.stateUses)if(read.version==StateVersion::Frozen) {
+        const auto& symbol=state.at(read.symbol);
+        const bool published=std::any_of(program.steps.begin(),program.steps.end(),[&](const auto& producer) {
+            return producer.source.stepScoped && (std::find(producer.coefficientStates.begin(),producer.coefficientStates.end(),read.symbol)!=producer.coefficientStates.end()
+                || (producer.equationMethod=="LocalAffine" && producer.target.symbol==read.symbol));
+        });
+        if(!published || !read.perIteration || !read.snapshot.empty() || read.halo || read.kind!=TargetKind::Physical
+            || symbol.evaluation!=StateEvaluation::Materialized)
+            throw std::runtime_error("Frozen coefficient needs an explicit Step materialized publisher and perIteration read: "+read.symbol);
+        if(std::none_of(program.stateViews.begin(),program.stateViews.end(),[&](const auto& view){return view.symbol==read.symbol && view.kind==StateViewKind::Frozen;})) {
+            CompiledStateView view;view.symbol=symbol.id;view.kind=StateViewKind::Frozen;view.storage=symbol.storageKey;
+            view.components=symbol.components;view.location=symbol.location;view.ownership=symbol.ownership;view.owner=StateViewOwner::NumericalProvider;
+            program.stateViews.push_back(std::move(view));
+        }
+    }
     const auto stageDependency=[&](const auto& self,const std::string& id,int stage)->void {
         if(std::any_of(program.stateViews.begin(),program.stateViews.end(),[&](const auto& v){return v.symbol==id && v.kind==StateViewKind::Stage && v.stage==stage;}))return;
         const auto& s=state.at(id);
@@ -311,7 +375,7 @@ void realizeTemporalViews(const StateRegistry& state,CompiledExecutionProgram& p
             if(read.version==StateVersion::Stage && state.contains(read.symbol) && state.at(read.symbol).producer)
                 for(int stage=0;stage<stages;++stage)stageDependency(stageDependency,read.symbol,stage);
         };
-        inputs(call.stateUses);inputs(call.coefficientInputs);
+        inputs(call.stateUses);
     }
 
 }

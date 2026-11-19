@@ -44,6 +44,10 @@ struct DistributedFieldView {
     std::function<void(int, int, double)> write;
     /// @brief 只检查可读性/发布，不运行刷新、数值计算或通信。
     std::function<void()> requireReadable;
+    /// @brief 为此实际版本执行已选串行边界闭合；不计算物化关系，不代表 MPI halo。
+    std::function<void(double)> prepareSpatial;
+    /// @brief 数值 owner 提供该视图的写入/发布代次，不从物理字段代次猜测。
+    std::function<unsigned long long()> revision;
 
     /// @brief 检查视图尺寸和访问器是否完整。
     void validate() const {

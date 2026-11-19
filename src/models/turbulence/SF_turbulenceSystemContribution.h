@@ -20,6 +20,13 @@ struct SystemContributionSpec {
     bool stageConservativeTransport=false;
     /// @brief Stage 闭合使用的实际层流动力黏度；此选择必须显式传入。
     std::optional<double> laminarDynamicViscosity;
+    double omegaFloor=1.0e-10;
+    std::string closureDensity,closureVelocity;
+    bool fixedVolumeTransport=false;
+    std::string sharedVolumeFlux;
+    /// @brief 控制层提供实际黏性项引用，不选择动量求解方法。
+    std::optional<std::pair<std::string,std::string>> stressTarget;
+    std::string viscosityOutput,viscosityEquation;
 };
 
 void contribute(

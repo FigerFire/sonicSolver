@@ -17,6 +17,7 @@
 #include "SF_config.h"
 #include "core/interfaces/SF_transportModel.h"
 #include "core/state/SF_distributedField.h"
+#include "core/system/SF_stateViews.h"
 
 #include <memory>
 #include <string>
@@ -189,10 +190,6 @@ public:
         throw std::runtime_error("Selected model has no once-step transport closure.");
     }
 
-    virtual FDM::TransportStageCoefficients stageCoefficients(const Field&,const FDM::TransportStageSamples&,
-        const FDM::TurbulenceConfig&,int,int,int) const {
-        throw std::runtime_error("Selected turbulence model has no stage closure.");
-    }
     /// @brief 读取当前单元的湍流附加动力粘度。
     /// @param flow 主流场。
     /// @param state 湍流标量存储。
@@ -247,15 +244,14 @@ public:
                             int i, int j, int k,
                             double laminarMu) const override;
     std::vector<std::string> stageScalarTargets() const override;
-    FDM::TransportStageCoefficients stageCoefficients(const Field&,const FDM::TransportStageSamples&,int,int,int) const override;
     FDM::ScalarEquationData stageScalarData(const Field&,const std::string&) const override;
-    void publishStageViscosity(const Field&,const std::vector<double>&) override;
     std::vector<std::string> distributedReadFields() const override;
     std::vector<std::string> distributedWriteFields() const override;
     int distributedHaloDepth() const override;
     /// @brief Publish non-owning views of the existing Manager arrays; no second storage.
     void registerDistributed(State::DistributedFieldRegistry& registry,
-                             int blockId, Field& geometry);
+                             int blockId,Field& geometry,const std::vector<System::FieldPublication>& publications);
+    bool hasStageViscosityPublication() const override { return stageViscosity_; }
 
     /// @brief 只读访问湍流标量场，用于诊断和VTK输出。
     /// @return 当前模型自管的 k / epsilon / omega / mu_t 标量缓存。
@@ -263,7 +259,9 @@ public:
     ScalarFields& scalarFields() { return state_; }
 
 private:
-    bool stageClosurePublished_=false;
+    /// @brief 读取实际 mu_t backing 的发布代次，不由闭合执行器注入模型状态。
+    std::function<bool()> viscosityPublished_;
+    bool stageViscosity_=false;
     const FDM::IImmersedTurbulenceBoundary* wall_;
     FDM::TurbulenceConfig config_;
     ScalarFields state_;

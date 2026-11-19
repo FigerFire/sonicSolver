@@ -13,7 +13,6 @@ struct NumericalSelection {
     std::optional<FDM::TermRecipe> defaultDiffusion;
     TimeStepPolicy dt;
     CompiledPhaseTransport phaseTransport;
-    PressureFaceCoupling pressureFaceCoupling = PressureFaceCoupling::None;
     std::optional<PressureNumericalConfig> pressureOperator;
     std::optional<PhaseNumericalConfig> phaseOperator;
     std::vector<SourceTermProviderDescriptor> termProviders;

@@ -64,8 +64,6 @@ public:
                                 const ScalarFields& state,
                                 const FDM::TurbulenceConfig& config,
                                 int i, int j, int k) const override;
-    FDM::TransportStageCoefficients stageCoefficients(const Field&,const FDM::TransportStageSamples&,
-        const FDM::TurbulenceConfig&,int,int,int) const override;
 private:
     const FDM::IImmersedTurbulenceBoundary* wall_;
 };

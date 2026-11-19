@@ -104,14 +104,14 @@ inline void requireCompatible(const Signature& a,const Signature& b,std::string_
 }
 /// @brief Identity不含occurrence或数值provider。扩展规则使用独立的显式名称和签名函数。
 enum class Op { Add, Subtract, Multiply, Divide, Negate, Dot, Outer, Cross, DoubleDot,
-    Grad, Div, Curl, Laplacian, Diffusion, Ddt, Partial, Trace, Pow, Sin, Source, Component, Vector, Extension };
+    Grad, DevSymmGrad, Div, SurfaceFlux, Curl, Laplacian, Diffusion, Ddt, Partial, Trace, Pow, Sin, Source, Component, Vector, Extension };
 inline const char* name(Op op) {
     switch(op) {
 #define SF_MATH_NAME(ID,TEXT) case Op::ID:return TEXT;
         SF_MATH_NAME(Add,"add") SF_MATH_NAME(Subtract,"subtract") SF_MATH_NAME(Multiply,"multiply")
         SF_MATH_NAME(Divide,"divide") SF_MATH_NAME(Negate,"negate") SF_MATH_NAME(Dot,"dot")
         SF_MATH_NAME(Outer,"outer") SF_MATH_NAME(Cross,"cross") SF_MATH_NAME(DoubleDot,"doubleDot") SF_MATH_NAME(Curl,"curl") SF_MATH_NAME(Grad,"grad")
-        SF_MATH_NAME(Div,"div") SF_MATH_NAME(Laplacian,"laplacian") SF_MATH_NAME(Diffusion,"diffusion")
+        SF_MATH_NAME(DevSymmGrad,"devSymmGrad") SF_MATH_NAME(Div,"div") SF_MATH_NAME(SurfaceFlux,"surfaceFlux") SF_MATH_NAME(Laplacian,"laplacian") SF_MATH_NAME(Diffusion,"diffusion")
         SF_MATH_NAME(Ddt,"ddt") SF_MATH_NAME(Partial,"partial") SF_MATH_NAME(Trace,"trace")
         SF_MATH_NAME(Pow,"pow") SF_MATH_NAME(Sin,"sin") SF_MATH_NAME(Source,"source")
         SF_MATH_NAME(Component,"component") SF_MATH_NAME(Vector,"vector")
@@ -123,7 +123,7 @@ inline const char* name(Op op) {
 inline Op resolveOperator(std::string_view text) {
     if(text=="gradient")return Op::Grad;
     for(auto op:{Op::Add,Op::Subtract,Op::Multiply,Op::Divide,Op::Negate,Op::Dot,Op::Outer,Op::Cross,Op::DoubleDot,
-            Op::Grad,Op::Div,Op::Curl,Op::Laplacian,Op::Diffusion,Op::Ddt,Op::Partial,Op::Trace,Op::Pow,Op::Sin,Op::Source,Op::Component,Op::Vector})
+            Op::Grad,Op::DevSymmGrad,Op::Div,Op::SurfaceFlux,Op::Curl,Op::Laplacian,Op::Diffusion,Op::Ddt,Op::Partial,Op::Trace,Op::Pow,Op::Sin,Op::Source,Op::Component,Op::Vector})
         if(text==name(op))return op;
     throw std::runtime_error("Unknown mathematical operator: "+std::string(text));
 }
@@ -179,6 +179,14 @@ inline Signature inferSignature(Op op,const std::vector<Signature>& a,double exp
         if(op==Op::Div && result.rank==0)throw std::runtime_error("Continuous div requires tensor rank >= 1");
         result.rank+=op==Op::Grad?1:op==Op::Div?-1:0;result.structure=TensorStructure::Full;
         result.dimensions=combine(result.dimensions,length,-1);break;
+    case Op::DevSymmGrad:
+        if(result.rank!=1 || result.extent!=3)throw std::runtime_error("devSymmGrad requires a 3D vector");
+        result.rank=2;result.structure=TensorStructure::Full;
+        result.dimensions=combine(result.dimensions,length,-1);break;
+    case Op::SurfaceFlux:
+        if(result.rank!=1 || result.extent!=3)throw std::runtime_error("surfaceFlux requires a 3D vector: oriented surface integral of F dot n");
+        result.rank=0;result.structure=TensorStructure::Full;
+        result.dimensions=combine(result.dimensions,scaled(length,2));break;
     case Op::Curl:
         if(result.rank!=1 || result.extent!=3)throw std::runtime_error("Curl requires a 3D vector");
         result.dimensions=combine(result.dimensions,length,-1);break;

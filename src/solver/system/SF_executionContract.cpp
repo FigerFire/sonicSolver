@@ -1,5 +1,7 @@
 #include "SF_executionContract.h"
+#include "SF_numericalSystem.h"
 #include "SF_scalarMethod.h"
+#include "core/system/SF_operationIds.h"
 #include <algorithm>
 #include <functional>
 #include <map>
@@ -13,6 +15,7 @@ bool matches(const ExecutionScope& node,const std::string& selector) {
         return matches(node,selector.substr(9,split==std::string::npos?split:split-9))
             || (split!=std::string::npos && matches(node,selector.substr(split+1)));
     }
+    if(selector.rfind("slot:",0)==0)return std::find(node.slots.begin(),node.slots.end(),selector.substr(5))!=node.slots.end();
     if (selector=="kind:Commit") return node.kind==ExecutionKind::Commit;
     if (selector.rfind("equation:",0)==0) {
         if (node.kind==ExecutionKind::EquationCall) return node.step.equation==selector.substr(9);
@@ -94,6 +97,24 @@ void validateMathematicalCoverage(const ExecutableEquationSystem& system,
 }
 
 void composeDefaultPlacement(const ExecutionProgram& program,ExecutionScope& root) {
+    // Explicit placement belongs to default composition, never to authored HOW.
+    std::map<std::string,std::string> destinations;
+    for(const auto& requirement:program.requirements)if(!requirement.scope.empty()) {
+        const auto prior=destinations.emplace(requirement.occurrence,requirement.scope);
+        if(!prior.second && prior.first->second!=requirement.scope)throw std::runtime_error("Conflicting contribution placement scopes: "+requirement.occurrence);
+        const auto source=std::find_if(root.children.begin(),root.children.end(),[&](const auto& node){return node.id==requirement.occurrence || node.step.occurrence==requirement.occurrence;});
+        if(source==root.children.end())continue;
+        const auto locate=[&](const auto& self,ExecutionScope& node,std::vector<ExecutionScope*>& found)->void {
+            if(matches(node,requirement.scope))found.push_back(&node);
+            for(auto& child:node.children)self(self,child,found);
+        };
+        std::vector<ExecutionScope*> scopes;locate(locate,root,scopes);
+        if(scopes.size()!=1 || scopes.front()==&*source)throw std::runtime_error("Missing/ambiguous or self-referential placement scope: "+requirement.scope);
+        std::vector<ExecutionScope*> nested;locate(locate,*source,nested);
+        if(!nested.empty())throw std::runtime_error("Contribution cannot contain its destination scope: "+requirement.occurrence);
+        auto value=std::move(*source);root.children.erase(source);scopes.clear();locate(locate,root,scopes);scopes.front()->children.push_back(std::move(value));
+    }
+
     const auto compose=[&](const auto& self,ExecutionScope& scope,bool top)->void {
         const auto index=[&](const std::string& selector) {
             std::vector<std::size_t> found;
@@ -106,7 +127,7 @@ void composeDefaultPlacement(const ExecutionProgram& program,ExecutionScope& roo
         std::vector<std::pair<std::size_t,std::size_t>> edges;
         std::set<std::size_t> inserted;
         for (const auto& requirement:program.requirements) {
-            if (requirement.scope.empty()? !top:requirement.scope!=scope.id) continue;
+            if (requirement.scope.empty()? !top:!matches(scope,requirement.scope)) continue;
             const auto subject=index(requirement.occurrence);inserted.insert(subject);
             for (const auto& before:requirement.before) edges.push_back({subject,index(before)});
             for (const auto& after:requirement.after) edges.push_back({index(after),subject});
@@ -147,6 +168,7 @@ void validatePlacement(const ExecutionProgram& program,const ExecutionScope& roo
         if (!scope.id.empty()) {
             if (!scopes.emplace(scope.id,&scope).second) throw std::runtime_error("Duplicate HOW scope: "+scope.id);
         }
+        for(const auto& slot:scope.slots)if(!scopes.emplace("slot:"+slot,&scope).second)throw std::runtime_error("Ambiguous HOW placement slot: "+slot);
         for (const auto& child:scope.children) self(self,child);
     };
     collect(collect,root);
@@ -214,36 +236,44 @@ std::string coefficientOwner(const CompiledEquationCall& call) {
 std::vector<const CompiledEquationCall*> coefficientPublishers(
         const StateRegistry* state,const CompiledExecutionProgram& program) {
     std::vector<const CompiledEquationCall*> publishers;
+    std::vector<const StateSymbol*> preparedOutputs;
     for(const auto& call:program.steps) {
         if(call.coefficientProvides.empty()) {
-            if(!call.coefficientStates.empty() || !call.coefficientPrepare.empty() || !call.coefficientPublish.empty() || !call.coefficientInputs.empty())
+            if(!call.coefficientStates.empty() || !call.coefficientPrepare.empty() || !call.coefficientPublish.empty())
                 throw std::runtime_error("Coefficient publication lacks resource: "+call.source.occurrence);
             continue;
         }
         if(call.coefficientProvides.size()!=1 || call.coefficientStates.empty())
             throw std::runtime_error("Coefficient provider requires one explicit resource and its complete state set: "+call.source.occurrence);
-        if(!call.coefficientInputs.empty() && call.coefficientPrepare.empty())
-            throw std::runtime_error("Coefficient inputs require an explicit stage preparation: "+call.source.occurrence);
-        for(const auto& input:call.coefficientInputs) {
+        if(!call.coefficientPrepare.empty())for(const auto& input:call.stateUses) {
             if(state)state->at(input.symbol);
-            if(input.kind!=TargetKind::Physical || input.halo || !input.snapshot.empty() || input.perIteration
+            if((input.kind!=TargetKind::Physical && !(call.coefficientVersion==StateVersion::Current && input.kind==TargetKind::Working)) || input.halo || !input.snapshot.empty() || input.perIteration
                 || (input.version!=StateVersion::Current && input.version!=StateVersion::Stage))
                 throw std::runtime_error("Unsupported coefficient preparation input version: "+call.source.occurrence+" / "+input.symbol);
         }
         std::set<std::string> symbols;
         for(const auto& symbol:call.coefficientStates) {
-            if(state)state->at(symbol);
+            if(state && !call.coefficientPrepare.empty()) {
+                const auto& output=state->at(symbol);
+                if(std::any_of(preparedOutputs.begin(),preparedOutputs.end(),[&](const auto* older) {
+                    return output.storageBinding==older->storageBinding && output.storageKey==older->storageKey
+                        && output.componentOffset<older->componentOffset+older->components
+                        && older->componentOffset<output.componentOffset+output.components;
+                }))throw std::runtime_error("Overlapping coefficient publication: "+call.source.occurrence+" / "+symbol+" on "+output.storageKey);
+                preparedOutputs.push_back(&output);
+            } else if(state)state->at(symbol);
             if(!symbols.insert(symbol).second)throw std::runtime_error("Duplicate coefficient state: "+symbol);
         }
         if(call.stageLocal) {
-            if(!call.source.stageScoped || call.coefficientPrepare!=call.backendOperation || call.coefficientPublish!=call.temporalPublish
-                || call.coefficientInputs.size()!=call.stateUses.size()
-                || !std::equal(call.coefficientInputs.begin(),call.coefficientInputs.end(),call.stateUses.begin(),[](const auto& a,const auto& b){return a.symbol==b.symbol && a.version==StateVersion::Stage && b.version==StateVersion::Stage && a.kind==b.kind && a.halo==b.halo && a.snapshot==b.snapshot;}))
+            if(!call.source.stageScoped || call.coefficientPrepare!=call.backendOperation || call.coefficientPublish!=call.temporalPublish)
                 throw std::runtime_error("Independent closure preparation differs from its authored Stage call: "+call.source.occurrence);
         }
         if(call.coefficientVersion==StateVersion::Stage) {
             if((!call.temporalResidual && !call.stageLocal) || call.coefficientPrepare.empty() || call.coefficientPublish.empty())
                 throw std::runtime_error("Stage coefficient provider lacks preparation/publication treatment: "+call.source.occurrence);
+        } else if(call.coefficientVersion==StateVersion::Current) {
+            if(call.stageLocal || call.temporalResidual || !call.source.stepScoped || call.coefficientPrepare!=call.backendOperation || !call.coefficientPublish.empty())
+                throw std::runtime_error("Current closure requires an explicit nonintegrated Step occurrence: "+call.source.occurrence);
         } else if(call.coefficientVersion==StateVersion::Frozen) {
             if(!call.coefficientPrepare.empty() || !call.coefficientPublish.empty()
                 || std::none_of(call.stateEffects.begin(),call.stateEffects.end(),[&](const auto& e){return e.symbol==call.coefficientProvides.front() && e.publish;}))
@@ -289,14 +319,15 @@ void bindCoefficientContracts(const StateRegistry& state,CompiledExecutionProgra
             const CompiledEquationCall* selected=nullptr;
             for(const auto* p:publishers) {
                 if(std::find(p->coefficientStates.begin(),p->coefficientStates.end(),use.symbol)==p->coefficientStates.end())continue;
-                if(std::find(use.acceptedVersions.begin(),use.acceptedVersions.end(),p->coefficientVersion)==use.acceptedVersions.end())
+                if(std::find(use.acceptedVersions.begin(),use.acceptedVersions.end(),p->coefficientVersion)==use.acceptedVersions.end()
+                    && !(p->coefficientVersion==StateVersion::Current && use.acceptedVersions==std::vector<StateVersion>{StateVersion::Frozen}))
                     throw std::runtime_error("Incompatible coefficient treatment: step="+call.source.occurrence+" equation="+call.source.equation+" target="+call.target.symbol+" input="+use.symbol+" cannot read "+toString(p->coefficientVersion));
                 if(selected)throw std::runtime_error("Ambiguous coefficient publisher: "+use.symbol);
                 selected=p;
             }
             if(!selected)throw std::runtime_error("Missing coefficient publisher: step="+call.source.occurrence+" equation="+call.source.equation+" target="+call.target.symbol+" input="+use.symbol);
             if(selected->stageLocal && selected>=&call)throw std::runtime_error("Missing preceding closure publication: step="+call.source.occurrence+" input="+use.symbol);
-            use.producer=coefficientOwner(*selected);use.resource=selected->coefficientProvides.front();use.version=selected->coefficientVersion;
+            use.producer=coefficientOwner(*selected);use.resource=selected->coefficientProvides.front();use.version=use.acceptedVersions==std::vector<StateVersion>{StateVersion::Frozen}?StateVersion::Frozen:selected->coefficientVersion;
             const auto read=std::find_if(call.stateUses.begin(),call.stateUses.end(),[&](const auto& r){return r.symbol==use.symbol;});
             if(read==call.stateUses.end())call.stateUses.push_back({use.symbol,use.version,false,use.version==StateVersion::Frozen?use.resource:""});
             else if(read->version!=use.version || read->halo)
@@ -325,13 +356,14 @@ void validateCoefficientContracts(const CompiledExecutionProgram& program) {
             const auto p=std::find_if(publishers.begin(),publishers.end(),[&](const auto* item) {
                 return coefficientOwner(*item)==use.producer && item->coefficientProvides.front()==use.resource;
             });
-            if(p==publishers.end() || (*p)->coefficientVersion!=use.version
+            if(p==publishers.end() || ((*p)->coefficientVersion!=use.version && !((*p)->coefficientVersion==StateVersion::Current && use.version==StateVersion::Frozen))
                 || std::find((*p)->coefficientStates.begin(),(*p)->coefficientStates.end(),use.symbol)==(*p)->coefficientStates.end()
                 || std::find(use.acceptedVersions.begin(),use.acceptedVersions.end(),use.version)==use.acceptedVersions.end())
                 throw std::runtime_error("Missing/incompatible frozen coefficient binding: "+call.source.occurrence+" / "+use.symbol);
             const auto count=std::count_if(call.stateUses.begin(),call.stateUses.end(),[&](const auto& read) {
                 return read.symbol==use.symbol && read.version==use.version && !read.halo
-                    && read.snapshot==(use.version==StateVersion::Frozen?use.resource:"");
+                    && read.snapshot==(use.version==StateVersion::Frozen && (*p)->coefficientVersion!=StateVersion::Current?use.resource:"")
+                    && (use.version!=StateVersion::Frozen || (*p)->coefficientVersion!=StateVersion::Current || read.perIteration);
             });
             if(count!=1)throw std::runtime_error("Coefficient stateUses/version/halo does not match publication: "+use.symbol);
         }
@@ -356,7 +388,7 @@ void validateCoefficientContracts(const CompiledExecutionProgram& program) {
                 throw std::runtime_error("Temporal coefficient publisher has no compiled owner: "+participant.identity);
             continue;
         }
-        const auto& inputs=(*p)->coefficientInputs;
+        const auto& inputs=(*p)->stateUses;
         const bool sameInputs=inputs.size()==participant.coefficientInputs.size() && std::equal(inputs.begin(),inputs.end(),participant.coefficientInputs.begin(),[](const auto& a,const auto& b){
             return a.symbol==b.symbol && a.version==b.version && a.halo==b.halo && a.snapshot==b.snapshot && a.perIteration==b.perIteration && a.kind==b.kind;
         });
@@ -366,6 +398,95 @@ void validateCoefficientContracts(const CompiledExecutionProgram& program) {
             throw std::runtime_error("Temporal coefficient publication differs from compiled provider: "+participant.identity);
     }
 }
+void validateScalarExecution(const ExecutableEquationSystem& equations,const CompiledNumericalSystem& numerics,const CompiledSolvePlan& plan) {
+    const auto& steps=plan.compiledProgram.steps;
+    for(const auto& call:steps)if(const auto* scalar=std::any_cast<CompiledScalarEquation>(&call.providerContract)) {
+        if(scalar->sequential || scalar->diffusivityState.empty())continue;
+        const auto& coefficient=equations.state.at(scalar->diffusivityState);
+        if(coefficient.storageBinding!=StorageBinding::TransientWorkspace)continue;
+        const auto writers=std::count_if(steps.begin(),steps.end(),[&](const auto& writer) {
+            return writer.stageLocal && std::any_of(writer.stateEffects.begin(),writer.stateEffects.end(),[&](const auto& effect) {
+                return effect.symbol==coefficient.id && effect.publish && effect.tracksInputs;
+            });
+        });
+        if(writers!=1 || coefficient.workspaceBoundary!=WorkspaceBoundary::NearestInterior)
+            throw std::runtime_error("Missing unique prepared spatial coefficient publisher: step="+call.source.occurrence+
+                " equation="+call.source.equation+" target="+call.target.symbol+" input="+coefficient.id);
+    }
+    std::set<std::string> sequential,fixedCalls;
+    for(const auto& call:plan.compiledProgram.steps)if(const auto* scalar=std::any_cast<CompiledScalarEquation>(&call.providerContract);scalar && scalar->sequential) {
+        for(const auto& other:plan.compiledProgram.steps)if(other.source.occurrence!=call.source.occurrence && other.target.kind==TargetKind::Physical)
+            for(const auto& written:other.writes)if(equations.state.contains(written)) {
+                const auto& a=equations.state.at(scalar->target);const auto& b=equations.state.at(written);
+                if(a.storageKey==b.storageKey && a.storageBinding==b.storageBinding
+                    && a.componentOffset<b.componentOffset+b.components && b.componentOffset<a.componentOffset+a.components)
+                    throw std::runtime_error("Evolution step="+call.source.occurrence+" target="+scalar->target+" overlaps physical writer="+other.source.occurrence+" storage="+a.storageKey+"; no shared fixed-time update relation is implemented");
+            }
+        if(scalar->fixedTime) {
+            if(numerics.time.recipe.id()!=FDM::TimeRecipeId::PartitionedFixedEuler)throw std::runtime_error("Fixed-point method requires partitionedFixedEuler");
+            fixedCalls.insert(call.source.occurrence);
+        }
+        else if(numerics.time.recipe.id()!=FDM::TimeRecipeId::ForwardEuler || plan.compiledProgram.hasTemporalRoot)
+            throw std::runtime_error("Sequential scalar step="+call.source.occurrence+" requires the unique ForwardEuler recipe and a host fixed-time step; no mixed RK treatment");
+        for(const auto& read:scalar->valueReads)if(!scalar->fixedTime && read.version!=StateVersion::Current)
+            throw std::runtime_error("Sequential scalar has no retained snapshot: "+read.symbol);
+        if(!scalar->volumeFlux.empty()) {
+            const auto& flux=equations.state.at(scalar->volumeFlux);
+            if(std::none_of(plan.compiledProgram.steps.begin(),plan.compiledProgram.steps.end(),[&](const auto& producer) {
+                const auto publishes=[&](const auto& self,const SolvePlanNode& node)->bool {
+                    if(producer.faceFlux && node.operation==producer.faceFlux->publication)return true;
+                    return std::any_of(node.children.begin(),node.children.end(),[&](const auto& child){return self(self,child);});
+                };
+                return producer.faceFlux && producer.faceFlux->corrected
+                    && producer.faceFlux->symbol==flux.id && producer.faceFlux->storage==flux.storageKey
+                    && producer.faceFlux->velocity==scalar->fluxVelocity
+                    && producer.faceFlux->version==TargetKind::Physical
+                    && !producer.faceFlux->publication.empty()
+                    && (producer.backendOperation==producer.faceFlux->publication || publishes(publishes,producer.fragment));
+            }))throw std::runtime_error("Step="+call.source.occurrence+" equation="+call.source.equation+" target="+call.target.symbol
+                +": face input="+flux.id+" has no corrected volume-flux publisher for velocity="+scalar->fluxVelocity);
+
+        }
+        if(!scalar->fixedTime)sequential.insert(call.source.occurrence);
+    }
+    if(sequential.empty() && fixedCalls.empty())return;
+    std::vector<std::string> order;
+    const auto leaves=[&](const auto& self,const SolvePlanNode& node)->void {
+        if(!node.operation.empty())order.push_back(node.operation);
+        for(const auto& child:node.children)self(self,child);
+    };leaves(leaves,plan.root);
+    std::set<std::string> intervalBegins,intervalPublications;
+    for(const auto& call:plan.compiledProgram.steps)for(const auto& input:call.stepInputs)if(input.beginsPhysicalInterval) {
+        intervalBegins.insert(input.operation);
+        if(!call.physicalPublication.operation.empty())intervalPublications.insert(call.physicalPublication.operation);
+    }
+    if(intervalBegins.size()!=1 || intervalPublications.size()!=1)
+        throw std::runtime_error("Sequential evolution requires one actual interval preparation and physical acceptance owner");
+    const auto begin=std::find(order.begin(),order.end(),*intervalBegins.begin());
+    const auto publication=std::find(order.begin(),order.end(),*intervalPublications.begin());
+    const auto commit=std::find(order.begin(),order.end(),OpIds::TimeCommit);
+    if(begin==order.end() || publication==order.end() || commit==order.end() || std::count(order.begin(),order.end(),OpIds::TimeCommit)!=1)
+        throw std::runtime_error("Sequential evolution requires one prepared physical interval and one clock Commit");
+    for(const auto& occurrence:sequential) {
+        const auto first=std::find(order.begin(),order.end(),instanceOperation("scalar.step.snapshot",occurrence));
+        const auto last=std::find(order.begin(),order.end(),instanceOperation("scalar.step.accept",occurrence));
+        if(first==order.end() || last==order.end() || !(begin<first && first<last && last<publication && publication<commit))
+            throw std::runtime_error("Sequential evolution lies outside the prepared physical interval: "+occurrence);
+    }
+    for(const auto& occurrence:fixedCalls) {
+        const auto update=std::find(order.begin(),order.end(),instanceOperation("scalar.iterate",occurrence));
+        if(update==order.end() || !(begin<update && update<publication && publication<commit))
+            throw std::runtime_error("Fixed-time evolution lies outside its snapshot/accept interval: "+occurrence);
+    }
+    const auto walk=[&](const auto& self,const ExecutionScope& scope,bool repeated)->void {
+        repeated=repeated || ((scope.kind==ExecutionKind::Loop || scope.kind==ExecutionKind::Sequence)
+            && (scope.repetitions!=1 || !scope.terminationSignal.empty() || !scope.residuals.empty()));
+        if(sequential.count(scope.step.occurrence) && repeated)
+            throw std::runtime_error("Sequential scalar cannot advance dt repeatedly in scope "+scope.id);
+        for(const auto& child:scope.children)self(self,child,repeated);
+    };walk(walk,plan.compiledProgram.root,false);
+}
+
 void validateDataFlow(const StateRegistry& state,const CompiledExecutionProgram& program) {
     validateCoefficientContracts(state,program);
     // Validate dependency graphs only for derived views, not coupled equation unknowns.
@@ -393,11 +514,11 @@ void validateDataFlow(const StateRegistry& state,const CompiledExecutionProgram&
     };
     std::map<std::string,Revision> revisions;
     std::map<std::string,std::map<std::string,int>> published;
-    std::map<std::string,std::vector<std::string>> relationInputs;
-    for(const auto& call:program.steps)if(const auto* affine=std::any_cast<CompiledAffineEquation>(&call.providerContract))
-        if(state.at(affine->target).storageBinding==StorageBinding::TransientWorkspace) {
-            auto& inputs=relationInputs[affine->target];
-            for(const auto& use:affine->valueReads)if(use.version==StateVersion::Current)inputs.push_back(use.symbol);
+    std::map<std::string,std::vector<StateUse>> relationInputs;
+    for(const auto& call:program.steps)for(const auto& effect:call.stateEffects)
+        if(effect.tracksInputs && state.at(effect.symbol).storageBinding==StorageBinding::TransientWorkspace) {
+            auto& inputs=relationInputs[effect.symbol];
+            for(const auto& use:call.stateUses)if(use.version==StateVersion::Current)inputs.push_back(use);
         }
     std::map<std::string,std::string> invalidLazy;
     std::set<std::string> snapshots;
@@ -426,8 +547,10 @@ void validateDataFlow(const StateRegistry& state,const CompiledExecutionProgram&
         if(relationInputs.count(id)) {
             if(!revisions[id].value)throw std::runtime_error("Unpublished relation STATE: "+id+" consumer="+consumer);
             for(const auto& input:relationInputs[id]) {
-                self(self,input,consumer,false);
-                if(published[id][input]!=version(version,input))throw std::runtime_error("Stale relation STATE: "+id+" input="+input+" consumer="+consumer+"; HOW must recompute");
+                const auto key=input.kind==TargetKind::Physical?input.symbol:stateViewPublication(input.symbol,input.kind==TargetKind::Working?StateViewKind::Working:StateViewKind::Correction);
+                if(input.kind==TargetKind::Physical)self(self,input.symbol,consumer,false);
+                else if(!snapshots.count(key))throw std::runtime_error("Unpublished relation dependency: "+key+" consumer="+consumer);
+                if(published[id][key]!=version(version,key))throw std::runtime_error("Stale relation STATE: "+id+" input="+key+" consumer="+consumer+" writer="+revisions[key].writer+"; HOW must recompute");
             }
         }
         if (symbol.evaluation==StateEvaluation::Lazy && invalidLazy.count(id))
@@ -461,8 +584,11 @@ void validateDataFlow(const StateRegistry& state,const CompiledExecutionProgram&
         }
         if (effect.publish) for (const auto& dependency:state.at(effect.symbol).dependencies)
             published[effect.symbol][dependency]=version(version,dependency);
-        if(effect.publish && relationInputs.count(effect.symbol))for(const auto& input:relationInputs.at(effect.symbol))
-            published[effect.symbol][input]=version(version,input);
+        if(effect.publish) {snapshots.insert(effect.symbol);invalidated.erase(effect.symbol);}
+        if(effect.publish && relationInputs.count(effect.symbol))for(const auto& input:relationInputs.at(effect.symbol)) {
+            const auto key=input.kind==TargetKind::Physical?input.symbol:stateViewPublication(input.symbol,input.kind==TargetKind::Working?StateViewKind::Working:StateViewKind::Correction);
+            published[effect.symbol][key]=version(version,key);
+        }
     };
     const auto execute=[&](const auto& self,const ExecutionScope& node,bool stage)->void {
         if (node.kind==ExecutionKind::Commit) {
@@ -494,7 +620,7 @@ void validateDataFlow(const StateRegistry& state,const CompiledExecutionProgram&
                 for (const auto& effect:member.stateEffects) {
                     const auto previous=std::find_if(effects.begin(),effects.end(),[&](const auto& item){return item.symbol==effect.symbol;});
                     if (previous==effects.end()) effects.push_back(effect);
-                    else if (previous->publish!=effect.publish || previous->halo!=effect.halo || previous->invalidatesLazy!=effect.invalidatesLazy)
+                    else if (previous->publish!=effect.publish || previous->halo!=effect.halo || previous->invalidatesLazy!=effect.invalidatesLazy || previous->tracksInputs!=effect.tracksInputs)
                         throw std::runtime_error("Conflicting fused STATE effects: "+effect.symbol);
                 }
             }
@@ -507,6 +633,12 @@ void validateDataFlow(const StateRegistry& state,const CompiledExecutionProgram&
                     continue;
                 }
                 if (use.version==StateVersion::Frozen || use.version==StateVersion::OldTime || use.version==StateVersion::Lagged) {
+                    if(use.version==StateVersion::OldTime && use.snapshot.empty() && !use.perIteration && !use.halo
+                        && std::any_of(program.steps.begin(),program.steps.end(),[&](const auto& producer){
+                            return !producer.temporalResidual && producer.target.symbol==use.symbol
+                                && std::any_of(producer.stepInputs.begin(),producer.stepInputs.end(),[](const auto& input){return input.beginsPhysicalInterval;})
+                                && std::any_of(producer.viewOutputs.begin(),producer.viewOutputs.end(),[&](const auto& view){return view.symbol==use.symbol && view.kind==StateViewKind::OldTime && view.storage==producer.oldTimeWorkspace;});
+                        }))continue;
                     if(use.version==StateVersion::OldTime && stage && use.snapshot.empty() && !use.perIteration && !use.halo
                         && std::any_of(program.steps.begin(),program.steps.end(),[&](const auto& producer){return producer.temporalResidual && producer.source.target.symbol==use.symbol && !producer.oldTimeWorkspace.empty();}))continue;
                     const auto key=use.snapshot.empty()?use.symbol:use.snapshot;
@@ -570,7 +702,7 @@ void validateDataFlow(const StateRegistry& state,const CompiledExecutionProgram&
                 for (const auto& workspace:member.workspaceProvides) {
                     snapshots.insert(workspace);invalidated.erase(workspace);
                     if (std::none_of(effects.begin(),effects.end(),[&](const auto& effect){return effect.symbol==workspace;}))
-                        revisions[workspace].value=++epoch;
+                        {revisions[workspace].value=++epoch;revisions[workspace].writer=node.step.occurrence;}
                 }
                 for (const auto& workspace:member.stepWorkspaces)
                     if (snapshots.count(workspace)) persistent.insert(workspace);

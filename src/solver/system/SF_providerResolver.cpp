@@ -9,7 +9,6 @@
 #include "SF_executionContract.h"
 #include "SF_providerCatalog.h"
 #include "SF_solvePlan.h"
-#include "SF_scalarMethod.h"
 #include "SF_eulerianAssembly.h"
 #include "SF_pressureCoupling.h"
 
@@ -31,67 +30,19 @@ std::string validateNativeProvider(const std::string& selected,
         const ExecutableEquationSystem& equations,const CompiledNumericalSystem& numerics,
         const CompiledSolvePlan& plan,const ExecutionCapabilitySignature& signature,
         bool additionalContributions) {
-    if (selected==ScalarOps::Provider || selected==ScalarOps::TransportProvider || selected==ScalarOps::SharedFluxProvider || selected==ScalarOps::CapacityProvider) {
-        const bool temporal=!plan.compiledProgram.temporalParticipants.empty();
-        if(!temporal) {
-            // Static calls own only their declared leaves, not the surrounding
-            // pressure program's clock, correction operations or loop topology.
-            std::vector<std::string> owned;
-            for(const auto& call:plan.compiledProgram.steps)if(call.backendProvider==selected)
-                for(const auto& op:call.operations)owned.push_back(op.operation);
-            std::set<std::string> found;
-            bool clock=false;
-            const auto local=[&](const auto& self,const SolvePlanNode& node)->bool {
-                clock|=node.operation==OpIds::TimeCommit;
-                if(node.provider==selected && !node.operation.empty()) {
-                    if(std::find(owned.begin(),owned.end(),node.operation)==owned.end())return false;
-                    found.insert(node.operation);
-                }
-                for(const auto& child:node.children)if(!self(self,child))return false;
-                return true;
-            };
-            if(!local(local,plan.root) || std::any_of(owned.begin(),owned.end(),[&](const auto& op){return !found.count(op);}))
-                return "Local scalar method has a missing or undeclared numerical operation";
-            if(clock && !numerics.pressureMomentum)
-                return "Static scalar calls have no implemented surrounding physical publication/clock contract";
-            return {};
-        }
-        const auto reason=Lowering::validateTemporalPlan(plan,numerics.time.recipe.stageCount());
-        if(!reason.empty())return reason;
-        if (!plan.compiledProgram.hasTemporalRoot)
-            return "scalar provider requires a compiled synchronous temporal group";
-        int commits=0;
-        std::vector<std::string> required{TemporalOps::Dt,TemporalOps::Open,TemporalOps::Ready,
-            TemporalOps::RhsReady,TemporalOps::Close,TemporalOps::PublishReady,OpIds::TimeCommit};
-        // A common plan can contain ordinary calls from other selected providers.
-        // Validate their frozen operations too; provider availability is checked separately.
-        for(const auto& call:plan.compiledProgram.steps)if(!call.temporalResidual)for(const auto& operation:call.operations)
-            if(std::find(required.begin(),required.end(),operation.operation)==required.end())required.push_back(operation.operation);
-        for (const auto& p:plan.compiledProgram.temporalParticipants) {
-            if(!p.coefficientPrepare.empty())required.push_back(p.coefficientPrepare);
-            if(!p.coefficientPublish.empty())required.push_back(p.coefficientPublish);
-            for (const auto& op:p.preparation) required.push_back(op);
-            for (const auto& op:{p.snapshot,p.prepareStage,p.rhs,p.advance,p.publish}) required.push_back(op);
-        }
-        std::vector<std::string> found;
-        const auto check=[&](const auto& self,const SolvePlanNode& node)->bool {
-            if (node.operation==OpIds::TimeCommit) ++commits;
-            if (!node.operation.empty()) {
-                if (std::find(required.begin(),required.end(),node.operation)==required.end()
-                    || std::find(found.begin(),found.end(),node.operation)!=found.end()) return false;
-                found.push_back(node.operation);
+    if (selected==ScalarOps::Provider) {
+        // Only the unmigrated steady block still reaches this legacy branch.
+        std::set<std::string> owned,found;
+        for(const auto& call:plan.compiledProgram.steps)if(call.legacyProvider && call.backendProvider==selected)
+            for(const auto& op:call.operations)owned.insert(op.operation);
+        const auto local=[&](const auto& self,const SolvePlanNode& node)->bool {
+            if(node.provider==selected && !node.operation.empty()) {
+                if(!owned.count(node.operation))return false;found.insert(node.operation);
             }
-            for (const auto& child:node.children) if (!self(self,child)) return false;
+            for(const auto& child:node.children)if(!self(self,child))return false;
             return true;
         };
-        if (!check(check,plan.root) || commits!=1 || found.size()!=required.size())
-            return "scalar plan contains flow-only/wrong-target operations or an invalid physical commit";
-        if (!std::isfinite(numerics.dt.maxDeltaT) || numerics.dt.maxDeltaT<=0)
-            return "scalar fixed dt must be finite and positive";
-    } else if (selected=="equation.thermal") {
-        if(numerics.time.recipe.id()!=FDM::TimeRecipeId::ForwardEuler || plan.compiledProgram.temporalParticipants.empty()
-            || signature.pressureConstraint)
-            return "Unsupported thermal execution: Forward Euler synchronous scalar/flow group required; implicit/pressure thermal treatment is not implemented";
+        if(!local(local,plan.root) || found!=owned)return "Steady block has a missing or undeclared numerical operation";
     } else if (selected=="flow.eulerian-pressure" || selected=="flow.eulerian-turbulence") {
         if (!hasConstraint(equations,"C_SHARED_PRESSURE") || !hasConstraint(equations,"C_VOLUME_FRACTION")
             || numerics.phaseTransport.convection!=FDM::PhaseConvectionScheme::Upwind
@@ -156,7 +107,7 @@ std::string validateSolutionProviderContract(const StateRegistry& state,
     if (!composition.declared) return {};
     const auto& eos=composition.thermoDynamics.equationOfState;
     if (state.isSolution("U") && eos!="rhoConst")
-        return "Unsupported provider contract: solution U requires variable-density primitive momentum/continuity and pressure-response operators; current PressureMomentum provider requires rhoConst. STATE and HOW were not rewritten.";
+        return "Unsupported provider contract: solution U requires variable-density primitive momentum/continuity and pressure-response operators; current constant-density correction resources require rhoConst. STATE and HOW were not rewritten.";
     if (state.isSolution("rho") && eos=="rhoConst")
         return "Unsupported provider contract: selected writable rho with rhoConst requires a closure-consistent density evolution and conservative energy provider. STATE and HOW were not rewritten.";
     if (composition.thermoDynamics.thermo=="janaf")
@@ -164,10 +115,10 @@ std::string validateSolutionProviderContract(const StateRegistry& state,
     if (composition.thermoDynamics.transport=="sutherland")
         return "Unsupported provider contract: native single-fluid coefficients require a Sutherland transport provider; the current provider implements const transport.";
     if (state.isSolution("U") && composition.thermoDynamics.transport.empty())
-        return "Unsupported provider contract: PressureMomentum requires a registered transport closure.";
+        return "Unsupported provider contract: constant-density equation preset requires a registered transport closure.";
     if (state.isSolution("U")
         && std::find(composition.equations.begin(),composition.equations.end(),"Energy")!=composition.equations.end())
-        return "Unsupported provider contract: PressureMomentum currently has no primitive Energy/Enthalpy equation executor.";
+        return "Unsupported provider contract: selected constant-density resource binding has no primitive Energy/Enthalpy equation executor.";
     return {};
 }
 
@@ -197,7 +148,7 @@ ExecutionCapabilitySignature compileExecutionCapabilities(
         });
     if (plan && !plan->compiledProgram.steps.empty()) {
         for (const auto& call:plan->compiledProgram.steps) {
-            result.momentumPredictor |= call.equationMethod=="PressureMomentum"
+            result.momentumPredictor |= call.equationMethod=="CellExplicit"
                 || call.equationMethod=="ConservativePressureMomentum";
             result.pressureCorrection |= call.equationMethod=="PressureCorrection"
                 || call.equationMethod=="ConservativePressureCorrection";

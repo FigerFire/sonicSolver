@@ -8,6 +8,8 @@ namespace SF::System::Declarations {
 FormulaExpr formula(const Model::Parameters&,const std::string&,const FormulaSymbols&,int depth=0);
 /// @brief 普通 native HOW 解码；内部算法直接构造 typed IR，不经过此入口。
 ExecutionProgram execution(const Model::Parameters&,int formatVersion,Provenance);
+/// @brief 独立残差配置；复用原ResidualDefinition并由过程编译绑定实际occurrence。
+std::vector<ResidualDefinition> residuals(const Model::Parameters&,const std::string&);
 /// @brief 解码方法选择；默认/显式优先级由调用方按来源冻结。
 std::vector<NumericalBinding> numerics(const Model::Parameters&,Provenance);
 }

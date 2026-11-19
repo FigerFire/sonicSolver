@@ -9,12 +9,17 @@ inline constexpr const char* PressurePrepare = "pressure.prepare";
 inline constexpr const char* PressureStepBegin = "pressure.step.begin";
 inline constexpr const char* PressureIterationBegin = "pressure.iteration.begin";
 inline constexpr const char* MomentumAssemble = "momentum.assemble";
+inline constexpr const char* CellPrepare = "equation.cell.prepare";
+inline constexpr const char* CellAccept = "equation.cell.accept";
+inline constexpr const char* CellAssemble = "equation.cell.assemble";
+inline constexpr const char* CellAdvance = "equation.cell.advance";
 inline constexpr const char* MomentumSolve = "momentum.solve";
 inline constexpr const char* PressureBoundaryPrepare = "pressure.boundary.prepare";
 inline constexpr const char* PressureAssemble = "pressure.assemble";
 inline constexpr const char* PressureSolve = "pressure.solve";
 inline constexpr const char* PressureUpdatePrepare = "pressure.update.prepare";
 inline constexpr const char* VelocityCorrect = "velocity.correct";
+inline constexpr const char* FaceFluxPredict = "faceFlux.predict";
 inline constexpr const char* FluxCorrect = "flux.correct";
 inline constexpr const char* PressureCorrectionCommit = "pressure.correction.commit";
 inline constexpr const char* PressureRelaxationApply = "pressure.relaxation.apply";
@@ -72,3 +77,17 @@ inline constexpr const char* EeOuterValidate = "ee.outer.validate";
 inline constexpr const char* EeStepCommit = "ee.step.commit";
 
 } // namespace SF::System::OpIds
+
+namespace SF::System {
+/// @brief 普通标量调用和相关代数操作沿用的冻结身份。
+namespace ScalarOps {
+inline constexpr const char* Dt="scalar.dt.fixed";
+inline constexpr const char* Begin="scalar.snapshot";
+inline constexpr const char* Stage="scalar.stage";
+inline constexpr const char* Commit="scalar.publish";
+inline constexpr const char* Provider="equation.scalar-central2";
+inline constexpr const char* TransportProvider="equation.scalar-transport";
+inline constexpr const char* CapacityProvider="equation.capacity-transport";
+inline constexpr const char* SharedFluxProvider="equation.scalar-shared-flux";
+}
+} // namespace SF::System

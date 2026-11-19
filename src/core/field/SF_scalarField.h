@@ -86,4 +86,16 @@ private:
     std::vector<double> values_;
 };
 
+/// @brief 数值workspace的借用视图，复用集合边界与bounds；无分配、无物理owner。
+struct ScalarArrayView {
+    const Field& geometry;std::vector<double>& data;const std::string& label;
+    bool isCompatibleWith(const Field& field)const{return &field==&geometry && data.size()==(size_t)field.TotalSize();}
+    const std::string& name()const{return label;}
+    int getIdx(int i,int j,int k)const{return geometry.getIdx(i,j,k);}
+    double& operator()(int i,int j,int k){return data[(size_t)getIdx(i,j,k)];}
+    double operator()(int i,int j,int k)const{return data[(size_t)getIdx(i,j,k)];}
+    std::vector<double>& values(){return data;}
+    const std::vector<double>& values()const{return data;}
+};
+
 } // namespace SF

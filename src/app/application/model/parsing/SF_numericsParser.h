@@ -116,12 +116,13 @@ inline TimeRecipe resolveTimeRecipe(const std::string& value) {
     std::string t = normalizeToken(value);
     if (t.empty() || t == "classicalrk4")
         return builtInTimeRecipe(TimeRecipeId::ClassicalRK4);
+    if (t == "partitionedfixedeuler") return FDM::builtInTimeRecipe(FDM::TimeRecipeId::PartitionedFixedEuler);
     if (t == "forwardeuler")
         return builtInTimeRecipe(TimeRecipeId::ForwardEuler);
     if (t == "ssprk3") return builtInTimeRecipe(TimeRecipeId::SSPRK3);
     throw std::invalid_argument(
         "Unsupported time recipe '" + value
-        + "'. Supported recipes: forwardEuler, SSPRK3, classicalRK4.");
+        + "'. Supported recipes: forwardEuler, SSPRK3, classicalRK4, partitionedFixedEuler.");
 }
 /// @brief Parse a viscous central-difference scheme name.
 /// @param value User-facing string such as `"CENTRAL2"` or `"CENTRAL4"`.

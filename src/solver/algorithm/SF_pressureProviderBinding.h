@@ -25,6 +25,6 @@ struct LegacyPressureInputs {
 
 PressureProviderBinding bindPressureProvider(
     const System::Program& program,
-    const LegacyPressureInputs& legacy);
+    const LegacyPressureInputs& legacy,FaceFluxExecution* faces);
 
 } // namespace SF::SolverAlgorithm

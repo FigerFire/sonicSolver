@@ -2,7 +2,7 @@
 /// @brief Structured constant-density pressure operations.
 
 #include "solver/algorithm/pressure/SF_pressureOperators.h"
-#include "solver/algorithm/pressure/SF_fixedTimeMath.h"
+#include "solver/algorithm/SF_iteration.h"
 
 #include "methods/numerics/structured/SF_canonicalFace.h"
 #include "methods/numerics/structured/SF_vectorCalculus.h"
@@ -44,163 +44,23 @@ int inwardCell(const Field& field, int cell, const std::array<bool,6>& sides) {
 
 PressureOperators::PressureOperators(
         PressureOperatorConfig config,
-        const System::CompiledNumericalSystem& numerics)
-    : config_(std::move(config)), numerics_(numerics) {}
+        SolverAlgorithm::FaceFluxExecution& faces)
+    : config_(std::move(config)), faces_(faces),predictor_(faces.predictor()),rAU_(predictor_.response()),
+      hByA_(predictor_.candidate()),physicalSides_(predictor_.sides()),boundaryCell_(predictor_.boundary()),
+      pressureDirichlet_(faces.pressureDirichlet()),iterationVelocity_(predictor_.previousIterate()),predictedFlux_(faces.predicted()),
+      faceResponse_(faces.response()),correctedFlux_(faces.corrected()) {}
 
-void PressureOperators::bindFieldSources() {
-    for(auto& term:momentumTerms_)if(term.fieldSource.bind) {
-        if(term.primitiveSource)throw std::runtime_error("Duplicate pressure source binding: "+term.occurrence);
-        std::vector<System::FieldSource::Reader> reads;
-        for(const auto& use:term.fieldSource.inputs)reads.push_back(stateViews_->reader(use,numerics_.time.recipe.stageCount()));
-        term.primitiveSource=[value=term.fieldSource.bind(std::move(reads))](const Field& field,int i,int j,int k,const Vector3&) {
-            const int cell=field.getIdx(i,j,k);return Vector3(value(cell,0),value(cell,1),value(cell,2));
-        };
-    }
-}
-
-void PressureOperators::bind(System::StateRealization& state,
-                             FDM::IExecutionRuntime& runtime) {
+void PressureOperators::bind(System::StateRealization& state,FDM::IExecutionRuntime& runtime) {
     runtime_=&runtime;
-    stateViews_=&state;
-    const auto& u=state.at("U");
-    const auto& p=state.at("p");
+    velocity_=physicalVelocity_=&predictor_.physical();pressure_=&faces_.pressure();geometry_=velocity_->geometry;
     const auto& rho=state.at("rho");
-    if (!u.descriptor || !p.descriptor || !rho.descriptor
-        || u.fields.size()!=1 || p.fields.size()!=1
-        || !u.fields[0] || !p.fields[0]
-        || !rho.descriptor->constantValue
-        || !std::isfinite(*rho.descriptor->constantValue)
-        || *rho.descriptor->constantValue<=0.0
-        || u.descriptor->components!=3 || p.descriptor->components!=1) {
-        throw std::runtime_error(
-            "Pressure operations require one realized U[3], p[1], "
-            "and positive derived rhoConst.");
-    }
-    velocity_=u.fields[0];
-    physicalVelocity_=velocity_;
-    pressure_=p.fields[0];
-    geometry_=velocity_->geometry;
-    density_=*rho.descriptor->constantValue;
-    if (!geometry_ || pressure_->geometry!=geometry_)
-        throw std::runtime_error("U/p pressure realization geometry differs.");
-    if (numerics_.pressureFaceCoupling
-        !=System::PressureFaceCoupling::RhieChow)
-        throw std::runtime_error(
-            "Constant-density pressure requires compiled RhieChow face coupling.");
-    if (velocity_->blockId!=pressure_->blockId)
-        throw std::runtime_error("U/p pressure realization block differs.");
-    if(!numerics_.pressureMomentum)
-        throw std::runtime_error("Pressure operations require the compiled momentum term contract.");
-    momentumTerms_.clear();
-    for(const auto index:numerics_.pressureMomentum->terms)
-        momentumTerms_.push_back(numerics_.operators.at(index));
-    const int total=geometry_->TotalSize();
-    cells_.clear();
-    rowOfCell_.assign((size_t)total,-1);
-    boundaryCell_.assign((size_t)total,0);
-    pressureDirichlet_.assign((size_t)total,0);
-    for (const auto& bc:config_.velocityBoundary) {
-        if (bc.type==EMPTY) continue;
-        if (bc.type!=FIXED_VALUE && bc.type!=ZERO_GRADIENT)
-            throw std::runtime_error(
-                "Constant-density U boundary supports fixedValue/zeroGradient only.");
-        const auto& points=geometry_->getSet(bc.name);
-        for (int cell:points) {
-            if (cell<0 || cell>=total) {
-                throw std::runtime_error("Velocity boundary cell is outside Field.");
-            }
-            boundaryCell_[(size_t)cell]=1;
-        }
-    }
-    // A named boundary may group several physical sides (e.g. cavity walls).
-    // A processor plane has interior fluid points and must never choose a BC donor.
-    for (int axis=0;axis<3;++axis) {
-        if (!Math::isDirectionActiveIndex(axis)) continue;
-        for (int side=0;side<2;++side) {
-            const int ng=geometry_->NG();
-            const int extent=axis==0?geometry_->NX():axis==1?geometry_->NY():geometry_->NZ();
-            const int plane=ng+(side?extent-1:0);
-            bool physical=true;
-            for (int k=ng;k<ng+geometry_->NZ();++k)
-                for (int j=ng;j<ng+geometry_->NY();++j)
-                    for (int i=ng;i<ng+geometry_->NX();++i)
-                        if ((axis==0?i:axis==1?j:k)==plane)
-                            physical=physical && boundaryCell_[(size_t)geometry_->getIdx(i,j,k)];
-            physicalSides_[(size_t)(2*axis+side)]=physical;
-        }
-    }
-    for (const auto& bc:config_.pressureBoundary) {
-        if (bc.type!=EMPTY && bc.type!=FIXED_VALUE
-            && bc.type!=ZERO_GRADIENT)
-            throw std::runtime_error(
-                "Constant-density p boundary supports fixedValue/zeroGradient only.");
-        if (bc.type!=FIXED_VALUE) continue;
-        for (int cell:geometry_->getSet(bc.name)) {
-            if (cell<0 || cell>=total)
-                throw std::runtime_error("Pressure boundary cell is outside Field.");
-            pressureDirichlet_[(size_t)cell]=1;
-        }
-    }
-    const int ng=geometry_->NG();
-    for (int k=ng;k<ng+geometry_->NZ();++k)
-        for (int j=ng;j<ng+geometry_->NY();++j)
-            for (int i=ng;i<ng+geometry_->NX();++i) {
-                const int cell=geometry_->getIdx(i,j,k);
-                if (boundaryCell_[(size_t)cell]
-                    || geometry_->CellFlag(i,j,k)!=FLUID_CELL) continue;
-                rowOfCell_[(size_t)cell]=static_cast<int>(cells_.size());
-                cells_.push_back(cell);
-            }
-    if (cells_.empty())
-        throw std::runtime_error("Pressure equation has no interior U/p cells.");
-    for (int cell:cells_) {
-        for (int axis=0;axis<3;++axis) {
-            if (!Math::isDirectionActiveIndex(axis)) continue;
-            for (int sign:{-1,1}) {
-                const int lower=sign>0?cell:adjacent(cell,axis,-1);
-                const auto area=faceArea(axis,lower);
-                int i=0,j=0,k=0, ni=0,nj=0,nk=0;
-                geometry_->getIJK(lower,i,j,k);
-                geometry_->getIJK(adjacent(lower,axis,1),ni,nj,nk);
-                const std::array<double,3> delta{
-                    geometry_->X(ni,nj,nk)-geometry_->X(i,j,k),
-                    geometry_->Y(ni,nj,nk)-geometry_->Y(i,j,k),
-                    geometry_->Z(ni,nj,nk)-geometry_->Z(i,j,k)};
-                double dot=0.0,area2=0.0,delta2=0.0;
-                for (int c=0;c<3;++c) {
-                    dot+=area[(size_t)c]*delta[(size_t)c];
-                    area2+=area[(size_t)c]*area[(size_t)c];
-                    delta2+=delta[(size_t)c]*delta[(size_t)c];
-                }
-                if (!(area2>0.0) || !(delta2>0.0)
-                    || std::abs(dot)/std::sqrt(area2*delta2)<1.0-1.0e-8) {
-                    throw std::runtime_error(
-                        "Constant-density pressure response currently requires "
-                        "an orthogonal structured grid.");
-                }
-            }
-        }
-    }
-    hByA_.assign((size_t)total*3,0.0);
-    rAU_.assign((size_t)total,0.0);
-    correction_.assign((size_t)total,0.0);
-    predictedFlux_.assign((size_t)total*3,0.0);
-    faceResponse_.assign((size_t)total*3,0.0);
-    correctedFlux_.assign((size_t)total*3,0.0);
-    workingVelocity_.resize((size_t)total*3);
-    workingVelocityView_=State::workspaceView("pressureMomentumWorkspace",physicalVelocity_->blockId,
-        *geometry_,workingVelocity_,3,physicalVelocity_->haloDepth,physicalVelocity_->stages);
-    correctionView_=State::workspaceView("pressureCorrection",pressure_->blockId,
-        *geometry_,correction_,1,pressure_->haloDepth,pressure_->stages);
-    fluxView_.name="pressureFaceFlux";fluxView_.blockId=physicalVelocity_->blockId;
-    fluxView_.geometry=geometry_;fluxView_.location=State::FieldLocation::Face;
-    fluxView_.exchange=State::ExchangeKind::CanonicalFaceFlux;fluxView_.components=1;
-    fluxView_.read=[this](int face,int) { return correctedFlux_.at((size_t)face); };
-    fluxView_.write=[this](int face,int,double value) { correctedFlux_.at((size_t)face)=value; };
-    if (stateViews_->requestsView("U",System::StateViewKind::Working))
-        stateViews_->bindView("U",System::StateViewKind::Working,workingVelocityView_);
-    stateViews_->bindView("deltaP",System::StateViewKind::Correction,correctionView_);
-    stateViews_->bindView("phi",System::StateViewKind::Physical,fluxView_);
+    if(!rho.descriptor || !rho.descriptor->constantValue || !std::isfinite(*rho.descriptor->constantValue)
+        || *rho.descriptor->constantValue<=0)throw std::runtime_error("Pressure correction needs positive declared rhoConst");
+    rowOfCell_.assign(geometry_->TotalSize(),-1);cells_=predictor_.candidates();
+    for(std::size_t n=0;n<cells_.size();++n)rowOfCell_[cells_[n]]=static_cast<int>(n);
+    correction_.assign(geometry_->TotalSize(),0);
+    correctionView_=State::workspaceView("pressureCorrection",pressure_->blockId,*geometry_,correction_,1,pressure_->haloDepth,pressure_->stages);
+    state.bindView("deltaP",System::StateViewKind::Correction,correctionView_);
     initializeNumbering();
 }
 
@@ -325,70 +185,10 @@ std::array<double,3> PressureOperators::faceArea(
     return Numerics::CanonicalFace::geometry(*geometry_,axis,i,j,k).cofactor;
 }
 
-double PressureOperators::spacing(int axis,int lowerCell) const {
-    const int upperCell=adjacent(lowerCell,axis,1);
-    int i=0,j=0,k=0, ni=0,nj=0,nk=0;
-    geometry_->getIJK(lowerCell,i,j,k);
-    geometry_->getIJK(upperCell,ni,nj,nk);
-    const double dx=geometry_->X(ni,nj,nk)-geometry_->X(i,j,k);
-    const double dy=geometry_->Y(ni,nj,nk)-geometry_->Y(i,j,k);
-    const double dz=geometry_->Z(ni,nj,nk)-geometry_->Z(i,j,k);
-    const double h=std::sqrt(dx*dx+dy*dy+dz*dz);
-    if (!std::isfinite(h) || h<=0.0)
-        throw std::runtime_error("Pressure operator found degenerate face spacing.");
-    return h;
-}
-
-void PressureOperators::extendHalos(
-        State::DistributedFieldView& view,int offset,int components) {
-    const int ng=geometry_->NG();
-    for (int k=0;k<geometry_->MZ();++k)
-        for (int j=0;j<geometry_->MY();++j)
-            for (int i=0;i<geometry_->MX();++i) {
-                const int ci=std::clamp(i,ng,ng+geometry_->NX()-1);
-                const int cj=std::clamp(j,ng,ng+geometry_->NY()-1);
-                const int ck=std::clamp(k,ng,ng+geometry_->NZ()-1);
-                if (i==ci && j==cj && k==ck) continue;
-                if (geometry_->isCommunicationHalo(i,j,k)) continue;
-                const int cell=geometry_->getIdx(i,j,k);
-                const int donor=geometry_->getIdx(ci,cj,ck);
-                for (int c=0;c<components;++c)
-                    view.write(cell,offset+c,view.read(donor,offset+c));
-            }
-}
-
-void PressureOperators::applyVelocityBoundary() {
-    const int offset=0;
-    for (BCType type:{ZERO_GRADIENT,FIXED_VALUE}) {
-        for (const auto& bc:config_.velocityBoundary) {
-            if (bc.type==EMPTY || bc.type!=type) continue;
-            for (int cell:geometry_->getSet(bc.name)) {
-                const int donor=inwardCell(*geometry_,cell,physicalSides_);
-                const auto value=components(bc.value);
-                for (int c=0;c<3;++c) velocity_->write(
-                    cell,offset+c,bc.type==FIXED_VALUE
-                        ? value[(size_t)c]
-                        : velocity_->read(donor,offset+c));
-            }
-        }
-    }
-    extendHalos(*velocity_,0,3);
-    synchronize(*velocity_);
-}
+void PressureOperators::applyVelocityBoundary() {predictor_.prepareOutput(*velocity_,true);}
 
 void PressureOperators::applyPressureBoundary() {
-    for (BCType type:{ZERO_GRADIENT,FIXED_VALUE}) {
-        for (const auto& bc:config_.pressureBoundary) {
-            if (bc.type==EMPTY || bc.type!=type) continue;
-            for (int cell:geometry_->getSet(bc.name)) {
-                const int donor=inwardCell(*geometry_,cell,physicalSides_);
-                pressure_->write(cell,0,bc.type==FIXED_VALUE
-                    ? bc.value : pressure_->read(donor,0));
-            }
-        }
-    }
-    extendHalos(*pressure_,0,1);
-    synchronize(*pressure_);
+    predictor_.prepareInput(faces_.contract().numericalInputs.at(1));
 }
 
 std::array<double,3> PressureOperators::gradient(
@@ -397,15 +197,6 @@ std::array<double,3> PressureOperators::gradient(
     geometry_->getIJK(cell,i,j,k);
     const auto g=CENTRAL2::gradSampled(*geometry_,[&](int ii,int jj,int kk) {
         return values.at((size_t)geometry_->getIdx(ii,jj,kk));
-    },i,j,k);
-    return {g.x,g.y,g.z};
-}
-
-std::array<double,3> PressureOperators::pressureGradient(int cell) const {
-    int i=0,j=0,k=0;
-    geometry_->getIJK(cell,i,j,k);
-    const auto g=CENTRAL2::gradSampled(*geometry_,[&](int ii,int jj,int kk) {
-        return pressure_->read(geometry_->getIdx(ii,jj,kk),0);
     },i,j,k);
     return {g.x,g.y,g.z};
 }
@@ -442,38 +233,15 @@ double PressureOperators::maxDivergence(
 }
 
 double PressureOperators::prepare(double maximumTimeStep) {
+    faces_.invalidateCorrected();
     requireCollectively(velocity_ && pressure_ && std::isfinite(maximumTimeStep)
         && maximumTimeStep>0.0,"Pressure prepare requires bound state and positive dt limit.");
-    applyVelocityBoundary();
     applyPressureBoundary();
-    const double nu=config_.dynamicViscosity/density_;
-    double limit=std::min(maximumTimeStep,numerics_.dt.maxDeltaT);
-    for (int cell:cells_) {
-        double speed2=0.0;
-        for (int c=0;c<3;++c) {
-            const double u=velocity_->read(cell,c);
-            if (!std::isfinite(u))
-                throw std::runtime_error("Constant-density U is non-finite.");
-            speed2+=u*u;
-        }
-        const double speed=std::sqrt(speed2);
-        for (int axis=0;axis<3;++axis) {
-            if (!Math::isDirectionActiveIndex(axis)) continue;
-            const double h=spacing(axis,cell);
-            if (speed>0.0)
-                limit=std::min(limit,numerics_.dt.cfl*h/speed);
-            if (nu>0.0)
-                limit=std::min(limit,
-                    numerics_.dt.cfl*h*h/(2.0*Math::activeDimensionCount()*nu));
-        }
-    }
-    if (!std::isfinite(limit) || limit<=0.0)
-        throw std::runtime_error("Constant-density dt is invalid.");
-    dt_=runtime_->globalMinimum(limit);
+    dt_=maximumTimeStep;
+    faces_.beginEpoch();
     summary_={};
     fixedTimeActive_=false;
     iterationActive_=false;
-    iterationIndex_=0;
     return dt_;
 }
 
@@ -481,22 +249,15 @@ void PressureOperators::beginFixedTimeStep() {
     if (!(dt_>0.0) || !velocity_ || !pressure_)
         throw std::runtime_error("Fixed-time pressure step requires prepared state.");
     const int total=geometry_->TotalSize();
-    baseVelocity_.resize((size_t)total*3);
-    iterationVelocity_.resize((size_t)total*3);
     iterationPressure_.resize((size_t)total);
     iterationFlux_.resize(correctedFlux_.size());
-    for (int cell=0;cell<geometry_->TotalSize();++cell)
-        if (solved(cell)) rAU_[(size_t)cell]=dt_/density_;
+    std::vector<int> responseCells;for(int cell=0;cell<geometry_->TotalSize();++cell)if(solved(cell))responseCells.push_back(cell);
+    predictor_.setResponse(dt_,&responseCells);
     // The first F_k must match U_n/p_n at this timestep's pressure response,
     // rather than inheriting an uninitialized or previous-dt face buffer.
-    reconstructFaceFlux(correctedFlux_);
-    for (int cell=0;cell<total;++cell)
-        for (int c=0;c<3;++c)
-            baseVelocity_[(size_t)c*(size_t)total+(size_t)cell]
-                =velocity_->read(cell,c);
+    faces_.reconstruct(correctedFlux_,*velocity_);
+    if(!predictor_.hasFrozenBase())throw std::runtime_error("Pressure fixed-time relation requires the ordinary entry snapshot");
     fixedTimeActive_=true;
-    iterationIndex_=0;
-    converged_=false;
     candidateContinuityDefect_=0.0;
 }
 
@@ -506,166 +267,26 @@ void PressureOperators::beginIteration() {
     const int total=geometry_->TotalSize();
     for (int cell=0;cell<total;++cell) {
         iterationPressure_[(size_t)cell]=pressure_->read(cell,0);
-        for (int c=0;c<3;++c)
-            iterationVelocity_[(size_t)c*(size_t)total+(size_t)cell]
-                =velocity_->read(cell,c);
     }
     iterationFlux_=correctedFlux_;
     iterationActive_=true;
-    ++iterationIndex_;
-    converged_=false;
-}
-
-void PressureOperators::assembleMomentum() {
-    if (!(dt_>0.0)) throw std::runtime_error("Momentum assemble requires dt.");
-    const int total=geometry_->TotalSize();
-    const double nu=config_.dynamicViscosity/density_;
-    std::vector<double> oldFlux((size_t)total*3,0.0);
-    for (int cell:cells_) {
-        for (int axis=0;axis<3;++axis) {
-            if (!Math::isDirectionActiveIndex(axis)) continue;
-            for (int sign:{-1,1}) {
-                const int lower=sign>0?cell:adjacent(cell,axis,-1);
-                const int upper=adjacent(lower,axis,1);
-                const auto area=faceArea(axis,lower);
-                double flux=0.0;
-                for (int c=0;c<3;++c)
-                    flux+=0.5*(velocity_->read(lower,c)
-                               +velocity_->read(upper,c))*area[(size_t)c];
-                oldFlux[faceIndex(axis,lower)]=flux;
-            }
-        }
-    }
-    const Discretization::PressureMomentum::Stencil stencil{
-        *velocity_,*geometry_,oldFlux};
-    for (int cell:cells_) {
-        int i=0,j=0,k=0;
-        geometry_->getIJK(cell,i,j,k);
-        const double inverseVolume=geometry_->Jac(i,j,k);
-        if (!std::isfinite(inverseVolume) || inverseVolume<=0.0)
-            throw std::runtime_error("Momentum cell has invalid volume.");
-        rAU_[(size_t)cell]=dt_/density_;
-        const Vector3 velocity(velocity_->read(cell,0),
-                               velocity_->read(cell,1),
-                               velocity_->read(cell,2));
-        Vector3 sourceAcceleration;
-        for (const auto& term:momentumTerms_)
-            if (term.operation==Math::Op::Source)
-                sourceAcceleration=sourceAcceleration+term.primitiveSource(
-                    *geometry_,i,j,k,velocity);
-        const auto source=components(sourceAcceleration);
-        for (int c=0;c<3;++c) {
-            double advective=0.0;
-            double laplacian=0.0;
-            for (const auto& term:momentumTerms_) {
-                if (term.operation==Math::Op::Div)
-                    advective=term.primitiveSpatial(stencil,cell,c);
-                else if (term.operation==Math::Op::Diffusion)
-                    laplacian=term.primitiveSpatial(stencil,cell,c);
-            }
-            const size_t index=(size_t)c*(size_t)total+(size_t)cell;
-            if (fixedTimeActive_ && iterationIndex_>1) {
-                hByA_[index]=fixedTimeCandidate(baseVelocity_[index],
-                    dt_*inverseVolume*(-advective+nu*laplacian));
-            } else {
-                // At the first iterate U_k=U_n; retain the Phase 26 PISO
-                // evaluation order exactly for the outer=1 degeneration.
-                hByA_[index]=velocity_->read(cell,c)
-                    +dt_*inverseVolume*(-advective+nu*laplacian);
-            }
-            hByA_[index]+=dt_*source[(size_t)c];
-        }
-    }
-}
-
-void PressureOperators::solveMomentum(System::TargetKind target) {
-    if (target!=System::TargetKind::Physical && target!=System::TargetKind::Working)
-        throw std::runtime_error("Momentum provider requires physical or working target storage.");
-    const int total=geometry_->TotalSize();
-    workingVelocity_.resize((size_t)total*3);
-    for (int cell=0;cell<total;++cell)
-        for (int c=0;c<3;++c)
-            workingVelocity_[(size_t)c*total+cell]=velocity_->read(cell,c);
-    workingVelocityView_=State::workspaceView("pressureMomentumWorkspace",physicalVelocity_->blockId,
-        *geometry_,workingVelocity_,3,physicalVelocity_->haloDepth,physicalVelocity_->stages);
-    velocity_=&workingVelocityView_;
-    for (int cell:cells_) {
-        const auto grad=pressureGradient(cell);
-        for (int c=0;c<3;++c) {
-            const double predicted=hByA_[(size_t)c*(size_t)total+(size_t)cell]
-                -rAU_[(size_t)cell]*grad[(size_t)c];
-            if (!std::isfinite(predicted))
-                throw std::runtime_error("Momentum predictor produced non-finite U.");
-            velocity_->write(cell,c,predicted);
-        }
-    }
-    applyVelocityBoundary();
-    synchronize(rAU_,1);
-    reconstructFaceFlux(predictedFlux_);
-    correctedFlux_=predictedFlux_;
-    if (target==System::TargetKind::Physical) publishVelocity();
+    predictor_.beginFixedIteration();
 }
 
 void PressureOperators::publishVelocity() {
-    if (velocity_==physicalVelocity_) return;
-    // COPY the already boundary/halo-ready result. Only StateBundle owns the
-    // physical field; the predictor buffer belongs to this numerical provider.
-    for (int cell=0;cell<geometry_->TotalSize();++cell)
-        for (int c=0;c<3;++c)
-            physicalVelocity_->write(cell,c,velocity_->read(cell,c));
-    velocity_=physicalVelocity_;
-}
-
-void PressureOperators::reconstructFaceFlux(std::vector<double>& fluxField) {
-    std::fill(fluxField.begin(),fluxField.end(),0.0);
-    std::fill(faceResponse_.begin(),faceResponse_.end(),0.0);
-    for (int cell:candidateCells_) {
-        for (int axis=0;axis<3;++axis) {
-            if (!Math::isDirectionActiveIndex(axis)) continue;
-            for (int sign:{-1,1}) {
-                const int lower=sign>0?cell:adjacent(cell,axis,-1);
-                const int upper=adjacent(lower,axis,1);
-                const auto area=faceArea(axis,lower);
-                const auto index=faceIndex(axis,lower);
-                const bool both=solved(lower)&&solved(upper);
-                double flux=0.0;
-                const int boundary=both?-1:(solved(lower)?upper:lower);
-                if (both || (boundary>=0
-                             && pressureDirichlet_[(size_t)boundary])) {
-                    const auto lowerGrad=pressureGradient(lower);
-                    const auto upperGrad=pressureGradient(upper);
-                    std::array<double,3> lowerVelocity{},upperVelocity{};
-                    for (int c=0;c<3;++c) {
-                        lowerVelocity[(size_t)c]=velocity_->read(lower,c);
-                        upperVelocity[(size_t)c]=velocity_->read(upper,c);
-                    }
-                    const double response=both ? 0.5
-                        *(rAU_[(size_t)lower]+rAU_[(size_t)upper])
-                        : rAU_[(size_t)(solved(lower)?lower:upper)];
-                    const auto face=RhieChow::predict(
-                        lowerVelocity,upperVelocity,lowerGrad,upperGrad,area,
-                        pressure_->read(lower,0),pressure_->read(upper,0),
-                        response,spacing(axis,lower));
-                    flux=face.flux;
-                    faceResponse_[index]=face.correctionCoefficient;
-                } else {
-                    for (int c=0;c<3;++c)
-                        flux+=velocity_->read(boundary,c)*area[(size_t)c];
-                }
-                fluxField[index]=flux;
-            }
-        }
+    if(velocity_!=physicalVelocity_) {
+        predictor_.copyToPhysical();velocity_=physicalVelocity_;
     }
-    synchronize(faceResponse_,3,State::ExchangeKind::CanonicalFaceFlux);
-    synchronize(fluxField,3,State::ExchangeKind::CanonicalFaceFlux);
 }
 
 void PressureOperators::preparePressureBoundary() {
+    faces_.requirePrediction();velocity_=&predictor_.output();
     applyVelocityBoundary();
     applyPressureBoundary();
 }
 
 void PressureOperators::assemblePressure() {
+    faces_.requirePrediction();
     summary_.maxDivergenceBefore=maxDivergence(correctedFlux_);
     pressureMatrix_.rows.clear();
     pressureMatrix_.rows.reserve(cells_.size());
@@ -810,6 +431,7 @@ void PressureOperators::preparePressureUpdate() {
 }
 
 void PressureOperators::correctVelocity() {
+    predictor_.invalidateWorking();
     for (int cell:cells_) {
         const auto grad=gradient(correction_,cell);
         for (int c=0;c<3;++c) {
@@ -825,6 +447,7 @@ void PressureOperators::correctVelocity() {
 }
 
 void PressureOperators::correctFlux() {
+    faces_.invalidateCorrected();
     for (int cell:candidateCells_) {
         for (int axis=0;axis<3;++axis) {
             if (!Math::isDirectionActiveIndex(axis)) continue;
@@ -840,24 +463,27 @@ void PressureOperators::correctFlux() {
             }
         }
     }
-    synchronize(correctedFlux_,3,State::ExchangeKind::CanonicalFaceFlux);
+    faces_.synchronize(correctedFlux_,3,State::ExchangeKind::CanonicalFaceFlux);
     summary_.maxDivergenceAfter=maxDivergence(correctedFlux_);
 }
 
 PressureOperationSummary PressureOperators::commitCorrection() {
     if (!std::isfinite(summary_.maxDivergenceAfter))
         throw std::runtime_error("Corrected continuity defect is non-finite.");
+    faces_.publishCorrected();
     return summary_;
 }
 
 void PressureOperators::applyRelaxation() {
+    predictor_.invalidateWorking();
+    faces_.invalidateCorrected();
     if (!iterationActive_)
         throw std::runtime_error("Pressure relaxation requires active iteration.");
     candidateContinuityDefect_=maxDivergence(correctedFlux_);
     const int total=geometry_->TotalSize();
     for (int cell:cells_) {
         const double oldPressure=iterationPressure_[(size_t)cell];
-        const double relaxedPressure=relaxSolution(oldPressure,
+        const double relaxedPressure=SolverAlgorithm::relaxSolution(oldPressure,
             pressure_->read(cell,0),config_.pressureRelaxation);
         if (!std::isfinite(relaxedPressure))
             throw std::runtime_error("Pressure relaxation produced non-finite p.");
@@ -865,7 +491,7 @@ void PressureOperators::applyRelaxation() {
         for (int c=0;c<3;++c) {
             const double oldVelocity=
                 iterationVelocity_[(size_t)c*(size_t)total+(size_t)cell];
-            const double relaxedVelocity=relaxSolution(oldVelocity,
+            const double relaxedVelocity=SolverAlgorithm::relaxSolution(oldVelocity,
                 velocity_->read(cell,c),config_.velocityRelaxation);
             if (!std::isfinite(relaxedVelocity))
                 throw std::runtime_error("Velocity relaxation produced non-finite U.");
@@ -884,9 +510,10 @@ void PressureOperators::restoreFluxConsistency() {
         || config_.pressureRelaxation!=1.0) {
         // A relaxed U/p iterate needs its own Rhie-Chow face state; the
         // unrelaxed candidate flux cannot remain authoritative.
-        reconstructFaceFlux(correctedFlux_);
+        faces_.reconstruct(correctedFlux_,*velocity_);
     }
     summary_.maxDivergenceAfter=maxDivergence(correctedFlux_);
+    faces_.publishCorrected();
 }
 
 void PressureOperators::evaluateConvergence() {
@@ -934,8 +561,6 @@ void PressureOperators::evaluateConvergence() {
         || !std::isfinite(fluxDelta_)
         || !std::isfinite(summary_.maxDivergenceAfter))
         throw std::runtime_error("Pressure fixed-point residual is non-finite.");
-    converged_=iterationDelta_<=config_.relativeTolerance
-        && summary_.maxDivergenceAfter<=config_.absoluteTolerance;
 }
 
 void PressureOperators::endIteration() {
@@ -945,6 +570,7 @@ void PressureOperators::endIteration() {
 }
 
 void PressureOperators::commitStep() {
+    predictor_.invalidateWorking();
     if (iterationActive_)
         throw std::runtime_error("Cannot commit an incomplete pressure iteration.");
     applyVelocityBoundary();

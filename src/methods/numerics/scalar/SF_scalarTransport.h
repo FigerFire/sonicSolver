@@ -11,6 +11,7 @@
 #include "reconstruction/ILW/SF_boundaryClosure.h"
 #include "methods/numerics/structured/SF_structured.h"
 #include "SF_scalarField.h"
+#include "core/interfaces/SF_scalarEquationData.h"
 #include "SF_utility.h"
 #include "core/interfaces/SF_log.h"
 
@@ -25,21 +26,6 @@
 namespace SF {
 namespace FDM {
 namespace Scalar {
-
-/// @brief 标量越界处理模式。
-enum class BoundMode {
-    None,      ///< 不检查也不修改。
-    Diagnose,  ///< 只输出越界诊断，不修改数值。
-    Project    ///< 显式投影到上下界。
-};
-
-/// @brief 标量上下界设置。
-struct Bounds {
-    bool enabled = false;              ///< true 时启用上下界逻辑。
-    double lower = 0.0;                ///< 下界。
-    double upper = 1.0;                ///< 上界。
-    BoundMode mode = BoundMode::Diagnose; ///< 越界处理模式。
-};
 
 /// @brief 一个显式标量输运方程的基础设置。
 struct TransportConfig {
@@ -99,8 +85,9 @@ inline const char* toString(BoundMode mode) {
     return "unknown";
 }
 
+template<class S>
 inline void requireCompatible(const Field& flow,
-                              const ScalarField& scalar,
+                              const S& scalar,
                               const char* context) {
     if (!scalar.isCompatibleWith(flow)) {
         std::cerr << "[SF FATAL] " << context
@@ -202,8 +189,9 @@ inline void forBoundaryGhostsAlongAxis(const Field& flow,
 }
 
 /// @brief 应用标量初始条件。
+template<class S>
 inline void applyInitialConditions(const Field& flow,
-                                   ScalarField& scalar,
+                                   S& scalar,
                                    const std::vector<BCSetting<double>>& settings) {
     requireCompatible(flow, scalar, "Scalar initial conditions");
     for (const auto& ic : settings) {
@@ -228,8 +216,9 @@ inline void applyInitialConditions(const Field& flow,
     }
 }
 
+template<class S>
 inline void applyFixedBoundary(const Field& flow,
-                               ScalarField& scalar,
+                               S& scalar,
                                int i,
                                int j,
                                int k,
@@ -251,8 +240,9 @@ inline void applyFixedBoundary(const Field& flow,
     forBoundaryGhostsAlongAxis(flow, i, j, k, axis, applyFixed);
 }
 
+template<class S>
 inline void applyZeroGradientBoundary(const Field& flow,
-                                      ScalarField& scalar,
+                                      S& scalar,
                                       int i,
                                       int j,
                                       int k,
@@ -275,8 +265,9 @@ inline void applyZeroGradientBoundary(const Field& flow,
     forBoundaryGhostsAlongAxis(flow, i, j, k, axis, broadcast);
 }
 
+template<class S>
 inline void applyEmptyBoundary(const Field& flow,
-                               ScalarField& scalar,
+                               S& scalar,
                                int i,
                                int j,
                                int k,
@@ -311,7 +302,8 @@ inline void applyEmptyBoundary(const Field& flow,
 }
 
 /// @brief 独立标量与守恒变量复用同一 ILW 边界数学；geometry 只读，scalar 是唯一写目标。
-inline void applyILWBoundary(const Field& flow,ScalarField& scalar,
+template<class S>
+inline void applyILWBoundary(const Field& flow,S& scalar,
                              int i,int j,int k,int axis,double value,int order,BCType law) {
     namespace Closure=SF::Boundary::ILW::BoundaryClosure;
     const auto constraint=law==FIXED_VALUE ? Closure::ScalarConstraint::Value
@@ -322,8 +314,9 @@ inline void applyILWBoundary(const Field& flow,ScalarField& scalar,
 }
 
 /// @brief 应用通用标量边界条件。
+template<class S>
 inline void applyBoundaryConditions(const Field& flow,
-                                    ScalarField& scalar,
+                                    S& scalar,
                                     const std::vector<BCSetting<double>>& settings,
                                     bool ilwEnabled = false,
                                     int ilwAccuracyOrder = 0) {
@@ -378,7 +371,8 @@ inline void applyBoundaryConditions(const Field& flow,
     }
 }
 
-inline double scalarAt(const ScalarField& scalar,
+template<class S>
+inline double scalarAt(const S& scalar,
                        const std::vector<double>& values,
                        int i,
                        int j,
@@ -386,6 +380,15 @@ inline double scalarAt(const ScalarField& scalar,
     return values[(size_t)scalar.getIdx(i, j, k)];
 }
 
+template<class Read>
+inline double metricFaceVelocity(const Field& flow,int i,int j,int k,Math::Dir dir,Read read) {
+    int di=0,dj=0,dk=0;Math::dirOffset(dir,di,dj,dk);
+    const double u=0.5*(read(i,j,k,0)+read(i+di,j+dj,k+dk,0));
+    const double v=0.5*(read(i,j,k,1)+read(i+di,j+dj,k+dk,1));
+    const double w=0.5*(read(i,j,k,2)+read(i+di,j+dj,k+dk,2));
+    double metric[4];Math::faceMetrics(flow,i,j,k,dir,metric);
+    return u*metric[0]+v*metric[1]+w*metric[2];
+}
 inline double normalVelocityAtFace(const Field& flow,
                                    int i,
                                    int j,
@@ -403,20 +406,8 @@ inline double normalVelocityAtFace(const Field& flow,
     (void)pL;
     (void)pR;
 
-    const double rhoL = flow(i, j, k, RHO);
-    const double rhoR = flow(i + di, j + dj, k + dk, RHO);
-    const double u = 0.5 * (flow(i, j, k, RU) / rhoL
-                          + flow(i + di, j + dj, k + dk, RU) / rhoR);
-    const double v = 0.5 * (flow(i, j, k, RV) / rhoL
-                          + flow(i + di, j + dj, k + dk, RV) / rhoR);
-    const double w = 0.5 * (flow(i, j, k, RW) / rhoL
-                          + flow(i + di, j + dj, k + dk, RW) / rhoR);
-
-    double metric[4];
-    Math::faceMetrics(flow, i, j, k, dir, metric);
-    return u * metric[0] + v * metric[1] + w * metric[2];
+    return metricFaceVelocity(flow,i,j,k,dir,[&](int a,int b,int c,int component){return flow(a,b,c,RU+component)/flow(a,b,c,RHO);});
 }
-
 inline double convectiveFaceFlux(const Field& flow,
                                  const ScalarField& scalar,
                                  const std::vector<double>& values,
@@ -457,15 +448,14 @@ inline double convectiveDivergence(const Field& flow,
     return flow.Jac(i, j, k) * div;
 }
 
-inline double centralDiffusion(const Field& flow,
-                               const ScalarField& scalar,
-                               const std::vector<double>& values,
+template<class Read>
+inline double metricDiffusion(const Field& flow,Read read,const std::string& name,
                                int i,
                                int j,
                                int k,
                                double diffusivity) {
     if (!std::isfinite(diffusivity) || diffusivity < 0.0) {
-        std::cerr << "[SF FATAL] scalar diffusivity for '" << scalar.name()
+        std::cerr << "[SF FATAL] scalar diffusivity for '" << name
                   << "' must be finite and >= 0, got " << diffusivity
                   << std::endl;
         std::exit(1);
@@ -493,7 +483,7 @@ inline double centralDiffusion(const Field& flow,
             || std::abs(cfL[3]) <= 1.0e-30
             || std::abs(cfR[3]) <= 1.0e-30) {
             std::cerr << "[SF FATAL] scalar diffusion found invalid face "
-                      << "Jacobian for '" << scalar.name() << "' at ("
+                      << "Jacobian for '" << name << "' at ("
                       << i << "," << j << "," << k << ")" << std::endl;
             std::exit(1);
         }
@@ -505,14 +495,14 @@ inline double centralDiffusion(const Field& flow,
             / cfR[3];
         if (!std::isfinite(JgL) || !std::isfinite(JgR)) {
             std::cerr << "[SF FATAL] scalar diffusion metric is non-finite for '"
-                      << scalar.name() << "' at (" << i << "," << j
+                      << name << "' at (" << i << "," << j
                       << "," << k << ")" << std::endl;
             std::exit(1);
         }
 
-        const double center = scalarAt(scalar, values, i, j, k);
-        const double left = scalarAt(scalar, values, im, jm, km);
-        const double right = scalarAt(scalar, values, ip, jp, kp);
+        const double center = read(i,j,k);
+        const double left = read(im,jm,km);
+        const double right = read(ip,jp,kp);
         result += diffusivity * Jcell
                 * (JgR * (right - center) - JgL * (center - left));
     };
@@ -527,6 +517,10 @@ inline double centralDiffusion(const Field& flow,
         addDir(Math::ZETA, i, j, k - 1, i, j, k + 1);
     }
     return result;
+}
+
+inline double centralDiffusion(const Field& flow,const ScalarField& scalar,const std::vector<double>& values,int i,int j,int k,double diffusivity) {
+    return metricDiffusion(flow,[&](int a,int b,int c){return scalarAt(scalar,values,a,b,c);},scalar.name(),i,j,k,diffusivity);
 }
 
 /// @brief 只装配标量输运 RHS，不修改标量时间层。
@@ -566,8 +560,9 @@ inline void assembleRHS(const Field& flow,
 }
 
 /// @brief 检查或投影标量上下界。
+template<class S>
 inline BoundReport applyBounds(const Field& flow,
-                               ScalarField& scalar,
+                               S& scalar,
                                const Bounds& bounds) {
     BoundReport report;
     if (!bounds.enabled || bounds.mode == BoundMode::None) return report;

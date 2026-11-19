@@ -31,6 +31,7 @@ struct CouplingPresetRequest {
     int outerCorrectors = 1;
     int pressureCorrectors = 1;
     int nonOrthogonalCorrectors = 0;
+    double iterationTolerance=1.0e-2,continuityTolerance=1.0e-10;
     /// @brief 用户是否显式注册（case 声明），而不是框架默认。
     bool explicitlyRegistered = false;
     Provenance origin;

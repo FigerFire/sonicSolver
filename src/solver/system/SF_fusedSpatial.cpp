@@ -80,7 +80,7 @@ void registerProviders(TermProviderCatalog& catalog) {
     TermProviderDescriptor field;field.id="source.field";field.operations={Math::Op::Source};
     field.match=[](const TermMatchContext& c) {
         if(!c.state || c.expression.arguments().size()!=1
-            || (c.output!="rhoU" && c.output!="rhoE" && c.output!="U"))return false;
+            || (!c.state->contains(c.output) || (c.state->at(c.output).components!=3 && c.state->at(c.output).components!=1)))return false;
         const auto symbols=inspectFormula(c.expression.arguments()[0]).symbols;
         return !symbols.empty() && std::all_of(symbols.begin(),symbols.end(),[&](const auto& id){
             if(!c.state->contains(id))return false;
@@ -128,15 +128,26 @@ void registerProviders(TermProviderCatalog& catalog) {
         };
         p.operations={Math::Op::Source};catalog.add(std::move(p));
     }
+    TermProviderDescriptor gradient;gradient.id="gradient.central2";gradient.operations={Math::Op::Grad};
+    gradient.match=[](const TermMatchContext& c){return c.expression.arguments().size()==1 && c.expression.arguments()[0].kind()==FormulaExpr::Kind::Symbol;};
+    gradient.gradient=&Discretization::CellEquation::centralGradient;catalog.add(std::move(gradient));
+    TermProviderDescriptor stress;stress.id="stress.central2.arithmetic-faces";stress.operations={Math::Op::Div};
+    stress.match=[](const TermMatchContext& c) {
+        const auto& a=c.expression.arguments();
+        return c.equationMethod=="CellExplicit" && a.size()==1 && a[0].kind()==FormulaExpr::Kind::Multiply
+            && a[0].arguments()[1].operation()==Math::Op::DevSymmGrad;
+    };
+    stress.primitiveSpatial=&Discretization::CellEquation::stressArithmeticCentral2;catalog.add(std::move(stress));
     add(Math::Op::Div,{ "convection.primitiveUpwind1",
         [](const TermMatchContext& context) {
             return context.expression.kind()==FormulaExpr::Kind::Operator
                 && context.expression.operation()==Math::Op::Div
                 && context.selectedRecipe
                 && context.selectedRecipe->id()==FDM::TermRecipeId::PrimitiveUpwind1
-                && context.output=="U";
+                && context.expression.arguments().size()==1
+                && context.expression.arguments()[0].operation()==Math::Op::Outer;
         },{},nullptr,
-        &Discretization::PressureMomentum::primitiveUpwind1});
+        &Discretization::CellEquation::primitiveUpwind1});
     add(Math::Op::Div,{ "convection.conservativeFlux",
         [](const TermMatchContext& context) {
             return context.expression.kind()==FormulaExpr::Kind::Operator
@@ -154,7 +165,7 @@ void registerProviders(TermProviderCatalog& catalog) {
                 && context.selectedRecipe->id()==FDM::TermRecipeId::Central2Explicit
                 && fusedOperandsSupported(context);
         },{},nullptr,
-        &Discretization::PressureMomentum::central2});
+        &Discretization::CellEquation::central2});
     add(Math::Op::Diffusion,{ "diffusion.central4",
         [](const TermMatchContext& context) {
             return context.expression.kind()==FormulaExpr::Kind::Operator

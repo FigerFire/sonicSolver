@@ -25,7 +25,6 @@
 #include "core/system/SF_scheduleIds.h"
 #include "solver/system/SF_numericalCompiler.h"
 #include "SF_numericsPolicy.h"
-#include "solver/system/SF_scalarMethod.h"
 #include "SF_physicalState.h"
 #include "SF_rusanovEOS.h"
 
@@ -83,14 +82,15 @@ void FlowOperations::bindSolvePlan(
     }
     if (requiresOperation(System::OpIds::PressurePrepare)) {
         auto providers=bindPressureProvider({executable_,numerics_,solve_,runtime_},{
-            boundaryApplicator_.definitions(),pressureConfig_,pressureGamma_});
+            boundaryApplicator_.definitions(),pressureConfig_,pressureGamma_},faces_.get());
         pressureOperators_=std::move(providers.constant);
         conservativePressureCorrector_=std::move(providers.conservative);
     }
     solvePlanBound_ = true;
 }
 
-void FlowOperations::prepare() {
+void FlowOperations::prepare(std::shared_ptr<FaceFluxExecution> faces) {
+    faces_=std::move(faces);
     bindSolvePlan(solve_);
     bindState(*state_);
     if (conservativePressureCorrector_) {
@@ -335,31 +335,20 @@ void FlowOperations::bindPressureOps(
 }
 
 void FlowOperations::bindConstantPressureOps(
-        Run::OpRegistry& operations,const double& maximumTimeStep) {
+        Run::OpRegistry& operations) {
     if (!pressureOperators_ || state_->patches.size()!=1) {
         throw std::runtime_error(
             "Constant-density pressure operations require one local patch.");
     }
-    operations.bind(System::OpIds::PressurePrepare,"flow.pressure-operators",[owner=shared_from_this(),this,&maximumTimeStep] {
+    operations.bind(System::OpIds::PressurePrepare,"flow.pressure-operators",[owner=shared_from_this(),this] {
         resetStep();
-        state_->dt=pressureOperators_->prepare(maximumTimeStep);
+        pressureOperators_->prepare(state_->dt);
     });
     operations.bind(System::OpIds::PressureStepBegin,"flow.pressure-operators",[owner=shared_from_this(),this] {
         pressureOperators_->beginFixedTimeStep();
     });
     operations.bind(System::OpIds::PressureIterationBegin,"flow.pressure-operators",[owner=shared_from_this(),this] {
         pressureOperators_->beginIteration();
-    });
-    operations.bind(System::OpIds::MomentumAssemble,"flow.pressure-operators",[owner=shared_from_this(),this] {
-        pressureOperators_->assembleMomentum();
-        pressureOperators_->traceState("momentum",state_->step,state_->time);
-    });
-    operations.bind(System::OpIds::MomentumSolve,"flow.pressure-operators",[owner=shared_from_this(),this](const Run::ExecutionContext& context) {
-        if (!context.target)
-            throw std::runtime_error("Momentum numerical leaf lacks typed target storage.");
-        pressureOperators_->solveMomentum(context.target->kind);
-        if (context.target->kind==System::TargetKind::Physical)
-            state_->distributed.markModified("velocity");
     });
     operations.bind(System::OpIds::PressureBoundaryPrepare,"flow.pressure-operators",[owner=shared_from_this(),this] {
         pressureOperators_->preparePressureBoundary();
@@ -409,8 +398,6 @@ void FlowOperations::bindConstantPressureOps(
     operations.bind(System::OpIds::PressureConvergenceEvaluate,"flow.pressure-operators",
                     [owner=shared_from_this(),this](const Run::ExecutionContext& context) {
         pressureOperators_->evaluateConvergence();
-        context.signals->publish(System::kPressureOuterConvergedSignal,
-                                 pressureOperators_->converged());
         if (services_.observer) {
             const auto summary=pressureOperators_->commitCorrection();
             std::ostringstream continuity;
@@ -433,15 +420,17 @@ void FlowOperations::bindConstantPressureOps(
                    << ", candidateDiv="
                    << pressureOperators_->candidateContinuityDefect()
                    << ", fluxDelta="
-                   << pressureOperators_->fluxIterationDelta()
-                   << ", converged="
-                   << (pressureOperators_->converged() ? "true" : "false");
+                   << pressureOperators_->fluxIterationDelta();
             services_.observer->onSolverMessage({
                 FDM::SolverMessageKind::StateClosure,
                 "Fixed-time iteration",detail.str(),
                 state_->step,state_->time,state_->dt});
         }
     });
+    for(const auto& residual:solve_.compiledProgram.residuals)if(residual.producerOperation==System::OpIds::PressureConvergenceEvaluate)
+        operations.bindResidual(residual.id,residual.provider,[owner=shared_from_this(),this](const auto&) {
+            return std::vector<double>{pressureOperators_->iterationDelta(),pressureOperators_->continuityDefect()};
+        });
     operations.bind(System::OpIds::PressureIterationEnd,"flow.pressure-operators",[owner=shared_from_this(),this] {
         pressureOperators_->endIteration();
     });
@@ -557,7 +546,7 @@ void FlowOperations::executeExplicitStage(int stage) {
                 });
 }
 void FlowOperations::bindFieldSources() {
-    if(pressureOperators_)pressureOperators_->bindFieldSources();
+    if(pressureOperators_)return;
     if(solve_.compiledProgram.temporalParticipants.empty())return;
     if (std::none_of(numerics_.operators.begin(),numerics_.operators.end(),[](const auto& term){return bool(term.stageSource.evaluate) || bool(term.fieldSource.bind);})) return;
     stageNumerics_=std::make_unique<System::CompiledNumericalSystem>(numerics_);
@@ -581,7 +570,7 @@ void FlowOperations::bindFieldSources() {
 Time::TemporalCallbacks FlowOperations::temporalParticipant() {
     if (state_->patches.size()!=1 || (services_.executionRuntime && services_.executionRuntime->distributed())
         || services_.immersed.boundary || services_.immersed.constraint || services_.immersed.system || services_.equationSystem
-        || (services_.transportModel && !std::any_of(solve_.compiledProgram.steps.begin(),solve_.compiledProgram.steps.end(),[](const auto& call){return call.stageLocal && std::find(call.coefficientStates.begin(),call.coefficientStates.end(),"mu_t")!=call.coefficientStates.end();})))
+        || (services_.transportModel && !services_.transportModel->hasStageViscosityPublication()))
         throw std::runtime_error("Unsupported shared flow stage group: serial single patch without auxiliary/immersed stage treatment required.");
     bindTemporalStateViews();
     auto owner=shared_from_this();Time::TemporalCallbacks result;result.identity="flow.conservative";
@@ -630,7 +619,7 @@ void FlowOperations::bindOperations(Run::OpRegistry& operations) {
         bindExplicitOps(operations,state_->patches,maximumTimeStep_,explicitWorkspace_);
     if (requiresOperation(System::OpIds::PressurePrepare)) {
         if (pressureOperators_)
-            bindConstantPressureOps(operations,maximumTimeStep_);
+            bindConstantPressureOps(operations);
         else if (conservativePressureCorrector_)
             bindPressureOps(operations,state_->singlePatch(),maximumTimeStep_,pressureSummary_);
         else throw std::runtime_error("Requested pressure operations have no bound pressure workspace.");

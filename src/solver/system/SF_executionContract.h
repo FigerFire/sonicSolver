@@ -17,6 +17,9 @@ std::vector<const SolvePlanNode*> equationOperations(
     const ExecutableEquationSystem&,const CompiledSolvePlan&,std::string_view equation);
 /// @brief 拒绝活动数学无编译去向、悬空约束/融合引用；Unsupported 保留阻断说明。
 void validateMathematicalCoverage(const ExecutableEquationSystem&,const CompiledSolvePlan&,bool runnable);
+struct CompiledNumericalSystem;
+/// @brief 冻结后的普通输运相容性检查。调度、共享端口和目标写入均以实际计划为准。
+void validateScalarExecution(const ExecutableEquationSystem&,const CompiledNumericalSystem&,const CompiledSolvePlan&);
 void validateDataFlow(const StateRegistry& state,const CompiledExecutionProgram& program);
 std::string missingCapability(const CompiledExecutionProgram& program,
     const std::vector<std::string>& context,const CompiledEquationCall& consumer,

@@ -44,7 +44,7 @@ void SingleFluidStepper::prepare(FDM::SolverState& state) {
             state_->time+=state_->dt;++state_->step;emitTimeStep();
         });
     }
-    Run::PlanExecutor::validateBindings(solve_,operations_);
+    Run::PlanExecutor::sealBindings(solve_,operations_);
     prepared_=true;
 }
 void SingleFluidStepper::emitTimeStep() {

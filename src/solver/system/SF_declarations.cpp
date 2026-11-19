@@ -27,11 +27,12 @@ FormulaExpr formula(const P& node,const std::string& source,const FormulaSymbols
     Model::Schema{{{"op","string",true},{"args","array",true},{"occurrence","string"}},false}.validate(node,source);
     const auto name=node.at("op").get<std::string>();
     std::vector<E> args;for(std::size_t i=0;i<node.at("args").size();++i)args.push_back(formula(node.at("args")[i],source+"/args/"+std::to_string(i),symbols,depth+1));
-    return E::op(Math::resolveOperator(name),std::move(args)).atOccurrence(node.value("occurrence",source));
+    return symbols.operation(name,std::move(args)).atOccurrence(node.value("occurrence",source));
 }
 
 ExecutionProgram execution(const P& parameters,int formatVersion,Provenance origin) {
-    Model::Schema{{{"root","any",true},{"residuals","array"}},false}.validate(parameters,origin.source);
+    if(parameters.contains("residuals"))throw std::runtime_error("HOW residual definitions moved to registered residualDefinitions; use While condition: res(id)");
+    Model::Schema{{{"root","any",true},{"placement","array"}},false}.validate(parameters,origin.source);
     const auto parse=[&](const auto& self,const P& value)->ExecutionScope {
         if(value.is_array()) {
             ExecutionScope sequence;
@@ -52,10 +53,12 @@ ExecutionProgram execution(const P& parameters,int formatVersion,Provenance orig
             {"children","array"},{"repetitions","integer"},{"minimumIterations","integer"},
             {"terminationSignal","string"},{"equations","array"},{"unknowns","array"},
             {"residuals","array"},{"residualAll","boolean"},{"failOnMaximum","boolean"},
-            {"sources","array"},{"targets","array"},{"frequency","string"}},false}.validate(value,"HOW node");
+            {"sources","array"},{"targets","array"},{"frequency","string"},{"condition","string"}},false}.validate(value,"HOW node");
         ExecutionScope node;
         const auto kind=value.value("kind",std::string(value.contains("equations")?"BlockSolve":value.contains("equation")?"EquationCall":"Sequence"));
-        if (kind=="Sequence") node.kind=ExecutionKind::Sequence;
+        if (kind=="Push") node.kind=ExecutionKind::Push;
+        else if (kind=="While") node.kind=ExecutionKind::While;
+        else if (kind=="Sequence") node.kind=ExecutionKind::Sequence;
         else if (kind=="Loop") node.kind=ExecutionKind::Loop;
         else if (kind=="StageLoop") {
             if(formatVersion>=2)throw std::runtime_error("Public HOW StageLoop is retired in formatVersion: 2; use an ordered body and select the time recipe in WHICH/numerics.");
@@ -69,20 +72,24 @@ ExecutionProgram execution(const P& parameters,int formatVersion,Provenance orig
         if(value.contains("frequency")) {
             if(formatVersion<2)throw std::runtime_error("HOW frequency requires formatVersion: 2; historical version 1 declares StageLoop explicitly");
             const auto frequency=value.at("frequency").get<std::string>();
-            if(node.kind!=ExecutionKind::Sequence && node.kind!=ExecutionKind::Loop && node.kind!=ExecutionKind::EquationCall && node.kind!=ExecutionKind::BlockSolve)
+            if(node.kind!=ExecutionKind::Sequence && node.kind!=ExecutionKind::Loop && node.kind!=ExecutionKind::While && node.kind!=ExecutionKind::EquationCall && node.kind!=ExecutionKind::BlockSolve)
                 throw std::runtime_error("HOW frequency applies to a mathematical call/group, not a technical/Commit node");
             if(frequency=="Step")node.frequency=ExecutionFrequency::Step;
             else if(frequency=="Stage")node.frequency=ExecutionFrequency::Stage;
             else throw std::runtime_error("Unknown HOW frequency: "+frequency+"; select Step or Stage");
         }
         node.origin=origin;
-        node.repetitions=value.value("repetitions",1);node.minimumIterations=value.value("minimumIterations",1);
+        node.repetitions=value.value("repetitions",1);node.minimumIterations=value.value("minimumIterations",node.kind==ExecutionKind::While?0:1);
         if(value.contains("terminationSignal"))throw std::runtime_error("Native HOW terminationSignal is an internal provider contract; use typed residuals for convergence.");
-        if(value.contains("residuals") || value.contains("residualAll") || value.contains("failOnMaximum")) {
-            if(node.kind!=ExecutionKind::Loop)throw std::runtime_error("HOW residual controls require a Loop scope.");
-            node.residuals=value.value("residuals",std::vector<std::string>{});
-            node.residualAll=value.value("residualAll",true);node.failOnMaximum=value.value("failOnMaximum",true);
-        }
+        if(value.contains("residuals") || value.contains("residualAll"))
+            throw std::runtime_error("HOW selects While condition: res(id); residual definitions/thresholds belong to residualDefinitions");
+        if(node.kind==ExecutionKind::While) {
+            if(!value.contains("condition") || !value.contains("repetitions"))
+                throw std::runtime_error("While requires condition: res(id) and an explicit maximum repetitions");
+            node.condition=value.at("condition").get<std::string>();node.checkAtEntry=true;
+            node.failOnMaximum=value.value("failOnMaximum",true);
+        } else if(value.contains("condition") || value.contains("failOnMaximum"))
+            throw std::runtime_error("Residual condition/failure policy require While");
         if(value.contains("sources") || value.contains("targets")) {
             if(node.kind!=ExecutionKind::Commit || !value.contains("sources") || !value.contains("targets")
                 || value.contains("children"))throw std::runtime_error("HOW variable Commit requires explicit sources/targets and no child scope.");
@@ -120,15 +127,48 @@ ExecutionProgram execution(const P& parameters,int formatVersion,Provenance orig
                 node.children.push_back(self(self,child));
             }
         }
+        if(formatVersion>=2 && node.kind==ExecutionKind::Commit && node.commitSources.empty())
+            throw std::runtime_error("Public physical Commit is retired; use one Push body (state sources/targets acceptance is unchanged)");
         return node;
     };
     ExecutionProgram program;program.root=parse(parse,parameters.at("root"));
     program.recipeScopes=formatVersion>=2;
-    if(parameters.contains("residuals"))for(const auto& entry:parameters.at("residuals")) {
+    if(parameters.contains("placement"))for(const auto& value:parameters.at("placement")) {
+        Model::Schema{{{"scope","string"},{"occurrence","string",true},{"after","array"},{"before","array"}},false}.validate(value,origin.source+"/placement");
+        PlacementRequirement requirement;requirement.scope=value.value("scope",std::string());
+        requirement.occurrence=value.at("occurrence").get<std::string>();
+        requirement.after=value.value("after",std::vector<std::string>{});requirement.before=value.value("before",std::vector<std::string>{});
+        if(requirement.occurrence.empty() || (requirement.after.empty() && requirement.before.empty()))
+            throw std::runtime_error(origin.source+": default placement must name its occurrence and explicit relative position");
+        program.requirements.push_back(std::move(requirement));
+    }
+    if ((program.root.kind!=ExecutionKind::Sequence && program.root.kind!=ExecutionKind::Push) || program.root.children.empty())
+        throw std::runtime_error("Authored HOW root requires a nonempty Push or static Sequence.");
+    return program;
+}
+
+std::vector<ResidualDefinition> residuals(const P& parameters,const std::string& source) {
+    Model::Schema{{{"definitions","array",true}},false}.validate(parameters,source);
+    std::vector<ResidualDefinition> result;
+    for(const auto& entry:parameters.at("definitions")) {
+        if(entry.contains("members")) {
+            Model::Schema{{{"id","string",true},{"members","array",true},{"all","boolean"}},false}.validate(entry,source);
+            ResidualDefinition group;group.id=entry.at("id").get<std::string>();
+            group.members=entry.at("members").get<std::vector<std::string>>();group.all=entry.value("all",true);
+            if(group.members.empty())throw std::runtime_error("Empty residual group: "+group.id);
+            group.origin={OriginKind::User,source+"/"+group.id};result.push_back(std::move(group));continue;
+        }
         Model::Schema{{{"id","string",true},{"occurrence","string",true},{"kind","string"},{"norm","string"},
-            {"normalization","string"},{"absoluteTolerance","number"},{"relativeTolerance","number"},{"scale","number"}},false}.validate(entry,"HOW residual definition");
+            {"normalization","string"},{"absoluteTolerance","number"},{"relativeTolerance","number"},{"scale","number"},{"target","string",true},{"view","string"},{"component","integer"}},false}.validate(entry,"Residual definition");
         ResidualDefinition residual;residual.id=entry.at("id").get<std::string>();
+        residual.origin={OriginKind::User,source+"/"+residual.id};
         residual.occurrence=entry.at("occurrence").get<std::string>();
+        residual.target=entry.at("target").get<std::string>();
+        residual.component=entry.value("component",-1);
+        const auto view=entry.value("view",std::string("Physical"));
+        if(view=="Working")residual.view=TargetKind::Working;
+        else if(view=="Correction")residual.view=TargetKind::Correction;
+        else if(view!="Physical")throw std::runtime_error("Unsupported residual view: "+view);
         const auto kind=entry.value("kind",std::string("StateChange"));
         if(kind=="StateChange")residual.kind=ResidualKind::StateChange;
         else if(kind=="DiscreteEquation")residual.kind=ResidualKind::DiscreteEquation;
@@ -144,11 +184,9 @@ ExecutionProgram execution(const P& parameters,int formatVersion,Provenance orig
         else if(normalization=="None")residual.normalization=ResidualNormalization::None;
         else throw std::runtime_error("Unknown residual normalization: "+normalization);
         residual.absoluteTolerance=entry.value("absoluteTolerance",1e-10);residual.relativeTolerance=entry.value("relativeTolerance",1e-8);
-        residual.scale=entry.value("scale",1.0);program.residuals.push_back(std::move(residual));
+        residual.scale=entry.value("scale",1.0);result.push_back(std::move(residual));
     }
-    if (program.root.kind!=ExecutionKind::Sequence || program.root.children.empty())
-        throw std::runtime_error("Authored HOW root requires a nonempty Sequence.");
-    return program;
+    return result;
 }
 
 std::vector<NumericalBinding> numerics(const P& parameters,Provenance origin) {
@@ -157,7 +195,7 @@ std::vector<NumericalBinding> numerics(const P& parameters,Provenance origin) {
     for (const auto& value:parameters.at("bindings")) {
         if(value.contains("reads"))throw std::runtime_error("WHICH input versions were retired; declare STATE calls/reads for the execution occurrence.");
         Model::Schema{{{"equation","string"},{"step","string"},{"method","string"},{"inputs","array"},
-            {"occurrence","string"},{"parameters","object"},{"operators","array"},{"time","string"}},false}.validate(value,"WHICH binding");
+            {"occurrence","string"},{"parameters","object"},{"operators","array"},{"time","string"},{"response","string"}},false}.validate(value,"WHICH binding");
         if(!value.contains("equation") && !value.contains("step"))throw std::runtime_error("WHICH requires an explicit Equation or Step reference.");
         if(value.contains("step") && value.contains("occurrence"))throw std::runtime_error("WHICH duplicate Step reference: step and occurrence.");
         NumericalBinding binding;
@@ -165,13 +203,14 @@ std::vector<NumericalBinding> numerics(const P& parameters,Provenance origin) {
         binding.equation=value.value("equation",std::string("*"));binding.method=value.value("method",std::string());
         binding.occurrence=value.value(value.contains("step")?"step":"occurrence",std::string());
         binding.inputsDeclared=value.contains("inputs");
+        binding.response=value.value("response",std::string());binding.responseDeclared=value.contains("response");
         if(value.contains("operators"))for(const auto& op:value.at("operators")) {
             Model::Schema{{{"occurrence","string",true},{"provider","string",true},{"equation","string"}},false}.validate(op,"WHICH operator binding");
             binding.operators.emplace_back(op.value("equation",binding.equation),op.at("occurrence").get<std::string>(),op.at("provider").get<std::string>());
         }
         if(value.contains("time")) {
             bool known=false;
-            for(auto id:{FDM::TimeRecipeId::ForwardEuler,FDM::TimeRecipeId::SSPRK3,FDM::TimeRecipeId::ClassicalRK4})
+            for(auto id:{FDM::TimeRecipeId::ForwardEuler,FDM::TimeRecipeId::SSPRK3,FDM::TimeRecipeId::ClassicalRK4,FDM::TimeRecipeId::PartitionedFixedEuler})
                 if(value.at("time").get<std::string>()==FDM::toString(id)){binding.time=id;known=true;break;}
             if(!known)throw std::runtime_error("Unknown WHICH time recipe: "+value.at("time").get<std::string>());
         }

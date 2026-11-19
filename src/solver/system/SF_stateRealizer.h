@@ -8,6 +8,7 @@
 #include "core/state/SF_stateBundle.h"
 #include <memory>
 #include <map>
+#include <tuple>
 #include <vector>
 
 namespace SF::System {
@@ -31,6 +32,8 @@ public:
     /// @brief Bind a numerical provider's existing array, without allocating a second copy.
     void bindView(std::string_view symbol,StateViewKind kind,
         State::DistributedFieldView& field,int stage=-1);
+    /// @brief 准备所选真实视图；相同时间/代次的共享消费者不重复写边界。
+    void prepareSpatial(const StateUse&,double time,int stage=-1);
     std::size_t size() const { return unknowns_.size(); }
     /// @brief Scope-qualified reads; binding is stable, availability is per stage.
     std::function<double(int,int)> stageReader(std::string_view symbol,int stages);
@@ -40,7 +43,9 @@ public:
     std::function<double(int,int)> reader(const StateUse&,int stages);
     /// @brief 数值 workspace 的发布代次；物理数组仍使用其原 registry generation。
     unsigned long long revision(std::string_view symbol) const;
+    unsigned long long revision(const StateUse&) const;
     void publishWorkspace(std::string_view symbol);
+    void publishWorkspace(std::string_view symbol,StateViewKind kind);
     void beginOldTime();
     void publishOldTime();
     void beginStage(int index,int count,double time);
@@ -75,6 +80,8 @@ private:
         std::vector<double> values;
         State::DistributedFieldView field;
     };
+    struct SpatialReady {const State::DistributedFieldView* field=nullptr;unsigned long long revision=0;double time=0;int step=-1;};
+    std::map<std::tuple<std::string,StateVersion,TargetKind,int>,SpatialReady> spatialReady_;
     std::vector<RealizedUnknown> unknowns_;
     std::map<std::string,unsigned long long> workspaceRevisions_;
     std::vector<RealizedStateView> views_;

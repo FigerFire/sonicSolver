@@ -35,6 +35,8 @@ struct PressureConstraintSpec {
 /// Startup composition request. Runtime/execution headers do not include this
 /// type, which keeps model contribution details out of the resolved contract.
 struct BuildRequest {
+    /// @brief 控制层选择已配置源；目标在真实方程声明齐备后解析。
+    bool configuredSources=false;
     /// Explicit C++ composition can supply its entire mathematical system.
     /// This only omits the default preset; selected flow providers retain their checks.
     bool includeDefaultFluidPreset = true;

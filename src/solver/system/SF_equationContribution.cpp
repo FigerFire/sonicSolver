@@ -125,6 +125,7 @@ void SystemCompositionBuilder::applyContribution(SystemContribution contribution
         if (system_.immersed) throw std::runtime_error("Duplicate resolved immersed port selection.");
         system_.immersed=contribution.immersed;
     }
+    residuals.insert(residuals.end(),contribution.residuals.begin(),contribution.residuals.end());
     placement.insert(placement.end(),contribution.placement.begin(),contribution.placement.end());
     for (auto& node:contribution.execution) {
         node.origin=origin_; execution.push_back(std::move(node));
@@ -164,15 +165,35 @@ void SystemCompositionBuilder::finalizeMathematics() {
         for (auto equation:entries) {
             const bool applies=std::any_of(extension.families.begin(),extension.families.end(),
                 [&](const std::string& family) {
-                    return equation.id==family || equation.id.rfind(family+".",0)==0;
+                    return equation.id==family || (!extension.exactEquation && equation.id.rfind(family+".",0)==0);
                 });
             if (!applies) continue;
             const auto identity=canonicalFormula(Equation{{},FormulaExpr::constantValue(0),extension.rhs,{}});
-            system_.modifications.push_back({ModificationKind::Extend,"equation",equation.id,identity,pending.second});
-            equation.rhs=FormulaExpr::add(std::move(equation.rhs),extension.rhs);
+            system_.modifications.push_back({extension.replaceOccurrence.empty()?ModificationKind::Extend:ModificationKind::Replace,"equation",equation.id,identity,pending.second});
+            if(extension.replaceOccurrence.empty())equation.rhs=FormulaExpr::add(std::move(equation.rhs),extension.rhs);
+            else {
+                int count=0;
+                const auto replace=[&](const auto& self,const FormulaExpr& expression)->FormulaExpr {
+                    if(expression.occurrence()==extension.replaceOccurrence) {
+                        ++count;
+                        if(extension.replacedOperator && expression.operation()!=*extension.replacedOperator)
+                            throw std::runtime_error("Mathematical replacement expects "+std::string(Math::name(*extension.replacedOperator))+
+                                " at "+equation.id+" / "+extension.replaceOccurrence);
+                        Math::requireCompatible(expression.signature(),extension.rhs.signature(),
+                            "model occurrence replacement "+equation.id+" / "+extension.replaceOccurrence);
+                        return extension.rhs;
+                    }
+                    auto children=expression.arguments();for(auto& child:children)child=self(self,child);
+                    return children.empty()?expression:expression.withArguments(std::move(children));
+                };
+                equation.rhs=replace(replace,equation.rhs);
+                if(count!=1)throw std::runtime_error("Mathematical replacement requires exactly one occurrence: "+equation.id+" / "+extension.replaceOccurrence);
+            }
             system_.registry.replace(std::move(equation));
             matched=true;
         }
+        if(!matched && !extension.replaceOccurrence.empty())
+            throw std::runtime_error("Missing equation for mathematical replacement: "+extension.families.at(0)+" / "+extension.replaceOccurrence);
         if (!matched) throw std::runtime_error("Source contribution has no registered target equation: "+pending.second.source);
     }
     extensions_.clear();

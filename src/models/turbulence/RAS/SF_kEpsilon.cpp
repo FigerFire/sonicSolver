@@ -6,6 +6,7 @@
 /*----------code by LPF, 2026.05.28-----------*/
 
 #include "SF_kEpsilon.h"
+#include "models/turbulence/SF_transportMathematics.h"
 
 #include <algorithm>
 
@@ -49,7 +50,7 @@ FDM::TransportCellClosure KEpsilonModel::onceStepClosure(const Field& flow,const
     double epsVal = clampPositive(state.Epsilon(i, j, k), coeff.epsilonFloor);
 
     // Eddy viscosity: standard k-epsilon  (Cmu * rho * k^2 / epsilon)
-    double muT = coeff.cMu * rho * kVal * kVal / epsVal;
+    double muT = kEpsilonViscosity(coeff.cMu,rho,kVal,epsVal);
 
     double sMag = strainRateMagnitude(flow, i, j, k);
     double production = std::min(muT * sMag * sMag,
@@ -75,7 +76,7 @@ double KEpsilonModel::eddyDynamicViscosity(const Field& flow,
     double rho = std::max(flow(i, j, k, RHO), 1.0e-12);
     double kVal = clampPositive(state.clamped(ScalarSlot::K, i, j, k), config.coefficients.kFloor);
     double epsVal = clampPositive(state.clamped(ScalarSlot::Epsilon, i, j, k), config.coefficients.epsilonFloor);
-    return config.coefficients.cMu * rho * kVal * kVal / epsVal;
+    return kEpsilonViscosity(config.coefficients.cMu,rho,kVal,epsVal);
 }
 
 } // namespace RAS

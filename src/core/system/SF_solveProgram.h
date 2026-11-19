@@ -65,6 +65,8 @@ struct EquationCall {
     bool stageScoped=false;
     /// @brief 由 STATE 调用绑定冻结，WHICH 不再选择读取版本。
     std::vector<StateUse> inputs;
+    /// @brief 仅显式 Step 频率；不从算法名推断。
+    bool stepScoped=false;
 };
 
 /// @brief 收敛量的数学含义由所选实现提供，控制层只规定范数与判据。
@@ -82,13 +84,20 @@ struct ResidualDefinition {
     double absoluteTolerance=1e-10,relativeTolerance=1e-8,scale=1.0;
     /// @brief 编译器冻结采样者，runtime 不按目标名称重新选择实现。
     std::string producerOperation,provider,target;
+    /// @brief 残差采样的实际输出视图；不选择另一个求解目标。
+    TargetKind view=TargetKind::Physical;
+    Provenance origin;
+    /// @brief 同一残差模块内的组合判据；组合本身不绑定采样器。
+    std::vector<std::string> members;
+    bool all=true;
+    int component=-1;
 };
 
 /// @brief HOW 的执行频率；Inherit 继承显式父scope，绝不按provider或相邻节点推断。
 enum class ExecutionFrequency { Inherit, Step, Stage };
 inline const char* toString(ExecutionFrequency f){return f==ExecutionFrequency::Step?"Step":f==ExecutionFrequency::Stage?"Stage":"Inherit";}
 
-enum class ExecutionKind { Sequence, EquationCall, Loop, StageLoop, Commit, BlockSolve };
+enum class ExecutionKind { Sequence, EquationCall, Loop, StageLoop, Commit, BlockSolve, Push, While };
 
 struct ExecutionScope {
     ExecutionKind kind = ExecutionKind::Sequence;
@@ -104,8 +113,13 @@ struct ExecutionScope {
     std::string terminationSignal;
     std::vector<std::string> residuals;
     bool residualAll=true,failOnMaximum=true;
+    /// @brief While在已有有效样本时先检查；无样本为Pending，进入首轮。
+    bool checkAtEntry=false;
     std::vector<Target> commitSources,commitTargets;
     ExecutionFrequency frequency=ExecutionFrequency::Inherit;
+    /// @brief 算法预制向组合层导出的数学接入位置；不参与运行时分派。
+    std::vector<std::string> slots;
+    std::string condition; // res(id) 或无歧义的 res(target)，仅声明输入。
 };
 
 struct ExecutionProgram {
@@ -130,6 +144,8 @@ struct ExecutionProgram {
 
 inline const char* toString(ExecutionKind value) {
     switch (value) {
+        case ExecutionKind::Push: return "Push";
+        case ExecutionKind::While: return "While";
         case ExecutionKind::Sequence: return "Sequence";
         case ExecutionKind::EquationCall: return "EquationCall";
         case ExecutionKind::Loop: return "Loop";
@@ -197,6 +213,8 @@ struct SolvePlanNode {
     std::string provider;
     std::vector<ResidualDefinition> residuals;
     bool residualAll=true,failOnMaximum=true;
+    /// @brief While在已有有效样本时先检查；无样本为Pending，进入首轮。
+    bool checkAtEntry=false;
 };
 
 /// @brief Provider 声明允许版本；compiler 冻结唯一 coefficient producer/resource。
@@ -237,7 +255,24 @@ inline constexpr const char* PublishReady="time.group.publishReady";
 }
 
 /// @brief 一个已选数值动作的身份；只声明输入准备/结果发布，不携带控制流。
-struct BoundOperation { OpId operation;std::string provider; };
+struct BoundOperation {
+    OpId operation;std::string provider;
+    /// @brief 此准备操作建立本物理步唯一的 time/dt 区间，不选择时间算法。
+    bool beginsPhysicalInterval=false;
+};
+
+/// @brief 已编译的定向体积面通量；几何 cofactor 含面积，消费时除节点控制体积。
+struct CompiledFaceFlux {
+    std::string symbol,velocity,storage;
+    TargetKind version=TargetKind::Physical;
+    std::string publication;
+    std::vector<std::string> numericalInputs;
+    bool corrected=false;
+    TargetKind velocityView=TargetKind::Working;
+    std::string response;
+};
+inline std::string faceFluxPublication(const std::string& storage) {return "face.published:"+storage;}
+
 
 struct CompiledEquationCall {
     EquationCall source;
@@ -250,6 +285,7 @@ struct CompiledEquationCall {
     bool iterationSignalRequired=false;
     /// @brief 本方法的物理结果在 authored Commit 发布；时间推进由过程编译器产生。
     BoundOperation physicalPublication;
+    std::optional<CompiledFaceFlux> faceFlux;
     bool spatialTerms = false;
     bool primitiveSourceRequired = false;
     std::string residualWorkspace;
@@ -266,7 +302,6 @@ struct CompiledEquationCall {
     std::vector<std::string> stageRequires,stageProvides,coefficientProvides,coefficientStates;
     OpId coefficientPrepare,coefficientPublish;
     StateVersion coefficientVersion=StateVersion::Stage;
-    std::vector<StateUse> coefficientInputs;
     std::vector<CoefficientUse> coefficientUses;
     /// Provider-owned step setup; temporal recipes own stage topology/math.
     std::vector<OpId> temporalPreparation;
@@ -274,7 +309,6 @@ struct CompiledEquationCall {
     OpId temporalSnapshot;
     OpId temporalStagePrepare, temporalRhs, temporalAdvance, temporalPublish;
     std::string temporalOwner;
-    std::vector<TemporalParticipant> temporalParticipants;
     /// @brief WHICH declares temporal storage; STATE does not select a time backend.
     std::string oldTimeWorkspace;
     std::string stageWorkspace;
@@ -304,9 +338,10 @@ struct CompiledEquationCall {
     /// Explicit local fusion contract; a shared backend/provider alone never fuses calls.
     std::string fusionKey;
     std::vector<CompiledMathRef> fusionMembers;
-    /// @brief Provider-owned immutable implementation contract; generic HOW lowering never interprets it.
-    /// @brief 方法显式读取的限定版本；compiler 冻结到同一 provider-owned view。
-    std::vector<CompiledStateView> viewReads;
+    /// @brief 旧压力内核的附加借用请求。物理布局只保存在编译程序的 stateViews。
+    std::vector<Target> borrowedViews;
+    /// @brief 同次调用真实发布的附加借用视图；不创建第二份物理状态或调度。
+    std::vector<CompiledStateView> viewOutputs;
     std::vector<StateUse> stateUses;
     std::vector<StateEffect> stateEffects;
     std::vector<std::string> capabilities;
@@ -314,8 +349,12 @@ struct CompiledEquationCall {
     std::vector<CapabilityRequirement> capabilityRequirements;
     /// @brief 所选实现要求的具体运行端口；资源 owner 在 application 绑定，HOW 不分配。
     std::vector<ResourceViewRequirement> physicalResources;
+    /// @brief 所选方法的不可变计算数据；过程编译与执行器不解释它。
     std::any providerContract;
     std::vector<ResidualKind> residualCapabilities;
+    std::string residualTarget;
+    /// @brief 多量纲采样必须显式选择分量。
+    int residualComponents=1;
 };
 
 struct CompiledExecutionProgram {

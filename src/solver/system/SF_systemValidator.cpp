@@ -173,10 +173,13 @@ void validate(const ResolvedSimulationSystem& system) {
         throw std::runtime_error("Unsupported resource assembly: phase old-time/shared-pressure layout cannot yet share the single-field packed or pressure-correction workspace and clock binding.");
     if (pressure && packed)
         throw std::runtime_error("Unsupported resource assembly: constant-density U/p correction storage and packed conservative storage require distinct, not yet composable pressure publication bindings.");
-    for(const auto& binding:system.runtime.operationBindings)
-        if(binding.operation==OpIds::FluxCorrect && binding.status==BindingStatus::Resolved
-            && binding.provider=="flow.rhie-chow" && !pressure)
-            throw std::runtime_error("Rhie-Chow operation has no declared persistent pressureFaceFlux owner/resource contract.");
+    for(const auto& binding:system.runtime.operationBindings) {
+        if(binding.status!=BindingStatus::Resolved || binding.provider!="flow.rhie-chow")continue;
+        if(binding.operation==OpIds::FaceFluxPredict && !programOf(system).numerics.facePrediction)
+            throw std::runtime_error("Face prediction lacks its compiled surfaceFlux resource/response contract");
+        if(binding.operation==OpIds::FluxCorrect && !pressure)
+            throw std::runtime_error("Flux correction lacks its pressure-correction resource contract; prediction alone does not supply it");
+    }
     std::set<OpId> resolvedBindings;
     std::set<OpId> missingBindings;
     for (const auto& binding : system.runtime.operationBindings) {

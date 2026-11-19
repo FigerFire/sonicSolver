@@ -254,6 +254,13 @@ std::string canonicalFormula(const Equation& formula) {
     return output.str();
 }
 
+bool sameFormulaExpression(const FormulaExpr& a,const FormulaExpr& b) {
+    std::ostringstream left,right;
+    encode(left,a);
+    encode(right,b);
+    return left.str()==right.str();
+}
+
 std::string formulaText(const Equation& formula) {
     return textOf(formula.lhs)+" = "+textOf(formula.rhs);
 }

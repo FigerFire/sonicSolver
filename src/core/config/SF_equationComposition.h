@@ -95,6 +95,8 @@ struct EquationCompositionConfig {
     std::vector<std::string> equations;
     ThermoDynamicsSelection thermoDynamics;
     std::string algorithm;
+    /// @brief 普通速度压力预制使用的显式 WHAT 引用。
+    std::string predictorEquation;
     int outerCorrectors = 1;
     int pressureCorrectors = 1;
     int nonOrthogonalCorrectors = 0;

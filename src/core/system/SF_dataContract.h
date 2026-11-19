@@ -20,6 +20,8 @@ struct StateEffect {
     bool publish=false;
     bool halo=false;
     bool invalidatesLazy=true;
+    /// @brief Current 消费需本次关系发布后输入仍有效。
+    bool tracksInputs=false;
 };
 /// @brief 能力必须服务于同一方程、流体端口和边界；空绑定仅表示全局能力。
 struct CapabilityBinding {

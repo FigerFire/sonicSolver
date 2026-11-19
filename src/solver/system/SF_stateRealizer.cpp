@@ -79,6 +79,31 @@ const RealizedUnknown& StateRealization::at(std::string_view id) const {
 }
 
 std::function<double(int,int)> StateRealization::reader(const StateUse& use,int stages) {
+    if(use.version==StateVersion::Frozen && use.kind==TargetKind::Physical && use.perIteration && !use.halo && use.snapshot.empty()) {
+        const auto& resource=view(use.symbol,StateViewKind::Frozen);
+        if(resource.fields.size()!=1 || !resource.fields.front()->requireReadable || !resource.fields.front()->revision)
+            throw std::runtime_error("Frozen input lacks actual publication backing: "+use.symbol);
+        const auto field=*resource.fields.front();const auto lifetime=std::weak_ptr<StageEpoch>(epoch_);
+        return [field,lifetime](int cell,int component) {
+            if(lifetime.expired())throw std::runtime_error("Expired Frozen STATE owner");
+            field.requireReadable();return field.read(cell,component);
+        };
+    }
+    if(use.kind==TargetKind::Working && use.version==StateVersion::Current && !use.halo && use.snapshot.empty() && !use.perIteration) {
+        const auto& resource=view(use.symbol,StateViewKind::Working);
+        if(resource.fields.size()!=1 || !resource.fields.front()->requireReadable || !resource.fields.front()->revision)
+            throw std::runtime_error("Working reader needs one actual publication/revision backing: "+use.symbol);
+        const auto field=*resource.fields.front();const auto shape=resource.descriptor;
+        if(!state_ || std::find(state_->patches.begin(),state_->patches.end(),field.geometry)==state_->patches.end()
+            || field.components<shape.componentOffset+shape.components)
+            throw std::runtime_error("Working input geometry/shape does not match its actual STATE: "+use.symbol);
+        const auto lifetime=std::weak_ptr<StageEpoch>(epoch_);
+        return [field,shape,lifetime](int cell,int component){
+            if(lifetime.expired())throw std::runtime_error("Expired Working STATE owner: "+shape.symbol);
+            if(component<0 || component>=shape.components)throw std::runtime_error("Working STATE component mismatch: "+shape.symbol);
+            field.requireReadable();return field.read(cell,shape.componentOffset+component);
+        };
+    }
     if(use.kind!=TargetKind::Physical || use.halo || !use.snapshot.empty() || use.perIteration)
         throw std::runtime_error("Unsupported bound reader qualifier: "+use.symbol);
     if(use.version==StateVersion::Stage)return stageReader(use.symbol,stages);
@@ -106,6 +131,24 @@ unsigned long long StateRealization::revision(std::string_view symbol) const {
     }
     if(input.fields.size()!=1)throw std::runtime_error("Revision requires a bound single-patch STATE: "+std::string(symbol));
     return state_->distributed.generation(input.fields.front()->name,input.fields.front()->blockId);
+}
+unsigned long long StateRealization::revision(const StateUse& use) const {
+    if(use.kind==TargetKind::Physical)return revision(use.symbol);
+    const auto& resource=view(use.symbol,use.kind==TargetKind::Working?StateViewKind::Working:StateViewKind::Correction);
+    if(resource.descriptor.owner==StateViewOwner::CompilerWorkspace) {
+        const auto at=workspaceRevisions_.find(resource.descriptor.storage);
+        return at==workspaceRevisions_.end()?0:at->second;
+    }
+    if(resource.fields.size()!=1 || !resource.fields.front()->revision)
+        throw std::runtime_error("Missing numerical view revision: "+use.symbol);
+    if(resource.fields.front()->requireReadable)resource.fields.front()->requireReadable();
+    return resource.fields.front()->revision();
+}
+void StateRealization::publishWorkspace(std::string_view symbol,StateViewKind kind) {
+    const auto& resource=view(symbol,kind);
+    if(resource.descriptor.owner!=StateViewOwner::CompilerWorkspace)
+        throw std::runtime_error("Only the actual compiler workspace writer can publish this view: "+std::string(symbol));
+    ++workspaceRevisions_[resource.descriptor.storage];
 }
 void StateRealization::publishWorkspace(std::string_view symbol) {
     const auto& descriptor=*at(symbol).descriptor;
@@ -386,6 +429,21 @@ bool StateRealization::requestsView(std::string_view symbol,StateViewKind kind,i
         return value.descriptor.symbol==symbol && value.descriptor.kind==kind
             && value.descriptor.stage==stage;
     });
+}
+
+void StateRealization::prepareSpatial(const StateUse& use,double time,int stage) {
+    if(!state_ || !std::isfinite(time))throw std::runtime_error("Spatial preparation lacks a physical interval/time: "+use.symbol);
+    const auto& fields=use.version==StateVersion::Stage?view(use.symbol,StateViewKind::Stage,stage).fields:
+        use.version==StateVersion::Current?(use.kind==TargetKind::Physical?at(use.symbol).fields:view(use.symbol,StateViewKind::Working).fields):
+        throw std::runtime_error("No spatial preparation port for requested version: "+use.symbol);
+    if(fields.size()!=1 || !fields.front()->prepareSpatial)throw std::runtime_error("Missing actual-version spatial boundary port: "+use.symbol);
+    auto* field=fields.front();if(field->requireReadable)field->requireReadable();
+    const auto generation=[&]{return field->revision?field->revision():revision(use);};
+    auto& ready=spatialReady_[{use.symbol,use.version,use.kind,stage}];
+    if(ready.field==field && ready.revision==generation() && ready.time==time && ready.step==state_->step)return;
+    ready.field=nullptr; // Failed preparation must not leave a readable readiness claim.
+    field->prepareSpatial(time);
+    ready={field,generation(),time,state_->step};
 }
 
 void StateRealization::bindView(std::string_view symbol,StateViewKind kind,

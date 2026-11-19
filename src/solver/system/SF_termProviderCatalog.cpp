@@ -96,6 +96,7 @@ ResolvedTermProvider TermProviderCatalog::resolve(
             result.compiledDataAvailable=true;
         }
         result.primitiveSpatial=candidates.front()->primitiveSpatial;
+        result.gradient=candidates.front()->gradient;
         if(candidates.front()->compileFieldSource) {
             const auto nested=[&](const auto& self,const FormulaExpr& e)->void {
                 for(const auto& b:bindings)if((b.formula==context.formula.id && !b.occurrence.empty() && b.occurrence==e.occurrence())

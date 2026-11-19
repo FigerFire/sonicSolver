@@ -51,7 +51,7 @@ ProviderCatalog ProviderCatalog::builtIn() {
     ProviderCatalog catalog;
     catalog.add({"execution.state",{OperationCapability::StatePublication}});
     catalog.add({TemporalOps::Provider,{OperationCapability::TemporalSynchronization,OperationCapability::PhysicalTimeCommit}});
-    catalog.add({"equation.thermal",{OperationCapability::ScalarExplicit}});
+    catalog.add({"equation.cell-explicit",{OperationCapability::ScalarExplicit,OperationCapability::PhysicalTimeCommit}});
     catalog.add({"equation.scalar-central2",{OperationCapability::ScalarExplicit,OperationCapability::SparseLinearSolve}});
     catalog.add({"equation.scalar-transport",{OperationCapability::ScalarExplicit}});
     catalog.add({"equation.scalar-shared-flux",{OperationCapability::ScalarExplicit}});

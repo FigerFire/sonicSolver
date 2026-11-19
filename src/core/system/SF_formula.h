@@ -71,6 +71,21 @@ public:
         Math::requireKnown(signature);
         if(!symbols_.emplace(std::move(name),signature).second)throw std::runtime_error("Duplicate mathematical symbol");
     }
+    /// @brief 从活动数学声明收集扩展规则；只复用同一AST规则，不执行模型或分配字段。
+    void declareOperator(const Math::OperatorRule& rule) {
+        const auto found=operators_.find(rule.id);
+        if(found!=operators_.end() && found->second!=rule.result)throw std::runtime_error("Conflicting mathematical operator signature: "+std::string(rule.id));
+        operators_[rule.id]=rule.result;
+    }
+    void declareOperators(const FormulaExpr& expression) {
+        if(expression.operation()==Math::Op::Extension)declareOperator({expression.name().c_str(),expression.extensionRule()});
+        for(const auto& child:expression.arguments())declareOperators(child);
+    }
+    FormulaExpr operation(const std::string& name,std::vector<FormulaExpr> inputs) const {
+        const auto found=operators_.find(name);
+        if(found==operators_.end())return FormulaExpr::op(Math::resolveOperator(name),std::move(inputs));
+        return FormulaExpr::op(Math::OperatorRule{name.c_str(),found->second},std::move(inputs));
+    }
     FormulaExpr at(std::string_view name) const {
         const auto at=symbols_.find(std::string(name));
         if(at==symbols_.end())throw std::runtime_error("Unknown declared mathematical symbol: "+std::string(name));
@@ -78,6 +93,7 @@ public:
     }
 private:
     std::map<std::string,Math::Signature> symbols_;
+    std::map<std::string,Math::Signature (*)(const std::vector<Math::Signature>&)> operators_;
 };
 
 /// @brief Stable equation identity and its mathematical AST. Targets and order belong to HOW.
@@ -113,6 +129,8 @@ private:
 
 /// @brief Structural equality key. Origin and display labels are excluded.
 std::string canonicalFormula(const Equation& formula);
+/// @brief 比较规范 AST 形状和操作数，忽略 occurrence 标签。
+bool sameFormulaExpression(const FormulaExpr&,const FormulaExpr&);
 std::string formulaText(const Equation& formula);
 bool dependsOn(const FormulaExpr& expression, std::string_view symbol);
 } // namespace SF::System

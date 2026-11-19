@@ -276,11 +276,6 @@ void MultiPhaseModel::configure(const MultiPhaseConfig& config) {
 }
 
 void MultiPhaseModel::initialize(const Field& field) {
-    if (isThermal()) {
-        initializeTemperature(field);
-        initialized_ = true;
-        return;
-    }
     if (isMixture()) {
         initializeAlpha(field);
         return;
@@ -616,16 +611,6 @@ void MultiPhaseModel::applyAuxiliaryBoundaryConditions(const Field& field) {
             "MultiPhaseModel::applyAuxiliaryBoundaryConditions called before initialization.");
     }
 
-    if (isThermal()) {
-        if (config_.temperature.enabled && hasTemperature_) {
-            FDM::Scalar::applyBoundaryConditions(
-                field, temperature_, config_.temperature.boundaryConditions,
-                scalarILWEnabled_, scalarILWAccuracyOrder_);
-            FDM::Scalar::applyBounds(
-                field, temperature_, temperatureBounds(config_));
-        }
-        return;
-    }
 
     if (isMixture()) {
         const auto boundaries = phaseMassBoundaries(config_);
@@ -651,9 +636,6 @@ void MultiPhaseModel::updateFlowCoupling(const Field& field) {
     }
 
     applyAuxiliaryBoundaryConditions(field);
-    if (isThermal()) {
-        return;
-    }
 
     if (isMixture()) {
         updateAlphaFromPhaseMass(field);
@@ -673,9 +655,6 @@ void MultiPhaseModel::addSourceTerms(Field& field, Residual& residual) const {
             "MultiPhaseModel::addSourceTerms called before initialization.");
     }
 
-    if (isThermal()) {
-        return;
-    }
 
     if (isMixture() && hasPhaseChangeSource_) {
         if ((int)phaseChangeEnergySource_.size() != field.TotalSize()) {
@@ -721,8 +700,6 @@ double MultiPhaseModel::dynamicViscosity(const Field& field,
                 "MultiPhaseModel::dynamicViscosity: mixture viscosity cache is not current.");
         }
         value = mixtureViscosity_[(size_t)alpha_.getIdx(i, j, k)];
-    } else if (isThermal()) {
-        value = laminarMu;
     } else {
         throw std::runtime_error(
             "MultiPhaseModel::dynamicViscosity: unsupported model type '"

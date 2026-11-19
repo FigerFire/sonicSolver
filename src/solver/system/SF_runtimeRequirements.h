@@ -110,7 +110,7 @@ inline bool requiresOperation(const RuntimeRequirements& requirements,std::strin
     return std::find(operations.begin(),operations.end(),id)!=operations.end();
 }
 
-/// @brief 已选 PressureMomentum 实现的资源契约；不按字段名或单个 OpId 启用算法。
+/// @brief 实际 cell response 与 pressure correction 的资源契约；不按字段名或单个 OpId 启用算法。
 /// 返回现有冻结数值输入；核验 STATE backing、完整操作组与持久面通量归属。
 /// 没有该方法调用时返回 nullptr，不将未消费的默认配置变成活动资源。
 const PressureNumericalConfig* requiredPressureInputs(const Program&);

@@ -25,6 +25,7 @@ public:
     /// A request activates catalog metadata at freeze; it adds no equations/storage.
     void requireState(std::string id) { requiredStates.push_back(std::move(id)); }
     std::vector<std::string> requiredStates;
+    std::vector<ResidualDefinition> residuals;
     void addEquation(Equation equation);
     void addConstraint(ConstraintDescriptor constraint);
     void addClosure(std::string closure,std::vector<std::string> equations={},std::vector<std::string> states={},std::vector<std::string> outputs={});

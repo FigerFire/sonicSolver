@@ -41,10 +41,9 @@ public:
     double dynamicViscosity(
         const Field& field, int i, int j, int k,
         double laminarMu) const override;
+    bool hasStageViscosityPublication() const override;
     std::vector<std::string> stageScalarTargets() const override;
-    FDM::TransportStageCoefficients stageCoefficients(const Field&,const FDM::TransportStageSamples&,int,int,int) const override;
     FDM::ScalarEquationData stageScalarData(const Field&,const std::string&) const override;
-    void publishStageViscosity(const Field&,const std::vector<double>&) override;
     std::vector<std::string> distributedReadFields() const override;
     std::vector<std::string> distributedWriteFields() const override;
     int distributedHaloDepth() const override;

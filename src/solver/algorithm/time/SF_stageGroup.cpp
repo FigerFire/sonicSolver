@@ -30,8 +30,7 @@ struct Epoch {
 }
 void bindStageGroup(Run::OpRegistry& ops,const System::CompiledSolvePlan& plan,
         const System::CompiledNumericalSystem& numerical,State::StateBundle& state,
-        System::StateRealization& views,const double& limit,std::vector<TemporalCallbacks> callbacks,
-        std::vector<std::function<void()>> inputBindings) {
+        System::StateRealization& views,const double& limit,std::vector<TemporalCallbacks> callbacks) {
     System::validateCoefficientContracts(plan.compiledProgram);
     const auto reason=System::Lowering::validateTemporalPlan(plan,numerical.time.recipe.stageCount());
     if(!reason.empty())throw std::runtime_error(reason);
@@ -45,9 +44,6 @@ void bindStageGroup(Run::OpRegistry& ops,const System::CompiledSolvePlan& plan,
             || !callbacks[i].prepare || !callbacks[i].rhs || !callbacks[i].advance
             || !callbacks[i].stepSize || !callbacks[i].validatePublish || !callbacks[i].publish)
             throw std::runtime_error("Missing/mismatched temporal participant binding.");
-    views.bindDerivedViews();
-    for(auto& bind:inputBindings)bind();
-    for (auto& callback:callbacks) if (callback.bindReads) callback.bindReads();
     auto epoch=std::make_shared<Epoch>(Epoch{state,views,numerical.time.recipe,std::move(callbacks),
         std::vector<int>(participants.size())});
     epoch->coefficientsReady.resize(participants.size());

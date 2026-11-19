@@ -4,6 +4,8 @@
 
 #include "SF_pressureCoupling.h"
 #include "SF_equationContribution.h"
+#include "SF_affine.h"
+#include "SF_cell.h"
 #include "SF_scalarMethod.h"
 #include "SF_solvePlan.h"
 #include "SF_numericalSystem.h"
@@ -58,27 +60,40 @@ bool hasMomentumEquation(const RawEquationSystem& raw) {
 std::string validatePressureProgram(const ExecutableEquationSystem& equations,
         const CompiledNumericalSystem& numerics,const CompiledSolvePlan& plan) {
     const auto& program=plan.compiledProgram;
-    if(!numerics.pressureMomentum || !numerics.pressureOperator
-        || numerics.pressureFaceCoupling!=PressureFaceCoupling::RhieChow)
-        return "PressureMomentum requires its compiled term contract, numerical inputs and persistent Rhie-Chow flux";
+    if(!numerics.facePrediction || numerics.facePrediction->response.empty() || !numerics.pressureOperator
+        || !numerics.facePrediction)
+        return "Pressure correction needs a compiled cell response, numerical inputs and persistent Rhie-Chow flux";
     if(equations.constraints.size()!=1 || equations.constraints.front().id!="C_INCOMPRESSIBILITY")
         return "Constant-density pressure requires its incompressibility constraint; additional constraint treatment is not implemented";
     if(plan.compiledProgram.hasTemporalRoot || !program.temporalParticipants.empty())
         return "Pressure correction has no coupled RK participant/stage treatment";
     for(const auto& boundary:equations.boundaryClosures)
         return "Pressure spatial boundary port is not implemented for declared closure "+boundary.id+" (owner="+boundary.provider+")";
-    bool fixed=false,working=false;
+    bool fixed=false;
+    const auto response=std::find_if(program.steps.begin(),program.steps.end(),[&](const auto& call){return call.source.occurrence==numerics.facePrediction->response;});
+    const bool working=response!=program.steps.end() && response->target.kind==TargetKind::Working;
     std::set<std::string> protectedStorage;
     const auto protect=[&](const std::string& id) {
         protectedStorage.insert(id);
         if(equations.state.contains(id))protectedStorage.insert(equations.state.at(id).storageKey);
     };
-    for(const auto& call:program.steps)if(!std::any_cast<CompiledAffineEquation>(&call.providerContract)) {
+    for(const auto& call:program.steps)if(!cellEquation(call) && !std::any_cast<CompiledAffineEquation>(&call.providerContract) && !std::any_cast<CompiledScalarEquation>(&call.providerContract) && call.coefficientProvides.empty()) {
         const auto context="Pressure HOW step="+call.source.occurrence+" equation="+call.source.equation+" target="+call.target.symbol+": ";
-        if(call.backendProvider!="flow.pressure-operators" && call.backendProvider!="flow.rhie-chow")
-            return context+"no pressure-compatible local/time/resource treatment for selected method "+call.equationMethod;
-        fixed|=call.equationMethod=="FixedTimeRelaxation";
-        if(call.equationMethod=="PressureMomentum")working=call.target.kind==TargetKind::Working;
+        const std::set<std::string> pressureActions{
+            OpIds::CellPrepare,OpIds::CellAccept,OpIds::FaceFluxPredict,OpIds::PressureBoundaryPrepare,
+            OpIds::PressureAssemble,OpIds::PressureSolve,OpIds::PressureUpdatePrepare,
+            OpIds::VelocityCorrect,OpIds::FluxCorrect,OpIds::PressureCorrectionCommit,
+            OpIds::PressureRelaxationApply,OpIds::PressureFluxConsistencyRestore,OpIds::PressureConvergenceEvaluate};
+        bool found=false,valid=true;
+        const auto action=[&](const std::string& id){if(!id.empty()){found=true;valid=valid && pressureActions.count(id);}};
+        action(call.backendOperation);
+        const auto fragment=[&](const auto& self,const SolvePlanNode& node)->void {
+            action(node.operation);for(const auto& child:node.children)self(self,child);
+        };fragment(fragment,call.fragment);
+        if(!found || !valid)return context+"selected operations lack an implemented fixed-time pressure resource treatment";
+        fixed|=std::any_of(call.stepInputs.begin(),call.stepInputs.end(),[](const auto& input) {
+            return input.operation==OpIds::PressureStepBegin;
+        });
         for(const auto* ids:{&call.writes,&call.workspaceRequires,&call.workspaceProvides,&call.workspaceInvalidates})
             for(const auto& id:*ids)protect(id);
         protect(call.target.workspace);
@@ -95,23 +110,120 @@ std::string validatePressureProgram(const ExecutableEquationSystem& equations,
     }
     if(working!=fixed)return "Pressure Working predictor and fixed-time relaxation must be selected together";
     std::set<std::string> localOwners;
-    for(const auto& call:program.steps)if(const auto* affine=std::any_cast<CompiledAffineEquation>(&call.providerContract)) {
+    for(const auto& call:program.steps)if(std::any_cast<CompiledAffineEquation>(&call.providerContract)) {
         const auto context="Pressure local step="+call.source.occurrence+" equation="+call.source.equation+" target="+call.target.symbol+": ";
-        const auto& output=equations.state.at(affine->target);
+        const auto& output=equations.state.at(call.target.symbol);
+        if(protectedStorage.count(output.id) || protectedStorage.count(output.storageKey))
+            return context+"aliases protected predictor/pressure storage="+output.storageKey+"; no explicit consistency treatment for this writer";
+        const bool independentBacking=output.storageBinding==StorageBinding::TransientWorkspace
+            || (output.evaluation==StateEvaluation::Materialized
+                && (output.storageBinding==StorageBinding::NamedDistributed
+                    || output.storageBinding==StorageBinding::ProviderDistributed));
         if(call.stageLocal || call.temporalResidual || call.target.kind!=TargetKind::Physical
-            || output.storageBinding!=StorageBinding::TransientWorkspace || output.storageKey.empty()
-            || protectedStorage.count(output.id) || protectedStorage.count(output.storageKey))
-            return context+"requires an independent materialized scalar workspace; pressure state/flux writes need an implemented consistency treatment";
+            || !independentBacking || output.storageKey.empty())
+            return context+"requires independent materialized scalar storage; pressure state/flux writes need an implemented consistency treatment";
         if(!localOwners.insert(output.storageKey).second)
-            return context+"workspace has multiple local publication owners";
-        for(const auto& read:affine->valueReads)
-            if(read.version!=StateVersion::Current || read.kind!=TargetKind::Physical || read.halo || !read.snapshot.empty() || read.perIteration)
-                return context+"requires an existing Current read-only input; no Stage/OldTime/snapshot pressure treatment is bound";
+            return context+"storage has multiple local publication owners";
+        for(const auto& read:call.stateUses)
+            if(read.version!=StateVersion::Current || (read.kind!=TargetKind::Physical && read.kind!=TargetKind::Working) || read.halo || !read.snapshot.empty() || read.perIteration)
+                return context+"requires Current Physical/Working input; no Stage/OldTime/snapshot pressure treatment is bound";
+    }
+    for(const auto& call:program.steps)if(!call.coefficientProvides.empty()) {
+        const auto context="Pressure coefficient step="+call.source.occurrence+": ";
+        if(call.temporalResidual || call.stageLocal || call.coefficientVersion!=StateVersion::Current)
+            return context+"requires a nonintegrated Step publication; no pressure RK coefficient treatment";
+        for(const auto& id:call.writes) {
+            const auto& output=equations.state.at(id);
+            if(protectedStorage.count(id) || protectedStorage.count(output.storageKey))return context+"aliases pressure/predictor storage="+output.storageKey;
+        }
+        for(const auto& use:call.stateUses)if(use.version!=StateVersion::Current || use.halo || use.perIteration || !use.snapshot.empty())
+            return context+"requires actual Current Physical/Working inputs";
+    }
+    for(const auto& call:program.steps)if(const auto* scalar=std::any_cast<CompiledScalarEquation>(&call.providerContract)) {
+        const auto& output=equations.state.at(scalar->target);
+        if(!scalar->sequential || protectedStorage.count(output.id) || protectedStorage.count(output.storageKey)
+            || (output.storageBinding!=StorageBinding::NamedDistributed && output.storageBinding!=StorageBinding::ProviderDistributed))
+            return "Pressure scalar step="+call.source.occurrence+" requires independent owned scalar backing and explicit Step treatment";
     }
     const auto method=[&](const ExecutionScope& node)->std::string_view {
         const auto call=std::find_if(program.steps.begin(),program.steps.end(),[&](const auto& c){return c.source.occurrence==node.step.occurrence;});
         return call==program.steps.end()?std::string_view{}:call->equationMethod;
     };
+    // The prediction consumes the published working sample and its original
+    // response. Independent reads can intervene; writes cannot silently change
+    // that tuple. Compare actual backing slices, including aliases.
+    struct Slice {std::string storage;int offset,components;VariableLocation location;};
+    const auto compiled=[&](const ExecutionScope& node)->const CompiledEquationCall* {
+        if(node.kind!=ExecutionKind::EquationCall)return nullptr;
+        const auto at=std::find_if(program.steps.begin(),program.steps.end(),[&](const auto& c){return c.source.occurrence==node.step.occurrence;});
+        return at==program.steps.end()?nullptr:&*at;
+    };
+    const auto stateSlice=[&](const StateUse& use)->Slice {
+        const auto& symbol=equations.state.at(use.symbol);
+        if(use.kind==TargetKind::Physical)return {symbol.storageKey,symbol.componentOffset,symbol.components,symbol.location};
+        const auto kind=use.kind==TargetKind::Working?StateViewKind::Working:StateViewKind::Correction;
+        const auto view=std::find_if(program.stateViews.begin(),program.stateViews.end(),[&](const auto& v){return v.symbol==use.symbol && v.kind==kind;});
+        if(view==program.stateViews.end())throw std::runtime_error("Missing prediction input view: "+use.symbol);
+        return {view->storage,view->componentOffset,view->components,view->location};
+    };
+    std::string predictionError;
+    const auto predictionInputs=[&](const auto& self,const ExecutionScope& scope)->void {
+        std::set<std::size_t> consumed;
+        for(std::size_t i=0;i<scope.children.size();++i) {
+            const auto* predictor=compiled(scope.children[i]);
+            if(!predictor || predictor->source.occurrence!=numerics.facePrediction->response)continue;
+            std::size_t end=i+1;
+            for(;end<scope.children.size();++end) {
+                const auto* call=compiled(scope.children[end]);
+                if(!call || call->source.occurrence==numerics.facePrediction->response)break;
+                if(call->faceFlux && !call->faceFlux->corrected)break;
+            }
+            const auto* flux=end<scope.children.size()?compiled(scope.children[end]):nullptr;
+            if(!flux || !flux->faceFlux || flux->faceFlux->corrected) {
+                predictionError="Producer="+predictor->source.occurrence+" view=U.Working: missing surfaceFlux consumer in the same scope; no automatic snapshot/reordering";return;
+            }
+            if(flux->faceFlux->velocityView==TargetKind::Physical && predictor->target.kind!=TargetKind::Physical) {
+                predictionError="Consumer="+flux->source.occurrence+" requests Physical velocity not published by producer="+predictor->source.occurrence;return;
+            }
+            consumed.insert(end);
+            std::vector<Slice> guarded;
+            for(const auto& use:flux->stateUses)guarded.push_back(stateSlice(use));
+            guarded.push_back(stateSlice(StateUse{"U"}));
+            std::set<std::string> workspaces(predictor->workspaceProvides.begin(),predictor->workspaceProvides.end());
+            for(const auto& output:predictor->viewOutputs)workspaces.insert(output.storage);
+            for(std::size_t j=i+1;j<end;++j) {
+                const auto& call=*compiled(scope.children[j]);
+                const auto fail=[&](const std::string& storage) {
+                    predictionError="Producer="+predictor->source.occurrence+" consumer="+flux->source.occurrence
+                        +" view=U.Working/p/response conflicts with writer="+call.source.occurrence
+                        +" equation="+call.source.equation+" target="+call.target.symbol+" storage="+storage;
+                };
+                const auto writes=[&](const Slice& slice) {
+                    if(workspaces.count(slice.storage)){fail(slice.storage);return;}
+                    for(const auto& input:guarded)if(!slice.storage.empty() && slice.storage==input.storage && slice.location==input.location
+                        && slice.offset<input.offset+input.components && input.offset<slice.offset+slice.components)fail(slice.storage);
+                };
+                for(const auto& resource:call.target.resources)if(resource.access!=ResourceAccessMode::Read)
+                    writes({resource.storage,resource.componentOffset,resource.components,equations.state.contains(call.target.symbol)?equations.state.at(call.target.symbol).location:call.target.workspaceLocation});
+                for(const auto& effect:call.stateEffects) {
+                    if(equations.state.contains(effect.symbol))writes(stateSlice(StateUse{effect.symbol}));
+                    else if(workspaces.count(effect.symbol))fail(effect.symbol);
+                }
+                for(const auto& output:call.viewOutputs)writes({output.storage,output.componentOffset,output.components,output.location});
+                for(const auto* tokens:{&call.workspaceProvides,&call.workspaceInvalidates})for(const auto& token:*tokens)
+                    if(workspaces.count(token))fail(token);
+                if(!predictionError.empty())return;
+            }
+        }
+        for(std::size_t i=0;i<scope.children.size();++i) {
+            const auto* call=compiled(scope.children[i]);
+            if(call && call->faceFlux && !call->faceFlux->corrected && !consumed.count(i)) {
+                predictionError="Consumer="+call->source.occurrence+" requires one published predictor tuple in the same scope";return;
+            }
+            self(self,scope.children[i]);if(!predictionError.empty())return;
+        }
+    };predictionInputs(predictionInputs,program.root);
+    if(!predictionError.empty())return predictionError;
     std::string error;
     const auto scopes=[&](const auto& self,const ExecutionScope& scope)->unsigned {
         if(scope.kind==ExecutionKind::StageLoop || scope.kind==ExecutionKind::BlockSolve || !scope.commitSources.empty())
@@ -121,8 +233,8 @@ std::string validatePressureProgram(const ExecutableEquationSystem& equations,
         constexpr unsigned correction=1,other=2,predictor=4;
         const auto implementation=scope.kind==ExecutionKind::EquationCall?method(scope):std::string_view{};
         unsigned members=implementation=="PressureCorrection"?correction
-            :implementation=="PressureMomentum"?other|predictor
-            :implementation.empty() || implementation=="LocalAffine"?0:other;
+            :scope.kind==ExecutionKind::EquationCall && scope.step.occurrence==numerics.facePrediction->response?other|predictor
+            :implementation.empty() || implementation=="LocalAffine" || implementation=="CellExplicit"?0:other;
         for(const auto& child:scope.children)members|=self(self,child);
         if(scope.kind==ExecutionKind::Sequence && (members&predictor) && scope.repetitions!=1)
             error="Pressure HOW scope="+scope.id+": predictor repetition requires the explicit fixed-time iteration Loop contract";
@@ -183,9 +295,11 @@ const char* toString(CouplingStatus status) {
 }
 
 CouplingPresetRequest couplingRequestFrom(
-        const FDM::PressureCouplingConfig& coupling,
+        const FDM::PressureCorrectionConfig& pressure,
         bool explicitlyRegistered) {
+    const auto& coupling=pressure.coupling;
     CouplingPresetRequest request;
+    request.iterationTolerance=pressure.relativeTolerance;request.continuityTolerance=pressure.absoluteTolerance;
     request.presetKind = coupling.preset;
     request.preset = FDM::toString(coupling.preset);
     request.outerCorrectors = coupling.outerCorrectors;
@@ -206,6 +320,9 @@ PressureCouplingInputs pressureCouplingInputs(EquationCall predictor,PressurePre
     input.velocityUpdate={"correctU",{input.predictor.target.symbol}};
     input.pressureUpdate={"correctP",{"p",conservative ? TargetKind::Working : TargetKind::Physical}};
     input.fluxUpdate={"correctFluxp",{conservative ? "fluxValidity" : "phi",conservative ? TargetKind::Workspace : TargetKind::Physical}};
+    if (!conservative) {
+        input.fluxPrediction={"predictFlux",{"phi",TargetKind::Working}};
+    }
     if (conservative) {
         input.fusedBalances={{"continuity",{"rho"}},{"energy",{"rhoE"}}};
         input.replacedCommit="physicalStep.commit";
@@ -237,8 +354,13 @@ void applyPressureExecution(ExecutionProgram& program,
     ExecutionScope predictor=*found;
     entries.erase(found);
     predictor.step.target=input.predictorTarget;
+    // The single PISO predictor publishes U to the physical target. RhieChow can
+    // still borrow the same occurrence's Working view for its face response.
+    if(request.presetKind==FDM::PressureCouplingPreset::PISO
+        && input.representation==PressurePredictorKind::Velocity)
+        predictor.step.target.kind=TargetKind::Physical;
     predictor.step.occurrence=input.predictorOccurrence;
-    predictor.order=10;
+    predictor.order=10;predictor.slots={"predictor"};
     predictor.origin={OriginKind::Generated,request.preset+" transforms "+input.predictor.equation+" occurrence="+input.predictor.occurrence+" -> "+input.predictor.target.symbol+" @ 10; source="+predictor.origin.source};
     entries.erase(std::remove_if(entries.begin(),entries.end(),[&](const auto& node) {
         return (!input.replacedCommit.empty() && node.kind==ExecutionKind::Commit && node.id==input.replacedCommit)
@@ -280,18 +402,37 @@ void applyPressureExecution(ExecutionProgram& program,
     };
     if(request.presetKind==FDM::PressureCouplingPreset::PISO) {
         entries.push_back(std::move(predictor));
-        entries.push_back(pressureLoop());
+        if(!input.fluxPrediction.equation.empty())entries.push_back(call(input.fluxPrediction,15));
+        auto correction=pressureLoop();correction.slots={"transport"};entries.push_back(std::move(correction));
+        program.root.slots.push_back("coupling");
     } else {
-        auto outer=loop("outer",request.outerCorrectors,20);
-        outer.terminationSignal=kPressureOuterConvergedSignal;
+        auto outer=loop("outer",request.outerCorrectors,20);outer.slots={"coupling"};
+        if(input.representation==PressurePredictorKind::ConservativeMomentum)outer.terminationSignal=kPressureOuterConvergedSignal;
+        else {
+            outer.kind=ExecutionKind::While;outer.condition="res(pressure.outer)";
+            auto& convergence=outer;convergence.minimumIterations=1;
+            const std::array<std::pair<const char*,double>,2> criteria={{{"pressure.iterate",request.iterationTolerance},{"pressure.continuity",request.continuityTolerance}}};
+            for(int component=0;component<2;++component) {
+                ResidualDefinition residual;residual.id=criteria[component].first;
+                residual.occurrence=input.convergence.occurrence.empty()?"pressure.convergence":input.convergence.occurrence;
+                residual.target="p";residual.kind=ResidualKind::DiscreteEquation;residual.component=component;
+                residual.normalization=ResidualNormalization::None;residual.absoluteTolerance=criteria[component].second;residual.relativeTolerance=0;
+                residual.origin=origin;program.residuals.push_back(std::move(residual));
+            }
+            ResidualDefinition group;group.id="pressure.outer";group.members={"pressure.iterate","pressure.continuity"};group.origin=origin;
+            program.residuals.push_back(std::move(group));
+        }
         outer.children.push_back(std::move(predictor));
+        if(!input.fluxPrediction.equation.empty())outer.children.push_back(call(input.fluxPrediction,15));
         if(request.presetKind==FDM::PressureCouplingPreset::SIMPLE) {
             auto correction=pressureCorrection();correction.order=20;
             outer.children.push_back(std::move(correction));
         } else outer.children.push_back(pressureLoop());
         outer.children.push_back(call(input.relaxation,30));
-        outer.children.push_back(call(input.fluxConsistency,40));
-        outer.children.push_back(call(input.convergence,50));
+        auto consistency=call(input.fluxConsistency,40);consistency.slots={"transport"};outer.children.push_back(std::move(consistency));
+        auto convergence=call(input.convergence,50);convergence.slots={"convergence"};
+        if(input.representation!=PressurePredictorKind::ConservativeMomentum && convergence.step.occurrence.empty())convergence.step.occurrence="pressure.convergence";
+        outer.children.push_back(std::move(convergence));
         entries.push_back(std::move(outer));
     }
     ExecutionScope commit;commit.kind=ExecutionKind::Commit;
@@ -306,7 +447,7 @@ std::vector<NumericalBinding> pressureNumerics(const CouplingPresetRequest& requ
     const auto binding=[&](const EquationCall& call,const char* method) {
         return NumericalBinding{call.equation,method,{},call.occurrence};
     };
-    auto predictor=binding(input.predictor,conservative ? "ConservativePressureMomentum" : "PressureMomentum");
+    auto predictor=binding(input.predictor,conservative ? "ConservativePressureMomentum" : "CellExplicit");
     predictor.occurrence=input.predictorOccurrence;
     for (const auto& balance:input.fusedBalances) predictor.inputs.push_back(balance.equation);
     std::vector<NumericalBinding> bindings{predictor,
@@ -314,6 +455,10 @@ std::vector<NumericalBinding> pressureNumerics(const CouplingPresetRequest& requ
         binding(input.velocityUpdate,conservative ? "ConservativeVelocityCorrection" : "VelocityCorrection"),
         binding(input.pressureUpdate,conservative ? "ConservativePressureUpdate" : "PressureUpdate"),
         binding(input.fluxUpdate,conservative ? "ConservativeFluxCorrection" : "FluxCorrection")};
+    if (!input.fluxPrediction.equation.empty()) {
+        auto flux=binding(input.fluxPrediction,"RhieChow");flux.response=input.predictorOccurrence;
+        bindings.push_back(std::move(flux));
+    }
     if (!input.publication.equation.empty()) bindings.push_back(binding(input.publication,"ConservativePressurePublication"));
     if (request.presetKind!=FDM::PressureCouplingPreset::PISO) {
         bindings.push_back(binding(input.relaxation,conservative ? "ConservativeFixedTimeRelaxation" : "FixedTimeRelaxation"));

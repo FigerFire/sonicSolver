@@ -22,6 +22,13 @@ struct FormulaValues {
     std::function<double(std::size_t,int,int,int,int)> boundNeighbor;
     /// @brief 算术面系数邻域：通过原版本reader借用物理镜像节点，不创建系数ghost authority。
     std::function<double(std::size_t,int,int,int)> coefficientNeighbor;
+    /// @brief 已发布、含 cofactor 的正方向体积通量；由真实 owner 借用。
+    std::function<double(int,int)> volumeFlux;
+    /// @brief 已选metric算子的真实几何与状态输入，不读取隐藏packed身份。
+    std::function<double(std::size_t,int,int)> metricFaceVelocity;
+    std::function<double(std::size_t,int,double)> metricDiffusion;
+    std::function<int(int,int,int)> spatialNeighbor;
+    std::function<double(int)> inverseVolume;
     /// Frozen orthogonal-stencil geometry/neighbor bindings supplied by a provider.
     std::function<double(int)> spacing;
     std::function<int(int,int,int)> neighborCell;

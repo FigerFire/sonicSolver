@@ -19,7 +19,7 @@ namespace SF {
 namespace Physics {
 namespace Multiphase {
 
-/// @brief legacy mixture/thermal 物理模型调度入口。
+/// @brief legacy mixture 物理模型调度入口。
 ///
 /// 锐界面状态由 InterfaceModels::Model 独立拥有，本类不接受 Level Set。
 class MultiPhaseModel : public FDM::ITransportModel {
@@ -48,7 +48,6 @@ public:
     bool isMixture() const { return enabled() && isMixtureType(config_.type); }
 
     /// @brief 当前是否使用单温度热输运模型。
-    bool isThermal() const { return enabled() && isThermalType(config_.type); }
 
     /// @brief legacy 状态是否已完成初始化。
     bool initialized() const { return initialized_; }

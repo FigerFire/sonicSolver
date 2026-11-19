@@ -6,9 +6,10 @@
 
 #include "core/config/SF_configTypes.h"
 #include "core/system/SF_equationIR.h"
+#include "core/system/SF_solveProgram.h"
 #include "core/interfaces/SF_termKernel.h"
 #include "SF_compiledTimeRecipe.h"
-#include "solver/discretization/pressure/SF_momentumTermKernels.h"
+#include "solver/discretization/SF_cellEquation.h"
 
 #include <cstddef>
 #include <functional>
@@ -21,7 +22,7 @@ namespace SF { class Field; }
 
 namespace SF::System {
 
-using PrimitiveMomentumSpatialTerm = Discretization::PressureMomentum::Kernel;
+using PrimitiveMomentumSpatialTerm = Discretization::CellEquation::Kernel;
 
 /// @brief 编译后的时间推进策略：WHICH 的 temporal lowering。
 ///
@@ -50,26 +51,23 @@ struct PhaseNumericalConfig {
     std::vector<BCSetting<double>> pressureBoundary;
 };
 
-enum class PressureFaceCoupling { None, RhieChow };
 
 /// @brief Frozen inputs for constant-density pressure operations.
 /// rhoConst remains in CompiledStateRealization; this value contains only numerical inputs.
 struct PressureNumericalConfig {
-    double dynamicViscosity = 0.0;
     double velocityRelaxation = 1.0;
     double pressureRelaxation = 1.0;
-    double relativeTolerance = 1.0e-2;
-    double absoluteTolerance = 1.0e-10;
+
     FDM::PressureReference reference;
     FDM::LinearSolverConfig pressureLinear;
-    std::vector<BCSetting<Vector3>> velocityBoundary;
-    std::vector<BCSetting<double>> pressureBoundary;
 };
 
 /// @brief A frozen Equation AST occurrence bound to its spatial provider.
 /// The source path is independent of legacy SF::Equation::Term ordinals/roles.
 struct CompiledSpatialBinding {
     std::string formulaId;
+    /// @brief 实际编译调用，不以 equation ID 合并不同 occurrence 的选择。
+    std::string callOccurrence;
     std::string executionEquationId;
     std::string output;
     std::string equationMethod;
@@ -88,6 +86,10 @@ struct CompiledSpatialBinding {
     StageConservativeSource stageSource;
     FieldSource fieldSource;
     PrimitiveMomentumSpatialTerm primitiveSpatial = nullptr;
+    double coefficient=1.0;
+    /// @brief 实际应力系数输入；空值使用已编译常量。
+    std::string coefficientState;double constantCoefficient=1;
+    Discretization::CellEquation::GradientKernel gradient=nullptr;
 
     CompiledSpatialBinding(std::string formula, std::string executionEquation,
               std::string target, std::string method, std::string path,
@@ -115,12 +117,6 @@ struct CompiledSpatialBinding {
 
 enum class RecipeConsumerKind { EquationTerm, ExecutableOperation };
 
-/// @brief 已完整消费的压力动量调用；索引引用原 operators，不保存第二份数学。
-struct CompiledPressureMomentum {
-    std::string equation,occurrence,timeOccurrence;
-    std::vector<std::size_t> terms;
-};
-
 /// @brief Selected recipe 的实际编译消费者，供 validation/explain 使用。
 struct CompiledRecipeBinding {
     FDM::TermRecipe recipe;
@@ -144,9 +140,8 @@ struct CompiledNumericalSystem {
     CompiledTimeIntegration time;
     TimeStepPolicy dt;
     CompiledPhaseTransport phaseTransport;
-    PressureFaceCoupling pressureFaceCoupling = PressureFaceCoupling::None;
+    std::optional<CompiledFaceFlux> facePrediction;
     std::optional<PressureNumericalConfig> pressureOperator;
-    std::optional<CompiledPressureMomentum> pressureMomentum;
     std::optional<PhaseNumericalConfig> phaseOperator;
     std::vector<CompiledSpatialBinding> operators;
     std::vector<CompiledRecipeBinding> recipeBindings;

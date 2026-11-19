@@ -33,7 +33,7 @@ public:
         const System::CompiledSolvePlan&, const System::RuntimeRequirements&,
         State::StateBundle&, const FDM::SolverServices&, System::StateRealization&,
         const double& maximumTimeStep);
-    void prepare();
+    void prepare(std::shared_ptr<FaceFluxExecution> faces={});
     void bindOperations(Run::OpRegistry&);
     Time::TemporalCallbacks temporalParticipant();
     /// @brief 同 patch/stage 的只读 canonical flux；owner 仍是本对象的 workspace。
@@ -56,6 +56,7 @@ private:
     std::unique_ptr<SF::Equation::Compressible::System> equations_;
     std::unique_ptr<PressureBased::Corrector> conservativePressureCorrector_;
     std::unique_ptr<Pressure::PressureOperators> pressureOperators_;
+    std::shared_ptr<FaceFluxExecution> faces_;
 
     FDM::SolverServices services_;
     State::StateBundle* state_ = nullptr;
@@ -89,8 +90,7 @@ private:
                          Field& field,
                          const double& maximumTimeStep,
                          PressureBased::CorrectionSummary& summary);
-    void bindConstantPressureOps(Run::OpRegistry& operations,
-                                 const double& maximumTimeStep);
+    void bindConstantPressureOps(Run::OpRegistry& operations);
 
     void emitConvectionContract();
 

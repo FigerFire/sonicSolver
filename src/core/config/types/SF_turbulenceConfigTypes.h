@@ -53,6 +53,13 @@ struct TurbulenceCoefficients {
 struct TurbulenceConfig {
     bool enabled = false;
     bool stageConservativeTransport = false;
+    bool fixedVolumeTransport = false;
+    std::string sharedVolumeFlux;
+    /// @brief 受力方程和已有黏性项 occurrence，由控制层解析。
+    std::string stressEquation,stressOccurrence;
+    /// @brief 逻辑输出可另命名，原模型数组的存储键保持独立。
+    std::string viscosityOutput,viscosityEquation;
+    std::string closureDensity,closureVelocity;
     double laminarDynamicViscosity = 0.0;
     TurbulenceFamily family = TurbulenceFamily::None;
     TurbulenceModelKind model = TurbulenceModelKind::None;

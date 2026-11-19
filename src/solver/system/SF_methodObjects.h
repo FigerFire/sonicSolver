@@ -22,9 +22,8 @@ struct CompiledNumericalSystem;
 /// @brief 已迁移的局部数值方法入口；仅按 WHICH 方法选择，不访问模型或运行资源。
 std::optional<CompiledEquationCall> compileDirectEquation(const ExecutableEquationSystem&,
     const EquationCall&,const NumericalBinding&);
-CompiledEquationCall compileLocalAffine(const ExecutableEquationSystem&,const EquationCall&,const NumericalBinding&);
 /// @brief 真实方程项的编译；未迁移实现仍由其原接口处理，无失败回退。
-bool lowerDirectSpatial(const ExecutableEquationSystem&,const CompiledEquationCall&,
+bool lowerDirectSpatial(const ExecutableEquationSystem&,CompiledEquationCall&,
     const FDM::NumericalRecipeSet&,const TermProviderCatalog&,
     const std::vector<FormulaOperatorBinding>&,CompiledNumericalSystem&);
 
@@ -40,7 +39,9 @@ public:
     virtual SolvePlanNode compileFragment(
         const CompiledTimeRecipe& compiled,
         const CompiledEquationCall& residual,
-        const std::vector<SolvePlanNode>& physicalStepPrefix = {}) const = 0;
+        const std::vector<CompiledMathRef>& calls,
+        const std::vector<TemporalParticipant>& participants,
+        const std::vector<SolvePlanNode>& physicalStepPrefix) const = 0;
 };
 
 class TemporalMethodRegistry {

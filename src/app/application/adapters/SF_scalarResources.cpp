@@ -1,11 +1,13 @@
 /// @file SF_scalarResources.cpp
 /// @brief 将已编译的命名标量需求绑定到唯一物理数组；时间循环仍由 executeEquations 执行。
 #include "SF_scalarResources.h"
+#include "methods/numerics/scalar/SF_scalarTransport.h"
 #include "solver/system/SF_resolvedSimulationSystem.h"
 #include "solver/system/SF_stateRealizer.h"
 #include "core/state/SF_stateBundle.h"
 #include "core/field/SF_scalarField.h"
 #include "core/state/SF_state.h"
+#include "core/mesh/SF_dimension.h"
 #include "core/interfaces/SF_log.h"
 #include "infrastructure/io/SF_caseConfig.h"
 #include <algorithm>
@@ -23,13 +25,45 @@ std::vector<double> fieldValue(const Model::Parameters& value,int components,con
     if(!value.is_array() || value.size()!=static_cast<std::size_t>(components))throw std::runtime_error(source+": explicit vector components required.");
     std::vector<double> result;for(const auto& c:value)result.push_back(finiteValue(c,source));return result;
 }
-FDM::ScalarEquationData boundaryData(const Field& field,const Model::FieldDescriptor& descriptor,int components) {
+FDM::ScalarEquationData boundaryData(const Field& field,const Model::FieldDescriptor& descriptor,int components,bool cellVolume=false) {
     FDM::ScalarEquationData data;data.target=descriptor.symbol;
     const int g=field.NG(),shape[3]={field.NX(),field.NY(),field.NZ()};
+    for(const auto& item:descriptor.boundaries.items())if(item.value().value("type",std::string())=="empty") {
+        const auto set=field.getAllSets().find(item.key());
+        if(set==field.getAllSets().end() || set->second.empty())throw std::runtime_error("Missing empty boundary set: "+item.key());
+        bool matched=false;
+        for(int axis=0;axis<3;++axis) {
+            bool plane=true;
+            for(int cell:set->second){int i,j,k;field.getIJK(cell,i,j,k);const int at[3]={i,j,k};plane=plane && (at[axis]<=g || at[axis]>=g+shape[axis]-1);}
+            if(plane){data.activeDimensions[axis]=false;matched=true;}
+        }
+        if(!matched)throw std::runtime_error("Empty boundary must cover inactive coordinate planes");
+    }
+    if(cellVolume) {
+        for(const auto& item:descriptor.boundaries.items()) {
+            const auto type=item.value().at("type").get<std::string>();
+            if(type=="empty")continue;
+            if(type!="fixedValue" && type!="zeroGradient")throw std::runtime_error("Cell boundary supports fixedValue/zeroGradient only: "+descriptor.symbol);
+            FDM::CellBoundaryData bc;bc.kind=type=="fixedValue"?FDM::ScalarBoundaryKind::FixedValue:FDM::ScalarBoundaryKind::ZeroGradient;
+            bc.cells=field.getSet(item.key());
+            if(type=="fixedValue")bc.value=fieldValue(item.value().at("value"),components,"fields/"+descriptor.name+"/"+item.key());
+            data.cellBoundary.push_back(std::move(bc));
+        }
+        return data;
+    }
     for(const auto& item:descriptor.boundaries.items()) {
         const auto source="fields/"+descriptor.name+"/boundaries/"+item.key();
         Model::Schema{{{"type","string",true},{"value","any"}},false}.validate(item.value(),source);
         const auto type=item.value().at("type").get<std::string>();
+        if(type=="empty") {
+            const auto set=field.getAllSets().find(item.key());
+            if(set==field.getAllSets().end() || set->second.empty())throw std::runtime_error(source+": missing empty boundary set");
+            for(int cell:set->second) {
+                int i,j,k;field.getIJK(cell,i,j,k);const int at[3]={i,j,k};bool inactive=false;
+                for(int axis=0;axis<3;++axis)if(!data.activeDimensions[axis] && (at[axis]<=g || at[axis]>=g+shape[axis]-1))inactive=true;
+                if(!inactive)throw std::runtime_error(source+": empty may only label an inactive dimension face");
+            }continue;
+        }
         if(type!="fixedValue" && type!="zeroGradient")throw std::runtime_error(source+": native scalar provider supports fixedValue/zeroGradient only.");
         const auto kind=type=="fixedValue"?FDM::ScalarBoundaryKind::FixedValue:FDM::ScalarBoundaryKind::ZeroGradient;
         if(type=="fixedValue" && !item.value().contains("value"))throw std::runtime_error(source+": fixedValue requires value.");
@@ -41,7 +75,7 @@ FDM::ScalarEquationData boundaryData(const Field& field,const Model::FieldDescri
             int i,j,k;field.getIJK(cell,i,j,k);
             if(i>=g && i<g+shape[0] && j>=g && j<g+shape[1] && k>=g && k<g+shape[2])physical.insert(cell);
         }
-        for(int axis=0;axis<3;++axis)if(shape[axis]>1)for(int side=0;side<2;++side) {
+        for(int axis=0;axis<3;++axis)if(shape[axis]>1 && data.activeDimensions[axis])for(int side=0;side<2;++side) {
             std::set<int> face;
             for(int cell:physical) {int i,j,k;field.getIJK(cell,i,j,k);const int at[3]={i,j,k};if(at[axis]==g+(side?shape[axis]-1:0))face.insert(cell);}
             if(face.size()!=static_cast<std::size_t>(shape[(axis+1)%3])*shape[(axis+2)%3])continue;
@@ -55,7 +89,7 @@ FDM::ScalarEquationData boundaryData(const Field& field,const Model::FieldDescri
         }
         if(physical.empty() || covered!=physical)throw std::runtime_error(source+": complete axis-aligned boundary face(s) required.");
     }
-    for(int axis=0;axis<3;++axis)if(shape[axis]>1)for(int side=0;side<2;++side)
+    for(int axis=0;axis<3;++axis)if(shape[axis]>1 && data.activeDimensions[axis])for(int side=0;side<2;++side)
         if(data.boundary[2*axis+side].kind==FDM::ScalarBoundaryKind::Unspecified)
             throw std::runtime_error("Missing scalar boundary backing: "+descriptor.symbol+" axis="+std::to_string(axis)+" side="+std::to_string(side));
     return data;
@@ -68,13 +102,34 @@ ScalarResources bindScalarResources(Field& geometry,State::StateBundle& state,
     const auto descriptor=[&](const std::string& id)->const Model::FieldDescriptor& {
         if (!input.modelDescription) throw std::runtime_error("Native scalar resources require registered field declarations.");
         const auto& fields=input.modelDescription->fields;
-        const auto found=std::find_if(fields.begin(),fields.end(),[&](const auto& f){return f.symbol==id;});
+        const auto found=std::find_if(fields.begin(),fields.end(),[&](const auto& f){return f.symbol==id || f.name==system.executableSystem.state.at(id).storageKey;});
         if(found==fields.end())throw std::runtime_error("Missing registered storage backing: "+id);
         return *found;
     };
     std::map<std::string,std::string> allocated;
     std::vector<State::DistributedFieldView> pending;
     std::set<std::string> occurrences;
+    const auto metricOptions=[&](const std::string& id)->std::optional<FDM::ScalarBoundaryOptions> {
+        std::optional<FDM::ScalarBoundaryOptions> result;
+        for(const auto& call:system.solvePlan.compiledProgram.steps)for(const auto& port:call.physicalResources)
+            if(port.fields && port.fields->target==id && port.fields->setBoundaryOptions) {
+                if(result)throw std::runtime_error("Multiple set-boundary initialization owners: "+id);
+                result=port.fields->setBoundaryOptions;
+            }
+        return result;
+    };
+    const auto settings=[&](const std::string& id,int component) {
+        const auto& symbol=system.executableSystem.state.at(id);
+        if(symbol.fieldInput)return symbol.fieldInput->boundaries;
+        std::vector<BCSetting<double>> result;
+        for(const auto& item:descriptor(id).boundaries.items()) {
+            const auto type=item.value().at("type").get<std::string>();
+            const auto law=type=="fixedValue"?FIXED_VALUE:type=="zeroGradient"?ZERO_GRADIENT:type=="symmetry"?SYMMETRY:type=="empty"?EMPTY:
+                throw std::runtime_error("Unsupported set scalar boundary: "+id+" / "+type);
+            const auto value=law==FIXED_VALUE?fieldValue(item.value().at("value"),symbol.components,id).at(component):0;
+            result.push_back({item.key(),law,value});
+        }return result;
+    };
     const auto allocate=[&](const std::string& id) {
         const auto& symbol=system.executableSystem.state.at(id);
         if (symbol.storageBinding!=System::StorageBinding::NamedDistributed || (symbol.components!=1 && symbol.components!=3)
@@ -93,14 +148,17 @@ ScalarResources bindScalarResources(Field& geometry,State::StateBundle& state,
             view->validate();if(view->requireReadable)view->requireReadable();backing=view;
         }
         if(backing)return;
-        const auto& found=descriptor(id);
-        const auto initial=fieldValue(found.initial,symbol.components,"fields/"+found.name+"/initial");
+        for(const auto& other:system.executableSystem.state.symbols())if(other.id!=id && other.producer && other.storageKey==symbol.storageKey)
+            throw std::runtime_error("Named physical owner conflicts with derived backing: "+id+" / "+other.id);
+        const auto options=metricOptions(id);
+        const auto* found=symbol.fieldInput?nullptr:&descriptor(id);
+        const auto initial=found?fieldValue(found->initial,symbol.components,"fields/"+found->name+"/initial"):std::vector<double>{symbol.fieldInput->initial};
         std::vector<ScalarField*> components;
         for(int c=0;c<symbol.components;++c) {
             auto physical=std::make_unique<ScalarField>();
             physical->setupLike(geometry,symbol.storageKey,initial[c]);
-            for(const auto& item:found.sets.items()) {
-                const auto source="fields/"+found.name+"/initial/"+item.key();
+            if(found)for(const auto& item:found->sets.items()) {
+                const auto source="fields/"+found->name+"/initial/"+item.key();
                 Model::Schema{{{"type","string",true},{"value","any",true}},false}.validate(item.value(),source);
                 if(item.value().at("type")!="fixedValue")throw std::runtime_error(source+": unsupported field initialization.");
                 const auto value=fieldValue(item.value().at("value"),symbol.components,source);
@@ -108,9 +166,31 @@ ScalarResources bindScalarResources(Field& geometry,State::StateBundle& state,
                 if(set==geometry.getAllSets().end() || set->second.empty())throw std::runtime_error(source+": initialization mesh set absent.");
                 for(int cell:set->second)physical->values().at(cell)=value[c];
             }
+            if(symbol.fieldInput)FDM::Scalar::applyInitialConditions(geometry,*physical,symbol.fieldInput->initialConditions);
+            if(options) {
+                FDM::Scalar::applyBoundaryConditions(geometry,*physical,settings(id,c),options->ilw,options->order);
+                FDM::Scalar::applyBounds(geometry,*physical,options->bounds);
+            }
+            if(symbol.fieldInput && symbol.fieldInput->positiveInitial)Math::forInterior(geometry,[&](int i,int j,int k){
+                if(geometry.CellFlag(i,j,k)==FLUID_CELL && (!std::isfinite((*physical)(i,j,k)) || (*physical)(i,j,k)<=0))throw std::runtime_error("Positive initial field coverage required: "+id);
+            });
             components.push_back(physical.get());resources.arrays.push_back(std::move(physical));
         }
-        pending.push_back(State::scalarComponentsView(symbol.storageKey,block,geometry,components,geometry.NG(),State::HaloSyncStage::None));
+        auto view=State::scalarComponentsView(symbol.storageKey,block,geometry,components,geometry.NG(),State::HaloSyncStage::None);
+        // A named velocity can serve a metric operator without packed Q/EOS.
+        // Preparation writes its own component arrays, not another physical view.
+        const bool metricInput=std::any_of(system.solvePlan.compiledProgram.steps.begin(),system.solvePlan.compiledProgram.steps.end(),[&](const auto& call){return std::any_of(call.physicalResources.begin(),call.physicalResources.end(),[&](const auto& port){return port.fields && port.fields->setBoundaryOptions && std::find(port.fields->boundaries.begin(),port.fields->boundaries.end(),id)!=port.fields->boundaries.end() && port.fields->target!=id;});});
+        const bool cellInput=std::any_of(system.solvePlan.compiledProgram.steps.begin(),system.solvePlan.compiledProgram.steps.end(),[&](const auto& call){return std::any_of(call.physicalResources.begin(),call.physicalResources.end(),[&](const auto& port){return port.fields && port.fields->target==id && port.fields->cellVolumeBoundary;});});
+        const bool spatialInput=std::any_of(system.solvePlan.compiledProgram.steps.begin(),system.solvePlan.compiledProgram.steps.end(),[&](const auto& call){return std::any_of(call.physicalResources.begin(),call.physicalResources.end(),[&](const auto& port){return port.fields && std::find(port.fields->boundaries.begin(),port.fields->boundaries.end(),id)!=port.fields->boundaries.end();});});
+        if((metricInput || spatialInput) && !cellInput && !symbol.fieldInput) {
+            (void)boundaryData(geometry,descriptor(id),symbol.components);
+            std::vector<std::vector<BCSetting<double>>> boundary;for(int c=0;c<symbol.components;++c)boundary.push_back(settings(id,c));
+            view.prepareSpatial=[&geometry,&state,storage=symbol.storageKey,components,boundary](double){
+                for(std::size_t c=0;c<components.size();++c)FDM::Scalar::applyBoundaryConditions(geometry,*components[c],boundary[c]);
+                state.distributed.markModified(storage);
+            };
+        }
+        pending.push_back(std::move(view));
     };
     for(const auto& call:system.solvePlan.compiledProgram.steps) for(const auto& required:call.physicalResources) {
         if (required.owner!="native.scalar" && required.owner!="model.scalar") continue;
@@ -135,18 +215,20 @@ ScalarResources bindScalarResources(Field& geometry,State::StateBundle& state,
         } else {
             if(required.owner=="model.scalar")throw std::runtime_error("Missing model scalar boundary resource: "+required.id+" target="+need.target);
             auto created=std::make_shared<FDM::ScalarEquationData>();created->target=need.target;
-            if(need.localOnly && !descriptor(need.target).boundaries.empty())
+            if(need.localOnly && system.executableSystem.state.at(need.target).storageBinding!=System::StorageBinding::ProviderDistributed
+                && !descriptor(need.target).boundaries.empty())
                 throw std::runtime_error("Unsupported local boundary/halo resource: "+required.id);
-            if(need.boundaryRequired)*created=boundaryData(geometry,descriptor(need.target),system.executableSystem.state.at(need.target).components);
+            if(need.setBoundaryOptions)created->setBoundary=settings(need.target,0);
+            else if(need.boundaryRequired)*created=boundaryData(geometry,descriptor(need.target),system.executableSystem.state.at(need.target).components,need.cellVolumeBoundary);
             resources.views.push_back(System::ResourceView::bind(required,created,*created,required.owner));
             resources.ports.push_back(created);port=std::move(created);
         }
         if(port->target!=need.target)throw std::runtime_error("Field port target binding mismatch: "+required.id+" requires "+need.target);
         for(const auto& source:need.sources)if(!port->sources.count(source) || !port->sources.at(source))
             throw std::runtime_error("Missing known-source port binding: occurrence="+required.id+" target="+need.target+" source="+source);
-        if(need.boundaryRequired)for(int axis=0;axis<3;++axis) {
+        if(need.boundaryRequired && !need.cellVolumeBoundary && !need.setBoundaryOptions)for(int axis=0;axis<3;++axis) {
             const int size=axis==0?geometry.NX():axis==1?geometry.NY():geometry.NZ();
-            if(size<=1)continue;
+            if(size<=1 || !port->activeDimensions[axis])continue;
             for(int side=0;side<2;++side) {
                 const auto& bc=port->boundary[2*axis+side];
                 if(bc.kind!=FDM::ScalarBoundaryKind::FixedValue && bc.kind!=FDM::ScalarBoundaryKind::ZeroGradient)

@@ -35,7 +35,7 @@ const ConservativeExecutionInputs& requireConservativeInputs(const CompiledNumer
 
 CompiledNumericalSystem compile(
         const ExecutableEquationSystem& equations,
-        const CompiledExecutionProgram& program,
+        CompiledExecutionProgram& program,
         const FDM::NumericalRecipeSet& recipes,
         const TermProviderCatalog& catalog,
         const CompiledTimeRecipe& time,
@@ -55,8 +55,9 @@ CompiledNumericalSystem compile(
                               RecipeConsumerKind kind,std::string consumer) {
         result.recipeBindings.push_back({recipe,kind,std::move(consumer)});
     };
-    for (const auto& call:program.steps)
+    for (auto& call:program.steps)
         if (call.spatialTerms || !call.sourceMathInputs.empty()) {
+            const auto first=result.operators.size();
             auto selected=bindings;
             for(const auto& op:call.numericalOperators) {
                 selected.erase(std::remove_if(selected.begin(),selected.end(),[&](const auto& other){return other.formula==op.formula && other.occurrence==op.occurrence && other.operation==op.operation;}),selected.end());
@@ -64,6 +65,7 @@ CompiledNumericalSystem compile(
             }
             if(!lowerDirectSpatial(equations,call,recipes,catalog,selected,result))
                 providers.at(call.equationMethod).lowerSpatial(equations,call,recipes,catalog,selected,result);
+            for(auto n=first;n<result.operators.size();++n)result.operators[n].callOccurrence=call.source.occurrence;
         }
     for (const auto& binding:bindings) {
         const bool addressed=std::any_of(result.operators.begin(),

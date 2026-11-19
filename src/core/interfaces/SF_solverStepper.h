@@ -9,7 +9,6 @@
 #include "SF_observer.h"
 #include "SF_transportModel.h"
 #include "SF_scalarEquationData.h"
-#include "SF_thermalEquationData.h"
 #include "core/state/SF_stateBundle.h"
 
 #include <limits>
@@ -25,7 +24,6 @@ struct SolverState {
 };
 
 struct SolverServices {
-    const ThermalEquationData* thermalEquation=nullptr;
     const ScalarEquationData* scalarEquation=nullptr;
     std::vector<ScalarInstanceData> scalarInstances;
     IBoundaryPipeline* boundaryPipeline = nullptr;

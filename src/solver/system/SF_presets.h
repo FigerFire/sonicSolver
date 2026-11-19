@@ -15,6 +15,10 @@
 
 namespace SF::System::Compose {
 
+/// @brief 默认恒密度 NS 动量方程与黏性 occurrence，由控制声明共享。
+inline constexpr char pressureMomentumEquation[]="momentum";
+inline constexpr char pressureMomentumDiffusion[]="momentum.diffusion";
+
 /// @brief 在调用后声明唯一物理步提交；时间 stages 仍由原 recipe 展开。
 ExecutionProgram explicitProgram(std::vector<ExecutionScope> calls);
 
@@ -26,7 +30,7 @@ void addPressureConstraintFluid(
 /// @brief rho = rho0 的连续方程 + 动量方程 + div(U)=0 约束。
 void addConstantDensityFluid(
     SystemCompositionBuilder& system,
-    const EquationCompositionConfig& composition, bool includeDiffusion);
+    const EquationCompositionConfig& composition, bool includeDiffusion, double dynamicViscosity);
 
 /// @brief Eulerian-Eulerian 逐相方程 pack 与共享压力/体积分数约束。
 void addEulerianEulerianTemplate(

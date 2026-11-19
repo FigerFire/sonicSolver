@@ -13,6 +13,8 @@
 namespace SF::System {
 /// @brief 编译期 STATE 引用解析；不读场值，不排序，不绑定数组。
 void resolveCallInputs(const StateRegistry&,const std::vector<EquationCall*>&);
+/// @brief 从冻结输出取得模型数组上的物理发布，不读取私有方法数据。
+std::vector<FieldPublication> fieldPublications(const StateRegistry&,const CompiledExecutionProgram&);
 
 
 /// @brief 一个 role group 的编译期视图。
@@ -66,6 +68,11 @@ CompiledStateView realizeTarget(const StateRegistry& state,CompiledTarget& targe
 /// @brief Temporal methods request versions without changing source HOW ordering.
 void realizeTemporalViews(const StateRegistry& state,CompiledExecutionProgram& program,
     int stages);
+
+/// @brief 构造普通方程的字段端口要求，数组由运行时实际 owner 提供。
+ResourceViewRequirement equationFieldResource(std::string id,const std::string& target,
+    const std::vector<StateUse>& reads,std::vector<std::string> boundaries={},
+    std::vector<std::string> sources={},bool local=false);
 
 /// @brief 合并已声明字段端口的空间backing需求，不读取AST或场数值。
 void compileFieldResources(const StateRegistry&,CompiledExecutionProgram&);

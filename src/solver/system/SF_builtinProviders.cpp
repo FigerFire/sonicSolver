@@ -1,7 +1,6 @@
 #include "core/interfaces/SF_transportModel.h"
 #include "SF_fusedSpatial.h"
 #include "models/turbulence/SF_transportMathematics.h"
-#include "SF_thermalMethod.h"
 /// Selected numerical implementations compile mathematics; HOW owns the process.
 #include "SF_methodObjects.h"
 #include "SF_immersedMethods.h"
@@ -9,10 +8,16 @@
 #include "SF_multiphaseMethods.h"
 #include "SF_eulerianCoupling.h"
 #include "SF_pressureCoupling.h"
+#include "SF_affine.h"
+#include "SF_block.h"
+#include "SF_cell.h"
+#include "SF_executionContract.h"
 #include "SF_scalarMethod.h"
+#include "SF_sstMethod.h"
 #include "SF_formulaCompiler.h"
 #include "core/system/SF_operationIds.h"
 #include <algorithm>
+#include <set>
 #include <stdexcept>
 #include <utility>
 namespace SF::System {
@@ -53,35 +58,37 @@ SolvePlanNode methodLeaf(PlanNodeKind kind,std::string id,
 
 SolvePlanNode explicitFragment(const CompiledEquationCall& body,
                                const CompiledTimeRecipe& recipe,
+                               const std::vector<CompiledMathRef>& calls,
+                               const std::vector<TemporalParticipant>& participants,
                                const std::vector<SolvePlanNode>& prefix) {
-    if (!body.temporalResidual || body.calls.empty()
+    if (!body.temporalResidual || calls.empty()
         || body.backendOperation.empty())
         throw std::runtime_error("TemporalMethod requires a compiled residual body and backend.");
     SolvePlanNode root;
     root.kind=PlanNodeKind::Sequence;
     root.id="Explicit.step";
     root.name="explicit time step";
-    if (!body.temporalParticipants.empty()) {
+    if (!participants.empty()) {
         const auto leaf=[&](const std::string& op,const std::string& owner,
                 const TemporalParticipant* participant=nullptr) {
             auto node=methodLeaf(PlanNodeKind::Update,op,op,op,owner);
             if (participant) {node.occurrence=participant->identity;node.equationCalls=participant->calls;}
             return node;
         };
-        for (const auto& p:body.temporalParticipants) for (const auto& op:p.preparation)
+        for (const auto& p:participants) for (const auto& op:p.preparation)
             root.children.push_back(leaf(op,p.provider,&p));
         root.children.push_back(leaf(TemporalOps::Dt,TemporalOps::Provider));
         root.children.insert(root.children.end(),prefix.begin(),prefix.end());
-        for (const auto& p:body.temporalParticipants) root.children.push_back(leaf(p.snapshot,p.provider,&p));
+        for (const auto& p:participants) root.children.push_back(leaf(p.snapshot,p.provider,&p));
         auto stages=methodLeaf(PlanNodeKind::StageLoop,"Explicit.stages","synchronous explicit stages",{});
         stages.repetitions=recipe.stageCount();
         stages.children.push_back(leaf(TemporalOps::Open,TemporalOps::Provider));
-        for (const auto& p:body.temporalParticipants) stages.children.push_back(leaf(p.prepareStage,p.provider,&p));
+        for (const auto& p:participants) stages.children.push_back(leaf(p.prepareStage,p.provider,&p));
         stages.children.push_back(leaf(TemporalOps::Ready,TemporalOps::Provider));
-        for(const auto& p:body.temporalParticipants)if(!p.coefficientPrepare.empty())stages.children.push_back(leaf(p.coefficientPrepare,p.provider,&p));
-        for (const auto& p:body.temporalParticipants) stages.children.push_back(leaf(p.rhs,p.provider,&p));
+        for(const auto& p:participants)if(!p.coefficientPrepare.empty())stages.children.push_back(leaf(p.coefficientPrepare,p.provider,&p));
+        for (const auto& p:participants) stages.children.push_back(leaf(p.rhs,p.provider,&p));
         stages.children.push_back(leaf(TemporalOps::RhsReady,TemporalOps::Provider));
-        for (const auto& p:body.temporalParticipants) stages.children.push_back(leaf(p.advance,p.provider,&p));
+        for (const auto& p:participants) stages.children.push_back(leaf(p.advance,p.provider,&p));
         stages.children.push_back(leaf(TemporalOps::Close,TemporalOps::Provider));
         root.children.push_back(std::move(stages));return root;
     }
@@ -100,7 +107,7 @@ SolvePlanNode explicitFragment(const CompiledEquationCall& body,
     stages.repetitions=recipe.stageCount();
     auto stage=methodLeaf(PlanNodeKind::Update,"Explicit.stage.execute",
         "execute explicit stage",body.backendOperation,body.backendProvider);
-    stage.equationCalls=body.calls;
+    stage.equationCalls=calls;
     stages.children.push_back(std::move(stage));
     root.children.push_back(std::move(stages));
     return root;
@@ -115,8 +122,22 @@ public:
     }
     SolvePlanNode compileFragment(const CompiledTimeRecipe& compiled,
                                   const CompiledEquationCall& body,
+                                  const std::vector<CompiledMathRef>& calls,
+                                  const std::vector<TemporalParticipant>& participants,
                                   const std::vector<SolvePlanNode>& prefix) const override {
-        return explicitFragment(body,compiled,prefix);
+        return explicitFragment(body,compiled,calls,participants,prefix);
+    }
+};
+
+class PartitionedFixedEulerMethod final : public ITemporalMethod {
+public:
+    FDM::TimeRecipeId id() const override{return FDM::TimeRecipeId::PartitionedFixedEuler;}
+    CompiledTimeRecipe compile(FDM::TimeRecipe selected) const override {
+        return CompiledTimeRecipe::fromMethod(selected,{{{1.0,0.0,1.0}}},1,ExplicitStageBackend::ForwardEuler);
+    }
+    SolvePlanNode compileFragment(const CompiledTimeRecipe&,const CompiledEquationCall&,
+            const std::vector<CompiledMathRef>&,const std::vector<TemporalParticipant>&,const std::vector<SolvePlanNode>&) const override {
+        throw std::runtime_error("partitionedFixedEuler has no RK Stage treatment; declare fixed-time Step calls and HOW loops");
     }
 };
 
@@ -130,8 +151,10 @@ public:
     }
     SolvePlanNode compileFragment(const CompiledTimeRecipe& compiled,
                                   const CompiledEquationCall& body,
+                                  const std::vector<CompiledMathRef>& calls,
+                                  const std::vector<TemporalParticipant>& participants,
                                   const std::vector<SolvePlanNode>& prefix) const override {
-        return explicitFragment(body,compiled,prefix);
+        return explicitFragment(body,compiled,calls,participants,prefix);
     }
 };
 
@@ -146,8 +169,10 @@ public:
     }
     SolvePlanNode compileFragment(const CompiledTimeRecipe& compiled,
                                   const CompiledEquationCall& body,
+                                  const std::vector<CompiledMathRef>& calls,
+                                  const std::vector<TemporalParticipant>& participants,
                                   const std::vector<SolvePlanNode>& prefix) const override {
-        return explicitFragment(body,compiled,prefix);
+        return explicitFragment(body,compiled,calls,participants,prefix);
     }
 };
 
@@ -183,33 +208,6 @@ CompiledTarget bindTarget(const ExecutableEquationSystem&,const EquationCall& ca
 }
 
 /// The existing nonlocal kernel consumes this complete mathematical group once.
-class SstClosureMethod final : public IProvider {
-public:
-    std::string_view id() const override{return "SSTNonlocalClosure";}
-    std::string_view runtimeProvider() const override{return ScalarOps::ClosureProvider;}
-    CompiledEquationCall compile(const ExecutableEquationSystem& system,const EquationCall& call,const NumericalBinding& binding) const override {
-        const auto equations=Turbulence::stageClosureMathematics();
-        std::vector<std::string> outputs;for(const auto& e:equations)outputs.push_back(e.id);
-        if(!call.stageScoped || call.target.symbol!=outputs.front() || binding.inputs!=outputs || !binding.parameters.empty() || !binding.operators.empty())throw std::runtime_error("SST nonlocal implementation requires its complete declared output group in Stage scope");
-        CompiledEquationCall result;result.source=call;result.target.symbol=call.target.symbol;result.stageLocal=true;
-        result.equationMethod=id();result.backendOperation=instanceOperation("closure.evaluate",call.occurrence);
-        result.temporalPublish=instanceOperation("closure.publish",call.occurrence);
-        result.coefficientPrepare=result.backendOperation;result.coefficientPublish=result.temporalPublish;
-        result.coefficientProvides={instanceOperation("closure.outputs",call.occurrence)};result.coefficientStates=outputs;
-        result.stateUses={{"rho",StateVersion::Stage},{"rhoU",StateVersion::Stage},{"k",StateVersion::Stage},{"omega",StateVersion::Stage}};
-        if(call.inputs.size()!=result.stateUses.size() || !std::equal(call.inputs.begin(),call.inputs.end(),result.stateUses.begin(),[](const auto& a,const auto& b){return a.symbol==b.symbol && a.version==b.version && a.kind==TargetKind::Physical && !a.halo && a.snapshot.empty() && !a.perIteration;}))throw std::runtime_error("SST closure requires explicit Stage rho/rhoU/k/omega inputs");
-        result.coefficientInputs=result.stateUses;
-        for(const auto& e:equations) {
-            result.operatorBindings.push_back(e.rhs.name());
-            if(canonicalFormula(system.registry.at(e.id))!=canonicalFormula(e))throw std::runtime_error("Unsupported nonlocal SST mathematics: "+e.id);
-            system.state.at(e.id);result.calls.push_back({e.id,e.id});result.writes.push_back(e.id);result.stateEffects.push_back({e.id,true,false,true});
-        }
-        result.providerContract=CompiledStageClosure{{"k","omega"}};result.requiredHaloWidth=1;
-        result.physicalResources={{call.occurrence,"model.turbulence",typeid(FDM::ITransportModel),true}};
-        for(const auto& op:{result.backendOperation,result.temporalPublish})result.operations.push_back({op,"evaluate complete nonlocal SST outputs",OperationStage::Prepare,{OperationCapability::ScalarExplicit},{OriginKind::Model,"SST nonlocal"}});
-        result.requirements={"serial single patch; stationary non-IBM stage port","original SST gradients, wall distance, molecular viscosity and regularization; complete output group evaluated once","not a temporal unknown; authored Stage evaluation and final Current refresh"};return result;
-    }
-};
 CompiledEquationCall compileConservativeResidual(const ExecutableEquationSystem& system,const EquationCall& step,const NumericalBinding& binding) {
         requireOutput(system,step);
         if(!binding.inputs.empty() || !binding.parameters.empty())
@@ -233,9 +231,14 @@ CompiledEquationCall compileConservativeResidual(const ExecutableEquationSystem&
         result.temporalAdvance="flow.stage.advance";result.temporalPublish=OpIds::FlowStepCommit;
         result.oldTimeWorkspace="explicit.q0";
         result.publishesStageToPhysicalTarget=true;
-        if (system.state.contains("mu_t")) {
-            result.coefficientUses.push_back({"mu_t",{StateVersion::Frozen,StateVersion::Stage}});
-        }
+        // The packed viscous kernel reads the model-owned eddy-viscosity
+        // array through its transport port. The equation may name that array
+        // differently in STATE.
+        for(const auto& coefficient:system.state.symbols())
+            if(coefficient.storageBinding==StorageBinding::ProviderDistributed
+                && coefficient.storageKey=="mu_t" && coefficient.componentOffset==0
+                && coefficient.components==1)
+                result.coefficientUses.push_back({coefficient.id,{StateVersion::Frozen,StateVersion::Stage}});
         result.spatialTerms=true;
         result.residualWorkspace="residual";
         for (const char* operation:{OpIds::FlowStepPrepare,OpIds::FlowDtCompute,OpIds::FlowStepBegin,
@@ -320,8 +323,6 @@ public:
             throw std::runtime_error("TurbulenceTransport requires an explicit complete RAS pair.");
         const auto& second=binding.inputs[1];
         const auto model=second=="omega" ? "kOmegaSST" : "kEpsilon";
-        if (system.state.contains(second=="omega" ? "epsilon" : "omega"))
-            throw std::runtime_error("TurbulenceTransport has incompatible model/state pair.");
         if (step.target.kind!=TargetKind::Physical || step.target.symbol!=step.equation
             || (step.equation!="k" && step.equation!=second))
             throw std::runtime_error("TurbulenceTransport requires each equation's own Physical target.");
@@ -541,40 +542,41 @@ void pressureLifecycleContract(CompiledEquationCall& call,bool conservative) {
     const auto& method=call.equationMethod;
     if (method=="VelocityCorrection" || method=="PressureUpdate" || method=="FluxCorrection"
         || method=="ConservativeVelocityCorrection" || method=="ConservativePressureUpdate" || method=="ConservativeFluxCorrection") {
-        CompiledStateView view;view.symbol="deltaP";view.kind=StateViewKind::Correction;call.viewReads.push_back(view);
+        call.borrowedViews.push_back({"deltaP",TargetKind::Correction});
     }
     if (method=="ConservativePressurePublication") {
-        CompiledStateView view;view.symbol="p";view.kind=StateViewKind::Working;call.viewReads.push_back(view);
+        call.borrowedViews.push_back({"p",TargetKind::Working});
     }
     call.commitRequires={"pressure.published"};
-    const bool predictor=method=="PressureMomentum" || method=="ConservativePressureMomentum";
+    const bool predictor=method=="ConservativePressureMomentum";
     if (predictor) {
-        call.workspaceInvalidates={"pressureCorrection","preparedPressure","derivedFluxValidity","pressure.published","rAU","faceResponse","correctedFlux"};
+        call.workspaceInvalidates={faceFluxPublication("pressureFaceFlux"),"pressure.predictor","pressureCorrection","preparedPressure","derivedFluxValidity","pressure.published","rAU","faceResponse","correctedFlux"};
         if (conservative) {
             call.stateUses={{"rho"},{"U"},{"p"}};
             call.stateEffects={{"rho"},{"rhoU"},{"rhoE"}};
-        } else {
-            call.stateUses={{"U"},{"p"}};
-            if (call.target.kind==TargetKind::Physical) call.stateEffects={{"U",true,true}};
-            call.workspaceProvides.push_back("pressure.working.U");
-            call.requirements.push_back("fixed-time predictor reads original baseVelocity_ (OldTime); iteration velocity is Working(U)");
         }
+    } else if (method=="RhieChow") {
+        call.workspaceRequires={"rAU"};
+        call.stateUses={{"U",StateVersion::Current,false,"",false,TargetKind::Working},{"p"}};
+        call.workspaceInvalidates={faceFluxPublication("pressureFaceFlux"),"pressure.published","pressureCorrection","correctedFlux","faceResponse"};
     } else if (method=="PressureCorrection") {
         call.stateUses={{"faceResponse",StateVersion::Frozen,false,"faceResponse"},
             {"correctedFlux",StateVersion::Frozen,false,"correctedFlux"}};
-        call.workspaceRequires.push_back("pressure.working.U");
+        call.workspaceRequires.push_back("pressure.predictor");
     } else if (method=="ConservativeVelocityCorrection") {
         call.stateEffects={{"rhoU"}};
         call.workspaceInvalidates={"pressure.published"};
     } else if (method=="VelocityCorrection") {
-        call.workspaceRequires.push_back("pressure.working.U");
+        call.workspaceRequires.push_back("pressure.predictor");
         call.stateUses={{"rAU",StateVersion::Frozen,false,"rAU"}};
-        call.workspaceInvalidates={"pressure.published"};
+        call.workspaceInvalidates={"pressure.published",stateViewPublication("U",StateViewKind::Working)};
         call.stateEffects={{"U",true,true}};
     } else if (method=="PressureUpdate" || method=="ConservativePressureUpdate") {
         call.workspaceInvalidates={"pressure.published"};
         if (!conservative) call.stateEffects={{"p",true,true}};
     } else if (method=="FluxCorrection" || method=="ConservativePressurePublication") {
+        if(!conservative)call.stateUses={{"phi",StateVersion::Frozen,false,"correctedFlux"},
+            {"faceResponse",StateVersion::Frozen,false,"faceResponse"}};
         call.workspaceInvalidates={"pressureCorrection"};
         if (!conservative) {
             call.workspaceInvalidates.push_back("correctedFlux");
@@ -584,90 +586,25 @@ void pressureLifecycleContract(CompiledEquationCall& call,bool conservative) {
         call.stepWorkspaces.push_back("pressure.published");
         if (!conservative) {
             call.stateEffects={{"phi",true,true}};
+            call.faceFlux=CompiledFaceFlux{"phi","U","pressureFaceFlux",TargetKind::Physical,OpIds::PressureCorrectionCommit,{"faceResponse","deltaP"},true};
+            call.workspaceProvides.push_back(faceFluxPublication(call.faceFlux->storage));
+            call.stepWorkspaces.push_back(faceFluxPublication(call.faceFlux->storage));
         } else call.stateEffects={{"rhoE",true,false}};
     } else if (method=="FixedTimeRelaxation" || method=="ConservativeFixedTimeRelaxation") {
         call.workspaceRequires.push_back("pressure.published");
-        call.workspaceInvalidates={"pressure.published"};
+        call.workspaceInvalidates={"pressure.published",faceFluxPublication("pressureFaceFlux")};
         if (!conservative) call.stateEffects={{"U",true,true},{"p",true,true}};
     } else if (method=="FluxConsistency" || method=="ConservativeFluxConsistency") {
         call.workspaceProvides.push_back("pressure.published");call.stepWorkspaces.push_back("pressure.published");
-        if (!conservative) call.stateEffects={{"phi",true,true}};
+        if (!conservative) {
+            call.stateEffects={{"phi",true,true}};
+            call.faceFlux=CompiledFaceFlux{"phi","U","pressureFaceFlux",TargetKind::Physical,OpIds::PressureFluxConsistencyRestore,{"U","p","rAU"},true};
+            call.workspaceProvides.push_back(faceFluxPublication(call.faceFlux->storage));
+            call.stepWorkspaces.push_back(faceFluxPublication(call.faceFlux->storage));
+        }
     } else if (method=="ResidualConvergence" || method=="ConservativeResidualConvergence") {
         call.workspaceRequires.push_back("pressure.published");
     }
-}
-
-// This implementation consumes additive primitive momentum terms only. Signs,
-// repeated stencil terms and non-symbol coefficients need different kernels.
-void lowerPressureMomentum(const ExecutableEquationSystem& system,const CompiledEquationCall& call,
-        const FDM::NumericalRecipeSet& recipes,const TermProviderCatalog& catalog,
-        const std::vector<FormulaOperatorBinding>& bindings,CompiledNumericalSystem& result) {
-    const auto& equation=system.registry.at(call.source.equation);
-    const auto context="PressureMomentum step="+call.source.occurrence+" equation="+equation.id+" target="+call.target.symbol;
-    const auto fail=[&](const std::string& path,const std::string& reason) {
-        throw std::runtime_error(context+" occurrence="+path+": "+reason);
-    };
-    if(result.pressureMomentum)fail("HOW","multiple predictors require independently bound pressure workspaces");
-    CompiledPressureMomentum momentum{equation.id,call.source.occurrence,{},{}};
-    int transient=0,convection=0,diffusion=0;
-    const auto visit=[&](const auto& self,const FormulaExpr& e,CompiledSpatialBinding::Side side,const std::string& path)->void {
-        using K=FormulaExpr::Kind;using Side=CompiledSpatialBinding::Side;
-        const auto occurrence=e.occurrence().empty()?path:e.occurrence();
-        if(e.kind()==K::Add) {self(self,e.arguments()[0],side,path+"/0");self(self,e.arguments()[1],side,path+"/1");return;}
-        if(e.kind()==K::Constant && e.constant()==0.0 && side==Side::Right)return;
-        if(e.kind()!=K::Operator)fail(occurrence,"requires positive additive ddt(U), div(momentumFlux), diffusion(nu,U), or RHS source(symbol); no scaling/sign lowering");
-        const auto symbol=[&](std::size_t n,std::string_view expected) {
-            return e.arguments().size()>n && e.arguments()[n].kind()==K::Symbol && e.arguments()[n].name()==expected;
-        };
-        const FDM::TermRecipe* requested=nullptr;
-        std::string primary,secondary;
-        if(e.operation()==Math::Op::Ddt) {
-            if(side!=Side::Left || e.arguments().size()!=1 || !symbol(0,"U") || ++transient!=1)
-                fail(occurrence,"requires exactly one unscaled LHS ddt(U)");
-            if(selectFormulaBinding(equation,e,occurrence,bindings))
-                fail(occurrence,"ddt uses the unique selected time recipe; no spatial operator override is implemented");
-            momentum.timeOccurrence=occurrence;return;
-        } else if(e.operation()==Math::Op::Div) {
-            if(side!=Side::Left || e.arguments().size()!=1 || !symbol(0,"momentumFlux") || ++convection!=1)
-                fail(occurrence,"requires one LHS div(momentumFlux); repeated convection is not accumulated by this predictor");
-            if(!recipes.convection || recipes.convection->id()!=FDM::TermRecipeId::PrimitiveUpwind1)
-                fail(occurrence,"selected pressure stencil requires PrimitiveUpwind1");
-            requested=&*recipes.convection;primary="momentumFlux";
-        } else if(e.operation()==Math::Op::Diffusion) {
-            if(side!=Side::Left || e.arguments().size()!=2 || !symbol(0,"nu") || !symbol(1,"U") || ++diffusion!=1)
-                fail(occurrence,"requires at most one LHS diffusion(nu,U); variable/scaled coefficients are not implemented");
-            if(!recipes.diffusion || recipes.diffusion->id()!=FDM::TermRecipeId::Central2Explicit)
-                fail(occurrence,"selected pressure stencil requires Central2Explicit; no Central4 implementation is bound");
-            if(!system.state.contains("nu") || !producedBy(system.state.at("nu"),"closure.thermodynamic.nu"))
-                fail(occurrence,"nu must use the existing constant transport projection; this predictor has no custom coefficient field/producer port");
-            requested=&*recipes.diffusion;primary="U";secondary="nu";
-        } else if(e.operation()==Math::Op::Source) {
-            if(side!=Side::Right || e.arguments().size()!=1)
-                fail(occurrence,"primitive source requires one RHS source expression returning acceleration");
-            primary=e.arguments()[0].kind()==K::Symbol?e.arguments()[0].name():"expression";
-        } else fail(occurrence,std::string("unsupported pressure operator ")+Math::name(e.operation()));
-        const auto selected=catalog.resolve({equation,e,occurrence,"U",call.equationMethod,requested,&system.state,&call.stateUses},bindings);
-        if(selected.status!=BindingStatus::Resolved)fail(occurrence,selected.reason);
-        if(requested && (!selected.recipe || selected.recipe->id()!=requested->id() || !selected.primitiveSpatial))
-            fail(occurrence,"selected spatial implementation has no compatible primitive momentum kernel: "+selected.id);
-        if(!requested && !selected.primitiveSource && !selected.fieldSource.bind)
-            fail(occurrence,"selected source has no primitive acceleration callback: "+selected.id);
-        momentum.terms.push_back(result.operators.size());
-        result.operators.emplace_back(equation.id,call.source.equation,"U",call.equationMethod,occurrence,e.operation(),
-            primary,secondary,side,selected.recipe,selected.id,selected.owner,selected.compiledDataAvailable,
-            selected.primitiveSource,ConservativeSourceKernel{},selected.primitiveSpatial);
-        result.operators.back().fieldSource=selected.fieldSource;
-        if(std::find(result.providerRequirements.begin(),result.providerRequirements.end(),selected.id)==result.providerRequirements.end())
-            result.providerRequirements.push_back(selected.id);
-        if(selected.recipe)result.recipeBindings.push_back({*selected.recipe,RecipeConsumerKind::EquationTerm,equation.id+"@"+occurrence});
-        if(requested)result.requiredHaloWidth=std::max(result.requiredHaloWidth,requested->haloWidth());
-    };
-    visit(visit,equation.lhs,CompiledSpatialBinding::Side::Left,"lhs");
-    visit(visit,equation.rhs,CompiledSpatialBinding::Side::Right,"rhs");
-    if(transient!=1 || convection!=1)fail("equation","requires one ddt(U) and one div(momentumFlux)");
-    if(std::find(result.workspaceRequirements.begin(),result.workspaceRequirements.end(),call.residualWorkspace)==result.workspaceRequirements.end())
-        result.workspaceRequirements.push_back(call.residualWorkspace);
-    result.pressureMomentum=std::move(momentum);
 }
 
 // The correction kernels still implement these finite structures, not a
@@ -691,7 +628,8 @@ void requirePressureRelation(const Equation& equation,std::string_view method) {
         return name+")";
     };
     std::string_view expected;
-    if(method=="PressureCorrection")expected="neg(div(mul(faceResponse,grad(deltaP))))=neg(faceVolumeDivergence(correctedFlux))";
+    if(method=="RhieChow")expected="phi=surfaceFlux(U)";
+    else if(method=="PressureCorrection")expected="neg(div(mul(faceResponse,grad(deltaP))))=neg(faceVolumeDivergence(correctedFlux))";
     else if(method=="PressureUpdate")expected="p=add(p,deltaP)";
     else if(method=="VelocityCorrection")expected="U=sub(U,mul(rAU,grad(deltaP)))";
     else if(method=="FluxCorrection")expected="phi=sub(phi,pressureFlux(faceResponse,deltaP))";
@@ -710,26 +648,23 @@ public:
                    OutputContract contract,std::vector<SolvePlanNode> leaves,
                    std::vector<std::string> needs,
                    std::vector<std::string> provides,
-                   std::vector<std::string> requirements,
-                   std::size_t sourceInputs=0)
+                   std::vector<std::string> requirements)
         : id_(method),output_(output),contract_(contract),leaves_(std::move(leaves)),
           needs_(std::move(needs)),provides_(std::move(provides)),
-          requirements_(std::move(requirements)),sourceInputs_(sourceInputs) {}
+          requirements_(std::move(requirements)) {}
     std::string_view id() const { return id_; }
     std::string_view runtimeProvider() const {
-        return id_=="FluxCorrection" ? "flow.rhie-chow" : "flow.pressure-operators";
+        return (id_=="FluxCorrection" || id_=="RhieChow") ? "flow.rhie-chow" : "flow.pressure-operators";
     }
     std::string_view operationProvider(const OpId& operation) const {
         // Flux publication uses the pressure backend's existing state authority.
-        return operation==OpIds::FluxCorrect ? "flow.rhie-chow" : "flow.pressure-operators";
+        return (operation==OpIds::FluxCorrect || operation==OpIds::FaceFluxPredict) ? "flow.rhie-chow" : "flow.pressure-operators";
     }
     CompiledEquationCall compile(const ExecutableEquationSystem& system,
                                 const EquationCall& step,
                                 const NumericalBinding& binding) const {
         requireOutput(system,step);
-        const bool supportedTarget=id_=="PressureMomentum"
-            ? (step.target.kind==TargetKind::Physical || step.target.kind==TargetKind::Working)
-            : step.target.kind==(id_=="PressureCorrection" ? TargetKind::Correction
+        const bool supportedTarget=step.target.kind==(id_=="RhieChow" ? TargetKind::Working : id_=="PressureCorrection" ? TargetKind::Correction
                 : TargetKind::Physical);
         if (!supportedTarget)
             throw std::runtime_error("Unsupported: provider "+std::string(id_)+" cannot realize semantic target "+targetText(step.target));
@@ -748,45 +683,16 @@ public:
                    || formula.lhs.name()!=output_) {
             throw std::runtime_error("Pressure method Equation does not assign its Output.");
         }
-        if (binding.inputs.size()!=sourceInputs_)
+        if (!binding.inputs.empty())
             throw std::runtime_error("EquationMethod '"+std::string(id_)
                 +"' has missing or unexpected source-math inputs.");
-        for (const auto& input:binding.inputs) {
-            if (std::none_of(system.registry.entries().begin(),
-                    system.registry.entries().end(),
-                    [&](const Equation& candidate) { return candidate.id==input; }))
-                throw std::runtime_error("EquationMethod source mathematics '"
-                    +input+"' is unavailable.");
-        }
         CompiledEquationCall result;
         result.source=step;result.backendProvider=runtimeProvider();
         result.target=bindTarget(system,step);
         result.equationMethod=std::string(id_);
         result.target=bindTarget(system,step,provides_.empty() ? "" : provides_.back());
         result.target.viewOwner=StateViewOwner::NumericalProvider;
-        result.temporalCapabilities={FDM::TimeRecipeId::ForwardEuler};
-        if (id_=="PressureMomentum") {
-            const auto& density=system.state.at("rho");
-            if(!density.constantValue || !std::isfinite(*density.constantValue) || *density.constantValue<=0.0)
-                throw std::runtime_error("PressureMomentum requires positive constant STATE rho: step="+step.occurrence+" equation="+step.equation);
-            for(const auto& read:step.inputs)
-                if(read.version!=StateVersion::Current
-                    || read.kind!=TargetKind::Physical || read.halo || !read.snapshot.empty() || read.perIteration)
-                    throw std::runtime_error("PressureMomentum unsupported input version/port: step="+step.occurrence+" equation="+step.equation+" input="+read.symbol+"; requires current predictor U/p, original fixed-time base is internal workspace");
-            result.stepInputs={{OpIds::PressurePrepare,std::string(runtimeProvider())}};
-            result.physicalPublication={OpIds::PressureStepCommit,std::string(runtimeProvider())};
-            if(step.target.kind==TargetKind::Working) {
-                result.stepInputs.push_back({OpIds::PressureStepBegin,std::string(runtimeProvider())});
-                result.iterationInputs={{OpIds::PressureIterationBegin,std::string(runtimeProvider())}};
-                result.iterationOutputs={{OpIds::PressureIterationEnd,std::string(runtimeProvider())}};
-                result.iterationSignalRequired=true;
-            }
-            result.temporalMethod="fixed physical dt; U_n + dt R(U_iterate), pressure constraint correction";
-            result.spatialTerms=true;
-            result.primitiveSourceRequired=true;
-            result.residualWorkspace="pressureMomentumWorkspace";
-            result.operations=pressureOperations();
-        }
+        result.temporalCapabilities={FDM::TimeRecipeId::ForwardEuler,FDM::TimeRecipeId::PartitionedFixedEuler};
         result.calls={{formula.id,std::string(output_)}};
         result.writes={std::string(output_)};
         result.requirements=requirements_;
@@ -801,10 +707,53 @@ public:
         result.fragment.id=std::string(id_)+".fragment";
         result.fragment.name=std::string(id_)+" numerical fragment";
         pressureLifecycleContract(result,false);
-        if(id_=="PressureMomentum")bindSourceInputs(system,step,formula,result);
+        if(id_=="PressureCorrection") {
+            result.stepInputs={{OpIds::PressurePrepare,"flow.pressure-operators",false}};
+            result.physicalPublication={OpIds::PressureStepCommit,"flow.pressure-operators"};
+            result.operations=pressureOperations();
+        }
+        if(id_=="RhieChow") {
+            if(binding.response.empty())throw std::runtime_error("RhieChow needs explicit WHICH response occurrence: "+step.occurrence);
+            result.operations.push_back({OpIds::FaceFluxPredict,"construct predicted volume face flux",OperationStage::FluxCorrect,
+                {OperationCapability::FluxCorrection},{OriginKind::Generated,"RhieChow"}});
+            result.commitRequires.clear(); // A prediction does not require or publish a pressure correction.
+            result.workspaceRequires={"cell.response:"+binding.response};
+            result.workspaceProvides.push_back("rAU");result.workspaceProvides.push_back("pressure.predictor");
+            result.stepWorkspaces=result.workspaceProvides;
+            const auto& flux=system.state.at(step.target.symbol);
+            Math::requireCompatible(flux.signature,Math::signature(0,{0,3,-1,0,0,0,0}),"RhieChow volume flux");
+            if(flux.location!=VariableLocation::EulerianFace || flux.ownership!=OwnershipKind::CanonicalFace || flux.storageKey.empty())
+                throw std::runtime_error("RhieChow requires declared canonical scalar face backing: "+step.occurrence);
+            if(!step.inputs.empty()) {
+                const auto velocity=std::find_if(step.inputs.begin(),step.inputs.end(),[](const auto& use){return use.symbol=="U";});
+                if(velocity!=step.inputs.end() && velocity->kind==TargetKind::Physical)result.stateUses.front().kind=TargetKind::Physical;
+            }
+            if((!step.inputs.empty() && (step.inputs.size()!=result.stateUses.size()
+                || !std::equal(step.inputs.begin(),step.inputs.end(),result.stateUses.begin(),[](const auto& a,const auto& b){
+                    return a.symbol==b.symbol && a.version==b.version && a.kind==b.kind && a.halo==b.halo && a.snapshot==b.snapshot && a.perIteration==b.perIteration;
+                }))))
+                throw std::runtime_error("RhieChow requires published Working U/current p and frozen momentum response; no alternate version or inner-stencil override is implemented: "+step.occurrence);
+            result.target.workspace="predictedFaceFlux";
+            result.target.workspaceLocation=VariableLocation::EulerianFace;
+            result.target.workspaceOwnership=OwnershipKind::CanonicalFace;
+            result.faceFlux=CompiledFaceFlux{flux.id,"U","predictedFaceFlux",TargetKind::Working,OpIds::FaceFluxPredict,{"U.Working","p","rAU","faceGeometry"},false};
+            result.faceFlux->velocityView=result.stateUses.front().kind;
+            result.faceFlux->response=binding.response;
+            result.faceFlux->numericalInputs.front()=targetText({"U",result.stateUses.front().kind});
+            result.spatialTerms=true;
+            for(const auto& selected:binding.operators)
+                if(selected.provider!="RhieChow")throw std::runtime_error("surfaceFlux occurrence="+selected.occurrence+" has no implementation "+selected.provider+" in selected RhieChow method");
+            Math::requireCompatible(system.state.at("U").signature,PressureMathematics::signature("U"),"RhieChow velocity");
+            Math::requireCompatible(system.state.at("p").signature,PressureMathematics::signature("p"),"RhieChow pressure");
+            result.operatorBindings={"RhieChow"};
+        }
         result.fragment.children=leaves_;
         for(auto& leaf:result.fragment.children)leaf.provider=operationProvider(leaf.operation);
         result.fragment.children.back().equationCalls=result.calls;
+        if(id_=="PressureUpdate") {
+            result.backendOperation=result.fragment.children.back().operation;
+            result.residualCapabilities={ResidualKind::StateChange};
+        }
         return result;
     }
 private:
@@ -815,7 +764,6 @@ private:
     std::vector<std::string> needs_;
     std::vector<std::string> provides_;
     std::vector<std::string> requirements_;
-    std::size_t sourceInputs_;
 };
 
 // The conservative predictor publishes the packed physical state in the
@@ -851,7 +799,7 @@ public:
         result.stepWorkspaces=provides_;
         const auto& formula=system.registry.at(call.equation);
         if (method_=="ConservativePressureMomentum") {
-            result.stepInputs={{OpIds::PressurePrepare,std::string(runtimeProvider())}};
+            result.stepInputs={{OpIds::PressurePrepare,std::string(runtimeProvider()),true}};
             result.physicalPublication={OpIds::PressureStepCommit,std::string(runtimeProvider())};
             result.temporalMethod="one forwardEuler conservative predictor; fixed-time pressure corrections";
             if (binding.inputs.size()!=2)
@@ -918,9 +866,18 @@ public:
         result.source=call; result.equationMethod=id_;result.backendProvider=runtimeProvider();
         result.target=bindTarget(system,call);
         result.target.viewOwner=StateViewOwner::NumericalProvider;
-        result.temporalCapabilities={FDM::TimeRecipeId::ForwardEuler};
+        result.temporalCapabilities={FDM::TimeRecipeId::ForwardEuler,FDM::TimeRecipeId::PartitionedFixedEuler};
         result.backendOperation=operation_;
+        if(id_=="ResidualConvergence") {
+            result.residualCapabilities={ResidualKind::DiscreteEquation};result.residualTarget="p";result.residualComponents=2;
+        }
         pressureLifecycleContract(result,false);
+        if(id_=="FixedTimeRelaxation") {
+            result.stepInputs={{OpIds::PressureStepBegin,"flow.pressure-operators"}};
+            result.iterationInputs={{OpIds::PressureIterationBegin,"flow.pressure-operators"}};
+            result.iterationOutputs={{OpIds::PressureIterationEnd,"flow.pressure-operators"}};
+            result.iterationSignalRequired=true;
+        }
         result.calls.push_back({equation.id,call.target.symbol});
         result.writes.push_back(call.target.symbol);
         if (!result.target.workspace.empty()) result.workspaceProvides.push_back(result.target.workspace);
@@ -932,14 +889,38 @@ private:
     std::string id_,operation_;
 };
 
+/// @brief 直接方法的选择同时确定本地编译和空间 lowering；无第二套身份匹配。
+struct DirectMethod {
+    std::string_view name;
+    decltype(&compileCellEquation) compile;
+    decltype(&lowerCellEquation) lower=nullptr;
+};
+const DirectMethod* directMethod(std::string_view name) {
+    static const DirectMethod methods[]={
+        {"LocalAffine",compileLocalAffine},
+        {"SSTCentral2",compileSstClosure},
+        {"CellExplicit",compileCellEquation,lowerCellEquation},
+        {"ConservativeResidual",[](const auto& system,const auto& call,const auto& binding) {
+            auto result=compileConservativeResidual(system,call,binding);
+            result.backendProvider="flow.conservative";
+            return result;
+        },[](const auto& system,auto& call,const auto& recipes,const auto& catalog,const auto& bindings,auto& numerical) {
+            FusedSpatial::lower(system,call,recipes,catalog,bindings,numerical);
+        }}
+    };
+    const auto selected=std::find_if(std::begin(methods),std::end(methods),[&](const auto& method){return method.name==name;});
+    return selected==std::end(methods)?nullptr:selected;
+}
+
 } // namespace
 
 TemporalMethodRegistry builtinTemporalMethods() {
     static const ForwardEulerMethod euler;
+    static const PartitionedFixedEulerMethod fixed;
     static const SSPRK3Method ssp;
     static const ClassicalRK4Method rk4;
     TemporalMethodRegistry result;
-    result.add(euler);
+    result.add(euler);result.add(fixed);
     result.add(ssp);
     result.add(rk4);
     return result;
@@ -947,18 +928,15 @@ TemporalMethodRegistry builtinTemporalMethods() {
 
 std::optional<CompiledEquationCall> compileDirectEquation(const ExecutableEquationSystem& system,
         const EquationCall& call,const NumericalBinding& binding) {
-    if(binding.method=="LocalAffine")return compileLocalAffine(system,call,binding);
-    if(binding.method=="ConservativeResidual") {
-        auto result=compileConservativeResidual(system,call,binding);result.backendProvider="flow.conservative";return result;
-    }
-    static const PressureMethod momentum("PressureMomentum","U",PressureMethod::OutputContract::Relation,
-        {methodLeaf(PlanNodeKind::Assemble,"PressureMomentum.assemble",
-            "assemble momentum predictor",OpIds::MomentumAssemble),
-         methodLeaf(PlanNodeKind::Solve,"PressureMomentum.solve",
-            "solve momentum predictor",OpIds::MomentumSolve)},
-        {},{"HbyA","rAU","faceResponse","correctedFlux","pressureMomentumWorkspace"},
-        {"bound Equation occurrence mathematics",
-         "velocity boundary","RhieChow face prediction","canonical face COPY"});
+    if(binding.method=="CellExplicitEuler")throw std::runtime_error("Retired method CellExplicitEuler; select CellExplicit and an explicit Step/Stage scope");
+    if(const auto* method=directMethod(binding.method))return method->compile(system,call,binding);
+    if(auto ordinary=compileScalarEquation(system,call,binding))return ordinary;
+    static const PressureMethod prediction("RhieChow","phi",PressureMethod::OutputContract::Assignment,
+        {methodLeaf(PlanNodeKind::Update,"RhieChow.predict","predict oriented face volume flux",OpIds::FaceFluxPredict)},
+        {"pressure.predictor","rAU"},{"predictedFaceFlux","faceResponse","correctedFlux"},
+        {"surfaceFlux(U): oriented integral U dot n dS; SI m^3/s",
+         "Working U, current p, frozen rAU, face geometry and original boundary closure",
+         "canonical face COPY; requires unchanged ready momentum inputs in the same scope"});
     static const PressureMethod correction("PressureCorrection","deltaP",
         PressureMethod::OutputContract::Relation,
         {methodLeaf(PlanNodeKind::Update,"PressureCorrection.boundary",
@@ -994,18 +972,33 @@ std::optional<CompiledEquationCall> compileDirectEquation(const ExecutableEquati
     static const PressureRelation relax("FixedTimeRelaxation",OpIds::PressureRelaxationApply);
     static const PressureRelation restore("FluxConsistency",OpIds::PressureFluxConsistencyRestore);
     static const PressureRelation convergence("ResidualConvergence",OpIds::PressureConvergenceEvaluate);
-    for(const auto* method:{&momentum,&correction,&pressureUpdate,&velocityCorrection,&fluxCorrection})
+    for(const auto* method:{&prediction,&correction,&pressureUpdate,&velocityCorrection,&fluxCorrection})
         if(binding.method==method->id())return method->compile(system,call,binding);
     for(const auto* method:{&relax,&restore,&convergence})
         if(binding.method==method->id())return method->compile(system,call,binding);
     return std::nullopt;
 }
-bool lowerDirectSpatial(const ExecutableEquationSystem& system,const CompiledEquationCall& call,
+bool lowerDirectSpatial(const ExecutableEquationSystem& system,CompiledEquationCall& call,
         const FDM::NumericalRecipeSet& recipes,const TermProviderCatalog& catalog,
         const std::vector<FormulaOperatorBinding>& bindings,CompiledNumericalSystem& result) {
-    if(call.equationMethod=="PressureMomentum")lowerPressureMomentum(system,call,recipes,catalog,bindings,result);
-    else if(call.equationMethod=="ConservativeResidual")FusedSpatial::lower(system,call,recipes,catalog,bindings,result);
-    else return false;
+    if(call.equationMethod=="RhieChow") {
+        if(result.facePrediction)throw std::runtime_error("Multiple face prediction owners require independently bound face resources");
+        const auto& equation=system.registry.at(call.source.equation);
+        const auto& surface=equation.rhs;
+        const auto occurrence=surface.occurrence().empty()?"rhs":surface.occurrence();
+        const auto* selected=selectFormulaBinding(equation,surface,occurrence,bindings);
+        if(selected && selected->provider!="RhieChow")
+            throw std::runtime_error("equation="+equation.id+" occurrence="+occurrence+" target="+call.target.symbol
+                +": selected surfaceFlux implementation="+selected->provider+" is not available in RhieChow");
+        result.operators.emplace_back(equation.id,call.source.equation,call.target.symbol,call.equationMethod,
+            occurrence,Math::Op::SurfaceFlux,call.faceFlux->velocity,"p",CompiledSpatialBinding::Side::Right,
+            std::nullopt,"RhieChow","flow.rhie-chow",true);
+        result.facePrediction=call.faceFlux;
+        return true;
+    }
+    const auto* method=directMethod(call.equationMethod);
+    if(!method || !method->lower)return false;
+    method->lower(system,call,recipes,catalog,bindings,result);
     return true;
 }
 
@@ -1049,12 +1042,71 @@ std::string validateCompiledConservativeStage(const ExecutableEquationSystem& eq
 
 
 void validateDirectProgram(const ExecutableEquationSystem& equations,const CompiledNumericalSystem& numerics,const CompiledSolvePlan& plan) {
-    if(!numerics.pressureMomentum && plan.compiledProgram.temporalParticipants.empty()
+    validateScalarExecution(equations,numerics,plan);
+    if(!std::isfinite(numerics.dt.maxDeltaT) || numerics.dt.maxDeltaT==std::numeric_limits<double>::max()) {
+        for(const auto& term:numerics.operators)
+            if(!term.coefficientState.empty() && term.primitiveSpatial==&Discretization::CellEquation::stressArithmeticCentral2)
+                throw std::runtime_error("Variable stress needs explicit maxDeltaT before coefficient publication: "+term.callOccurrence+" / "+term.occurrence);
+    }
+    if(numerics.time.recipe.id()==FDM::TimeRecipeId::PartitionedFixedEuler)
+        for(const auto& call:plan.compiledProgram.steps)if(call.temporalResidual || call.stageLocal || call.legacyProvider)
+            throw std::runtime_error("partitionedFixedEuler has no Stage/legacy method treatment: "+call.source.occurrence);
+    const bool cells=std::any_of(plan.compiledProgram.steps.begin(),plan.compiledProgram.steps.end(),[](const auto& call){return cellEquation(call)!=nullptr && !call.temporalResidual;});
+    if(cells && !plan.compiledProgram.temporalParticipants.empty())throw std::runtime_error("Cell Step and recipe-stage integration require a common participant treatment; not implemented");
+    if(cells && numerics.time.recipe.id()!=FDM::TimeRecipeId::ForwardEuler && numerics.time.recipe.id()!=FDM::TimeRecipeId::PartitionedFixedEuler)
+        throw std::runtime_error("Cell Step requires forwardEuler or partitionedFixedEuler; SSPRK3/classicalRK4 require explicit Stage participation, not a Step response");
+    if(!cells && plan.compiledProgram.temporalParticipants.empty()
         && std::any_of(numerics.operators.begin(),numerics.operators.end(),[](const auto& term){return bool(term.fieldSource.bind);}))
-        throw std::runtime_error("Field source requires the implemented synchronous stage binding; the unsplit fused executor has no bound field-reader source port");
-    if(numerics.pressureMomentum) {
+        throw std::runtime_error("Field source has no selected numerical reader binding");
+    if(numerics.facePrediction) {
+        const auto& face=*numerics.facePrediction;
+        const auto at=std::find_if(plan.compiledProgram.steps.begin(),plan.compiledProgram.steps.end(),[&](const auto& call){return call.source.occurrence==face.response;});
+        const auto* response=at==plan.compiledProgram.steps.end()?nullptr:cellEquation(*at);
+        if(!response || at->temporalResidual || at->target.symbol!=face.velocity || response->potential!=face.numericalInputs.at(1)
+            || response->gradients.size()!=1 || !response->gradients.front().kernel || !(response->capacityValue>0))
+            throw std::runtime_error("RhieChow response="+face.response+" needs a Step Euler response, not an RK participant, with actual negative scalar-gradient/positive-capacity response");
+        if(face.velocityView==TargetKind::Working && at->target.kind!=TargetKind::Working
+            && std::none_of(at->viewOutputs.begin(),at->viewOutputs.end(),[](const auto& view){return view.kind==StateViewKind::Working;}))
+            throw std::runtime_error("RhieChow needs the declared response Working output: "+face.response);
+    }
+    if(numerics.facePrediction && !numerics.pressureOperator) {
+        const auto noPredictedAccept=[&](const auto& self,const ExecutionScope& scope)->void {
+            for(const auto& target:scope.commitTargets)if(target.symbol==numerics.facePrediction->symbol)
+                throw std::runtime_error("Predicted face Working output is not a corrected physical flux; an explicit implemented correction is required: "+scope.id);
+            for(const auto& child:scope.children)self(self,child);
+        };noPredictedAccept(noPredictedAccept,plan.compiledProgram.root);
+    }
+    if(numerics.pressureOperator) {
         const auto reason=validatePressureProgram(equations,numerics,plan);
         if(!reason.empty())throw std::runtime_error(reason);
+    }
+    if(cells) {
+        const bool fixedPressure=std::any_of(plan.compiledProgram.steps.begin(),plan.compiledProgram.steps.end(),[](const auto& call) {
+            return std::any_of(call.stepInputs.begin(),call.stepInputs.end(),[](const auto& input) {
+                return input.operation==OpIds::PressureStepBegin;
+            });
+        });
+        std::set<std::string> targets;
+        for(const auto& call:plan.compiledProgram.steps)if(cellEquation(call) && !call.temporalResidual) {
+            if(call.target.kind==TargetKind::Working && (!numerics.pressureOperator || !numerics.facePrediction || numerics.facePrediction->response!=call.source.occurrence)) {
+                const auto accepts=[&](const auto& self,const ExecutionScope& scope)->bool {
+                    for(std::size_t n=0;n<scope.commitSources.size();++n)if(scope.commitSources[n].symbol==call.target.symbol && scope.commitSources[n].kind==TargetKind::Working
+                        && scope.commitTargets.at(n).symbol==call.target.symbol)return true;
+                    return std::any_of(scope.children.begin(),scope.children.end(),[&](const auto& child){return self(self,child);});
+                };
+                if(!accepts(accepts,plan.compiledProgram.root))throw std::runtime_error("Working cell result needs an explicit physical variable Commit: "+call.source.occurrence);
+            }
+            if(!targets.insert(equations.state.at(call.target.symbol).storageKey).second)
+                throw std::runtime_error("Repeated full-dt cell update to one storage needs an explicit fixed-time implementation: "+call.source.occurrence);
+        }
+        const auto repeated=[&](const auto& self,const ExecutionScope& scope,bool loop)->void {
+            loop=loop || ((scope.kind==ExecutionKind::Loop || scope.kind==ExecutionKind::Sequence) && scope.repetitions!=1);
+            const bool fixedResponse=fixedPressure && numerics.facePrediction && numerics.facePrediction->response==scope.step.occurrence;
+            if(loop && !fixedResponse && scope.kind==ExecutionKind::EquationCall
+                && std::any_of(plan.compiledProgram.steps.begin(),plan.compiledProgram.steps.end(),[&](const auto& call){return call.source.occurrence==scope.step.occurrence && cellEquation(call);}))
+                throw std::runtime_error("Cell full-dt update cannot repeat without a fixed-time base contract: "+scope.step.occurrence);
+            for(const auto& child:scope.children)self(self,child,loop);
+        };repeated(repeated,plan.compiledProgram.root,false);
     }
     if(std::any_of(plan.compiledProgram.steps.begin(),plan.compiledProgram.steps.end(),[](const auto& call){return call.equationMethod=="ConservativeResidual";})) {
         const auto stageContract=validateCompiledConservativeStage(equations,plan);
@@ -1100,13 +1152,11 @@ ProviderRegistry builtinProviders() {
         {OpIds::PressureConvergenceEvaluate});
     static const TurbulenceTransportMethod turbulence;
     ProviderRegistry result;
-    addScalarMethod(result);
-    static const SstClosureMethod closure;result.add(closure);
+    result.add(linearBlockMethod());
     addEulerianMethods(result);
     addImmersedMethods(result);
     addLevelSetMethods(result);
     addMultiphaseMethods(result);
-    addThermalMethod(result);
     result.add(turbulence);
     static const TurbulenceClosureMethod turbulenceClosure;
     result.add(turbulenceClosure);

@@ -1,3 +1,7 @@
+#include "SF_sstMethod.h"
+#include "SF_affine.h"
+#include "SF_block.h"
+#include "SF_cell.h"
 #include "SF_scalarMethod.h"
 /// @file SF_systemPrinter.cpp
 /// @brief 打印 case 最终数学身份，不参与求解和状态修改。
@@ -11,6 +15,7 @@
 
 #include "SF_config.h"
 #include "SF_executionContract.h"
+#include "SF_stateRealization.h"
 
 #include <algorithm>
 #include <string>
@@ -182,33 +187,33 @@ void printMathematicalCoverage(std::ostringstream& out,const ResolvedSimulationS
 
 void printNumericalSystem(
         std::ostringstream& output,
-        const CompiledNumericalSystem& numerical,const CompiledExecutionProgram& program) {
+        const CompiledNumericalSystem& numerical,const CompiledExecutionProgram& program,const EquationRegistry& equations) {
     output << "\nCOMPILED NUMERICAL SYSTEM\n"
            << "  required halo width : " << numerical.requiredHaloWidth << "\n";
-    if (numerical.pressureFaceCoupling != PressureFaceCoupling::None)
-        output << "  pressure face coupling : RhieChow\n";
-    if(numerical.pressureMomentum) {
-        const auto& momentum=*numerical.pressureMomentum;
-        output << "  compiled pressure momentum : step=" << momentum.occurrence
-               << " equation=" << momentum.equation << " target=U time=" << momentum.timeOccurrence
+    if (numerical.facePrediction)
+        output << "  face prediction : surfaceFlux(" << numerical.facePrediction->velocity
+               << (numerical.facePrediction->velocityView==TargetKind::Working?" Working":" Physical")
+               << ") -> " << numerical.facePrediction->symbol << " Working; response=" << numerical.facePrediction->response << "; selected RhieChow; owner=FaceFluxExecution (no pressure solver required); oriented cofactor-weighted volume rate [0 3 -1 0 0 0 0]\n";
+    for(const auto& call:program.steps)if(const auto* cell=cellEquation(call)) {
+        const auto& momentum=*cell;
+        const auto& time=equations.at(call.source.equation).lhs.occurrence();
+        output << "  compiled cell equation : step=" << call.source.occurrence
+               << " equation=" << call.source.equation << " target=" << call.target.symbol << " time=" << (time.empty()?"lhs":time)
                << " spatial/source occurrences=" << momentum.terms.size()
-               << "; kernels consume current predictor U; nu=compiled mu/rhoConst; source returns acceleration\n";
+               << "; actual weighted spatial/point kernels; potential=" << momentum.potential << " capacity=" << momentum.capacity << " value=" << momentum.capacityValue << "\n";
     }
     if (numerical.pressureOperator) {
         output << "  configured pressure treatment (active only with a compiled method/resource consumer) : one physical step; first predictor R(U_n); "
                << "repeated outer predictors use U_n + dt R(U_k) (Legacy fixed-time iteration, "
                << "not strict forwardEuler or a generic implicit recipe)\n";
-        output << "  pressure outer convergence : relativeDelta <= "
-               << numerical.pressureOperator->relativeTolerance
-               << " AND max|div(F_final)| <= "
-               << numerical.pressureOperator->absoluteTolerance << "\n";
+        output << "  pressure stopping : compiled residual definitions (normalized iterate change AND continuity); no runtime tolerance projection\n";
     }
     if (numerical.operators.empty()) {
         output << "  bound Equation occurrences : (none)\n";
     } else {
         output << "  bound Equation occurrences\n";
         for (const auto& term : numerical.operators) {
-            output << "    " << term.formulaId << "@" << term.occurrence
+            output << "    step=" << term.callOccurrence << " " << term.formulaId << "@" << term.occurrence
                    << " -> " << term.output << " " << term.operatorName()
                    << "(" << term.primary;
             if (!term.secondary.empty()) output << "," << term.secondary;
@@ -220,6 +225,10 @@ void printNumericalSystem(
                    << (term.compiledDataAvailable ? "available" : "none")
                    << " side="
                    << (term.side==CompiledSpatialBinding::Side::Right ? "right" : "left");
+            output << " coefficient=" << term.coefficient;
+            if(!term.coefficientState.empty())output<<" field coefficient="<<term.coefficientState;
+            if(term.primitiveSpatial==&Discretization::CellEquation::stressArithmeticCentral2)
+                output<<"; arithmetic face dynamic viscosity; full deviatoric symmetric gradient; one oriented traction per face; serial orthogonal cell geometry";
             if (term.executionEquationId!=term.formulaId)
                 output << " execution=" << term.executionEquationId;
             if (term.recipe)
@@ -403,10 +412,10 @@ void printPlanNode(
                << "  termination=" << node.terminationSignal;
     }
     if(!node.residuals.empty()) {
-        output << " res=" << (node.residualAll?"AND":"OR") << " min=" << node.minimumIterations
+        output << (node.checkAtEntry?" while-res=":" res=") << (node.residualAll?"AND":"OR") << " min=" << node.minimumIterations
                << " max=" << node.repetitions << " onMaximum=" << (node.failOnMaximum?"fail":"continue-explicit");
         for(const auto& r:node.residuals)output << " [" << r.id << "@" << r.occurrence << " kind=" << toString(r.kind)
-            << " norm=" << toString(r.norm) << " normalization=" << toString(r.normalization)
+            << " component="<<r.component<<" norm=" << toString(r.norm) << " normalization=" << toString(r.normalization)
             << " atol=" << r.absoluteTolerance << " rtol=" << r.relativeTolerance << " scale=" << r.scale << "]";
     }
     if (!node.operation.empty()) {
@@ -565,7 +574,7 @@ std::string describe(const ResolvedSimulationSystem& system) {
         for(const auto& read:binding.reads)output<<" "<<targetText({read.symbol,read.kind})<<":"<<toString(read.version);
         output<<"\n";
     }
-    for(const auto& residual:system.solvePlan.compiledProgram.residuals)output<<"  res("<<residual.id<<") occurrence="<<residual.occurrence<<" target="<<residual.target<<" metric="<<toString(residual.kind)<<" norm="<<toString(residual.norm)<<" normalization="<<toString(residual.normalization)<<" provider="<<residual.provider<<"; checked after full body; reference reset at loop entry\n";
+    for(const auto& residual:system.solvePlan.compiledProgram.residuals)output<<"  res("<<residual.id<<") occurrence="<<residual.occurrence<<" target="<<residual.target<<" component="<<residual.component<<" metric="<<toString(residual.kind)<<" norm="<<toString(residual.norm)<<" normalization="<<toString(residual.normalization)<<" provider="<<residual.provider<<"; pending until actual sample; checked by residual module; reference reset at loop entry\n";
     output << "\nHOW / EXECUTION\n";
     const auto printHow=[&](const auto& self,const ExecutionScope& node,int depth,ExecutionFrequency inherited,bool iteration)->void {
         auto frequency=node.frequency==ExecutionFrequency::Inherit?inherited:node.frequency;
@@ -574,7 +583,7 @@ std::string describe(const ResolvedSimulationSystem& system) {
             if(call!=system.solvePlan.compiledProgram.steps.end() && (call->temporalResidual || call->stageLocal))frequency=ExecutionFrequency::Stage;
         }
         if(node.kind==ExecutionKind::StageLoop)frequency=ExecutionFrequency::Stage;
-        iteration=iteration || node.kind==ExecutionKind::Loop;
+        iteration=iteration || node.kind==ExecutionKind::Loop || node.kind==ExecutionKind::While;
         output << std::string(static_cast<std::size_t>(depth)*2,' ')
                << node.order << " " << toString(node.kind);
         if (node.kind==ExecutionKind::EquationCall) {
@@ -585,8 +594,10 @@ std::string describe(const ResolvedSimulationSystem& system) {
             output << " " << node.id;
         }
         if(node.kind==ExecutionKind::BlockSolve){output<<" [";for(const auto& e:node.equations)output<<" "<<e;output<<" ] => [";for(const auto& u:node.unknowns)output<<" "<<u;output<<" ]";}
-        if (node.kind==ExecutionKind::Loop)
+        if (node.kind==ExecutionKind::Loop || node.kind==ExecutionKind::While)
             output << " limit=" << node.repetitions;
+        if(!node.condition.empty())output << " while="<<node.condition;
+        if(node.kind==ExecutionKind::Push)output<<" interval=configured dt; entry snapshots -> recipe body -> accept -> one clock";
         if (!node.terminationSignal.empty())
             output << " until=" << node.terminationSignal;
         if(!node.residuals.empty()){output<<" res="<<(node.residualAll?"AND":"OR");for(const auto& id:node.residuals)output<<" "<<id;output<<" minimum="<<node.minimumIterations<<" onMaximum="<<(node.failOnMaximum?"fail":"continue-explicit");}
@@ -604,16 +615,16 @@ std::string describe(const ResolvedSimulationSystem& system) {
             output << "    " << binding.equation << "." << parameter.first << "=" << parameter.second << "\n";
         output << "  " << binding.equation;
         if (!binding.occurrence.empty()) output << "@" << binding.occurrence;
-        output << " -> " << binding.method << " origin=" << toString(binding.origin.kind) << ":" << binding.origin.source << "\n";
+        output << " -> " << binding.method << " response=" << binding.response << " origin=" << toString(binding.origin.kind) << ":" << binding.origin.source << "\n";
     }
     if (const auto* pressure=requiredPressureInputs(programOf(system))) {
         output << "  required pressure storage: U[3]/velocity owner=Field; p[1]/pressure owner=application; rho=rhoConst\n"
-               << "    Working/Correction, pressureFaceFlux/canonical COPY and matrix/linear solver owner=PressureOperators\n"
+               << "    predictor Working/candidate/response owner=referenced cell occurrence; face geometry/arrays/publication owner=FaceFluxExecution; Correction and matrix owner=PressureOperators\n"
                << "    one orthogonal source zone, one patch per rank; fixed U/p/rho/phi/deltaP symbols; no implied phase/KKT or arbitrary scalar composition\n"
                << "    reference cell=" << pressure->reference.referenceCell << " value=" << pressure->reference.referencePressure
                << " (runtime gauge; application initial fields are applied separately)\n"
-               << "    mu=" << pressure->dynamicViscosity << " relaxation(U,p)=" << pressure->velocityRelaxation << "," << pressure->pressureRelaxation
-               << " boundary entries(U,p)=" << pressure->velocityBoundary.size() << "," << pressure->pressureBoundary.size() << "\n"
+               << "    diffusion coefficient comes from compiled Equation terms; relaxation(U,p)=" << pressure->velocityRelaxation << "," << pressure->pressureRelaxation
+               << " boundary inputs=bound cell field resources\n"
                << "  linear: HYPRE (frozen pressure linear configuration); face coupling: RhieChow\n"
                << "    resource requirements are not proof of successful runtime binding\n";
     }
@@ -645,7 +656,7 @@ std::string describe(const ResolvedSimulationSystem& system) {
                 output<<" states=[";for(const auto& id:resource.fields->states)output<<" "<<id;
                 output<<" ] boundaries=[";for(const auto& id:resource.fields->boundaries)output<<" "<<id;
                 output<<" ] sources=[";for(const auto& id:resource.fields->sources)output<<" "<<id;
-                output<<" ] boundaryRequired="<<resource.fields->boundaryRequired;
+                output<<" ] boundaryRequired="<<resource.fields->boundaryRequired<<" boundaryPolicy="<<(resource.fields->cellVolumeBoundary?"cell endpoint/nearest ghost":"nodal reflection");
             }
             output<<"\n";
         }
@@ -680,6 +691,12 @@ std::string describe(const ResolvedSimulationSystem& system) {
         }
     }
     output << "\nCOMPILED OCCURRENCES / STORAGE / PROVIDERS\n";
+    for(const auto& publication:fieldPublications(system.executableSystem.state,system.solvePlan.compiledProgram)) {
+        const auto& backing=publication.backing;
+        output<<"  field publication: "<<publication.occurrence<<" -> "<<backing.symbol
+            <<" ("<<toString(publication.version)<<") on provider storage "<<backing.storage
+            <<" ["<<backing.componentOffset<<", "<<backing.componentOffset+backing.components<<")\n";
+    }
     for (const auto& step:system.solvePlan.compiledProgram.steps) {
         if(const auto* block=std::any_cast<CompiledLinearBlock>(&step.providerContract)){output<<"  [";for(const auto& e:block->equations)output<<" "<<e;output<<" ] => [";for(const auto& u:block->targets)output<<" "<<u;output<<" ]\n";}else output<<"  "<<step.source.equation<<" -> "<<targetText(step.source.target)<<"\n";
         output << "    equation method: " << step.equationMethod << "\n"
@@ -724,12 +741,19 @@ std::string describe(const ResolvedSimulationSystem& system) {
             output<<"    linear method: HYPRE FlexGMRES / BoomerAMG max="<<block->linear.maxIterations<<" relative="<<block->linear.relativeTolerance<<" absolute="<<block->linear.absoluteTolerance<<"\n    order: assemble -> whole solve -> original-matrix residual acceptance -> all-target publication; physical clock unchanged\n";
             for(const auto& read:block->valueReads)output<<"      block input="<<read.symbol<<" version="<<toString(read.version)<<"\n";
         }
-        if(const auto* closure=std::any_cast<CompiledStageClosure>(&step.providerContract)) {
-            output<<"    realization: one nonlocal closure group, not a time-integrated unknown\n"
-                <<"    authored Stage operation: "<<step.backendOperation<<"; final Current refresh: "<<step.temporalPublish<<"\n    borrowed closure inputs:";
+        if(const auto* closure=std::any_cast<CompiledSstClosure>(&step.providerContract)) {
+            output<<"    realization: "<<(closure->eddyViscosity?"independent eddy dynamic viscosity":"shared nonlocal outputs reading published viscosity")<<"; not a time-integrated unknown\n"
+                <<"    "<<(step.stageLocal?"Stage":"Step")<<" operation: "<<step.backendOperation;
+            if(!step.temporalPublish.empty())output<<"; final Current refresh: "<<step.temporalPublish;
+            output<<"\n    borrowed closure inputs:";
             for(const auto& id:closure->targets)output<<" "<<id;
-            output<<"\n    shared outputs:";for(const auto& id:step.coefficientStates)output<<" "<<id;
-            output<<"\n    original gradient/wall-distance/configured SST implementation; scalar boundary resources bind independently\n";
+            output<<"\n    viscosity input: "<<closure->viscosity<<"\n    only called outputs:";for(const auto& id:step.coefficientStates)output<<" "<<id;
+            const auto& p=closure->parameters;
+            output<<"\n    packed gradient operands: "<<closure->density<<", "<<closure->momentum
+                <<"; "<<(closure->packedVelocity?"original packed/cache Central2":"bound velocity reader Central2")<<"; geometry-owned wall distance; original far-field convention\n"
+                <<"    WHAT constants: mu="<<p.molecularViscosity<<" omegaFloor="<<p.omegaFloor
+                <<" betaStar="<<p.betaStar<<" sigmaW2="<<p.sigmaW2<<" gamma1="<<p.gamma1<<" gamma2="<<p.gamma2<<" a1="<<p.a1<<"\n";
+
         }
         if(const auto* affine=std::any_cast<CompiledAffineEquation>(&step.providerContract)) {
             output<<"    realization: local affine residual A*target+R=0; target=-R/A; zero/non-finite A is an error\n"
@@ -740,14 +764,20 @@ std::string describe(const ResolvedSimulationSystem& system) {
             if(affine->boundaryPreparation==WorkspaceBoundary::NearestInterior)
                 output<<"    spatial publication: internal final values -> nearest-interior extension over allocated ghost region -> readable; serial single patch, not MPI halo\n";
             else output<<"    spatial publication: internal nodes only; no implicit boundary preparation\n";
-            for(const auto& read:affine->valueReads)output<<"      affine input="<<read.symbol<<" version="<<toString(read.version)<<"\n";
+            for(const auto& read:step.stateUses)output<<"      affine input="<<read.symbol<<" version="<<toString(read.version)<<"\n";
         }
         if(const auto* scalar=std::any_cast<CompiledScalarEquation>(&step.providerContract)) {
+            if(scalar->metric)output<<"    metric set-boundary: ILW="<<scalar->metric->ilw<<" order="<<scalar->metric->order
+                <<" bounds="<<scalar->metric->bounds.enabled<<" ["<<scalar->metric->bounds.lower<<","<<scalar->metric->bounds.upper
+                <<"] mode="<<static_cast<int>(scalar->metric->bounds.mode)<<"; prepare before RHS, bounds after advance; ForwardEuler only\n";
+            if(scalar->fixedTime)output<<"    relaxation="<<scalar->relaxation<<"; defect=a-a_old-dt*R(a,t_new), same units as target; phi uses actual published generation, pressure samples remain at t_old\n";
+            output<<"    execution frequency: "<<(scalar->fixedTime?"Step: fixed OldTime base, endpoint RHS, relaxed iterate; no clock":scalar->sequential?"Step: one ForwardEuler evaluation/publication; host dt, no clock":"Stage: shared recipe RHS/advance barriers")<<"\n";
+            if(!scalar->volumeFlux.empty())output<<"    face input="<<scalar->volumeFlux<<" corrected volume flux, positive computational direction, cofactor weighted; inverseVolume once; published physical interval\n";
             output<<"    compiled RHS normalization: "<<scalar->normalized<<" (authored order preserved)\n";
             output<<"    target-relative structure: "<<(scalar->nonlinear?"nonlinear explicit values; no implicit Jacobian":"affine candidate")<<"\n";
             for(const auto& d:scalar->diffusions) {
                 output<<"      diffusion occurrence="<<d.occurrence<<" input="<<d.input
-                    <<(scalar->conservativeTransport && !scalar->primitiveStorage?"/rho":"")<<" version=Stage coefficient=";
+                    <<(scalar->conservativeTransport && !scalar->primitiveStorage?"/rho":"")<<" version="<<(scalar->sequential?"Current":"Stage")<<" coefficient=";
                 if(!d.coefficientState.empty())output<<d.coefficientState;
                 else if(scalar->diffusivityState.empty())output<<d.coefficient;else output<<scalar->diffusivityState<<"(Stage)";
                 output<<" components="<<d.components<<" implementation="
@@ -755,21 +785,54 @@ std::string describe(const ResolvedSimulationSystem& system) {
             }
             for(const auto& read:scalar->valueReads) {
                 output<<"      numerical input="<<read.symbol<<" version="<<toString(read.version);
-                for(const auto& publisher:system.solvePlan.compiledProgram.steps)
-                    if(publisher.stageLocal && publisher.target.symbol==read.symbol && read.version==StateVersion::Stage)
+                for(const auto& publisher:system.solvePlan.compiledProgram.steps) {
+                    if(&publisher==&step)break;
+                    if(publisher.target.symbol==read.symbol && publisher.source.occurrence!=step.source.occurrence
+                        && ((publisher.stageLocal && read.version==StateVersion::Stage) || (read.version==StateVersion::Current && std::any_of(publisher.stateEffects.begin(),publisher.stateEffects.end(),[&](const auto& effect){return effect.symbol==read.symbol && effect.publish;}))))
                         output<<" publisher="<<publisher.source.occurrence<<" equation="<<publisher.source.equation
                             <<" operation="<<publisher.backendOperation;
+                }
                 output<<"\n";
             }
+            for(const auto& read:scalar->stencilReads)output<<"      spatial input="<<targetText({read.symbol,read.kind})<<" version="<<toString(read.version)<<" region=one-node-neighborhood; selected boundary preparation before RHS\n";
             for(const auto& binding:scalar->lowering)output<<"      value lowering: "<<binding<<"\n";
         }
+        if(const auto* scalar=std::any_cast<CompiledScalarEquation>(&step.providerContract);scalar && !scalar->volumeFlux.empty())
+            output << "    face consumer: " << scalar->volumeFlux << " represents velocity=" << scalar->fluxVelocity
+                << "; read-only corrected Physical, same prepared interval; no velocity reconstruction\n";
         if (!step.operatorBindings.empty()) {
             output << "    spatial/source providers:";
             for (const auto& provider:step.operatorBindings)
                 output << " " << provider;
             output << "\n";
         }
-        for (const auto& read:step.viewReads) output << "    STATE view read: " << read.symbol << " kind=" << toString(read.kind) << " storage=" << read.storage << " owner=NumericalProvider\n";
+        if(step.faceFlux) {
+            const auto& flux=*step.faceFlux;
+            output << "    face resource: " << flux.symbol << " relates surfaceFlux(" << flux.velocity
+                << ") [0 3 -1 0 0 0 0] scalar/face; +computational direction; cofactor area; divergence / nodal volume\n"
+                << "      storage=" << flux.storage << " version=" << (flux.corrected?"corrected Physical":"predicted Working")
+                << " publication=" << flux.publication << "; canonical COPY; active physical step/time/dt only\n"
+                << "      numerical inputs:";
+            for(const auto& input:flux.numericalInputs)output << " " << input;
+            output << "\n";
+        }
+        for(const auto& preparation:step.stepInputs)if(preparation.beginsPhysicalInterval)
+            output << "    physical interval begins: " << preparation.operation << "; acceptance=" << step.physicalPublication.operation << "\n";
+        for(const auto& view:step.viewOutputs)
+            output << "    call-completion publication: " << view.symbol << " " << toString(view.kind)
+                << " backing=" << view.storage << " owner=numerical implementation; readable/revision checked; boundary prepared on this backing\n";
+        auto borrowed=step.borrowedViews;
+        for(const auto& read:step.stateUses)if(read.kind!=TargetKind::Physical)
+            borrowed.push_back({read.symbol,read.kind});
+        for(const auto& read:borrowed) {
+            const auto kind=read.kind==TargetKind::Working?StateViewKind::Working:StateViewKind::Correction;
+            const auto& views=system.solvePlan.compiledProgram.stateViews;
+            const auto view=std::find_if(views.begin(),views.end(),[&](const auto& value) {
+                return value.symbol==read.symbol && value.kind==kind;
+            });
+            if(view!=views.end())output<<"    STATE view read: "<<view->symbol<<" kind="<<toString(view->kind)
+                <<" storage="<<view->storage<<" owner="<<(view->owner==StateViewOwner::CompilerWorkspace?"compiler-workspace":"numerical-provider")<<"\n";
+        }
         for (const auto& use:step.stateUses) output << "    STATE read: " << targetText({use.symbol,use.kind}) << " version=" << toString(use.version) << (use.halo ? " halo-required" : " owner/view") << (use.perIteration ? " frozen-per-enclosing-iteration" : "") << "\n";
         for (const auto& effect:step.stateEffects) output << "    STATE write: " << effect.symbol << (effect.publish ? " publication/snapshot" : " invalidates dependent materialized views") << (effect.halo ? " with halo publication" : " without halo publication") << "\n";
         for (const auto& requirement:step.capabilityRequirements) output << "    capability: " << requirement.required << " when=" << requirement.when << " equation=" << requirement.equation << " fluid-port=" << requirement.fluidPort << " boundary=" << requirement.boundary << " : " << requirement.reason << "\n";
@@ -813,7 +876,7 @@ std::string describe(const ResolvedSimulationSystem& system) {
     if (std::any_of(system.solvePlan.compiledProgram.steps.begin(),
             system.solvePlan.compiledProgram.steps.end(),
             [](const CompiledEquationCall& step) {
-                return step.equationMethod=="PressureMomentum";
+                return step.equationMethod=="CellExplicit";
             }))
         output << "  execution authority: ordered ExecutionProgram.root\n";
 
@@ -914,7 +977,7 @@ std::string describe(const ResolvedSimulationSystem& system) {
                << " / " << time.finalDivisor() << "\n";
     }
 
-    printNumericalSystem(output,system.numericalSystem,system.solvePlan.compiledProgram);
+    printNumericalSystem(output,system.numericalSystem,system.solvePlan.compiledProgram,system.executableSystem.registry);
 
     printContributions(output,system);
     printRawSystem(output,system);

@@ -201,31 +201,6 @@ double KOmegaSSTModel::eddyDynamicViscosity(const Field& flow,
          / std::max(c.a1 * omegaVal, omegaMag * f2);
 }
 
-FDM::TransportStageCoefficients KOmegaSSTModel::stageCoefficients(const Field& flow,
-        const FDM::TransportStageSamples& samples,const FDM::TurbulenceConfig& config,int i,int j,int k) const {
-    const SSTConstants c;
-    const double rho=flow(i,j,k,RHO),kv=samples[0](i,j,k),wv=samples[1](i,j,k);
-    if(!std::isfinite(rho) || rho<=0 || !std::isfinite(kv) || kv<=0 || !std::isfinite(wv) || wv<=0)
-        throw std::runtime_error("Stage SST requires positive finite rho/k/omega; no positivity repair.");
-    const auto gradK=CENTRAL2::gradSampled(flow,samples[0],i,j,k);
-    const auto gradW=CENTRAL2::gradSampled(flow,samples[1],i,j,k);
-    const double product=dot(gradK,gradW),d=wallDistance(flow,i,j,k,wall_!=nullptr);
-    const double nu=laminarKinematicViscosity(rho,config.laminarDynamicViscosity);
-    const double cd=std::max(2*rho*c.sigmaW2*product/std::max(wv,1e-30),1e-20);
-    const double t1=std::sqrt(kv)/std::max(c.betaStar*wv*d,1e-30);
-    const double t2=500*nu/std::max(d*d*wv,1e-30);
-    const double t3=4*rho*c.sigmaW2*kv/std::max(cd*d*d,1e-30);
-    FDM::TransportStageCoefficients value;
-    value.blending1=std::tanh(std::pow(std::max(std::min(std::max(t1,t2),t3),0.),4.));
-    value.blending2=std::tanh(std::pow(std::max(std::max(2*t1,t2),0.),2.));
-    value.dynamicViscosity=rho*c.a1*kv/std::max(c.a1*wv,vorticityMagnitude(flow,i,j,k)*value.blending2);
-    const double f1=value.blending1,s=strainRateMagnitude(flow,i,j,k);
-    const double production=std::min(value.dynamicViscosity*s*s,20*c.betaStar*rho*kv*wv);
-    value.molecularViscosity=config.laminarDynamicViscosity;
-    value.production={production,rho*(f1*c.gamma1+(1-f1)*c.gamma2)*production/std::max(value.dynamicViscosity,1e-30)};
-    value.crossSource=2*(1-f1)*rho*c.sigmaW2*product/std::max(wv,config.coefficients.omegaFloor);
-    return value;
-}
 
 } // namespace RAS
 } // namespace Turbulence
