@@ -21,7 +21,6 @@ struct NumericalSelection {
 /// @brief 一个 occurrence 的有效 WHICH；来源独立于实际数值匹配。
 struct ResolvedBinding { NumericalBinding value;std::vector<Provenance> origins; };
 ResolvedBinding resolveNumerics(const EquationCall&,const std::vector<NumericalBinding>&,bool block=false,const ExecutableEquationSystem* system=nullptr);
-void resolveOperatorReferences(const ExecutableEquationSystem&,const EquationCall&,NumericalBinding&);
 /// Builtin numerical defaults are composed before compilation begins.
 NumericalSelection selectNumerics(const FDM::SolverConfig&, const BuildRequest&,
     const ExecutableEquationSystem&, std::vector<NumericalBinding>);

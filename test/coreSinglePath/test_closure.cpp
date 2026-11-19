@@ -1,4 +1,5 @@
 #include "solver/system/SF_numericalCompiler.h"
+#include "solver/system/SF_fusedSpatial.h"
 #include "solver/system/SF_stateRealizer.h"
 #include "solver/system/SF_builtinState.h"
 #include "models/physics/fluidStateModel/SF_factory.h"
@@ -21,6 +22,10 @@ void sourceIdentity() {
     CompiledExecutionProgram program;CompiledEquationCall call;
     call.source.equation="force";call.source.target.symbol="rhoU";
     call.equationMethod="ConservativeResidual";call.spatialTerms=true;call.calls={{"force","rhoU"}};
+    call.lowerSpatial=[](const auto& system,auto& call,const auto& recipes,const auto& catalog,
+            const auto& bindings,auto& numerical) {
+        FusedSpatial::lower(system,call,recipes,catalog,bindings,numerical);
+    };
     program.steps.push_back(call);
     auto providers=TermProviderCatalog::builtIn();ZoneVectorSetting g;g.value=Vector3(.01,0,0);
     for(auto p:Physics::Gravity::termProviders({g}))providers.addSource(std::move(p));
@@ -31,12 +36,12 @@ void sourceIdentity() {
         const auto lhs=E::op(Math::Op::Ddt,{states.expression("rhoU")});
         Equation equation{"force",lhs,E::op(Math::Op::Source,{force},"force.source"),{origin,"different provenance"}};
         ExecutableEquationSystem system;system.registry.add(equation);
-        const auto numerical=NumericalCompiler::compile(system,program,recipes,providers,time,builtinProviders());
+        const auto numerical=NumericalCompiler::compile(system,program,recipes,providers,time);
         require(numerical.operators.size()==1 && numerical.operators[0].conservativeSource,"Explicit source lost execution");
         if(canonical.empty()){canonical=canonicalFormula(equation);provider=numerical.operators[0].provider;}
         require(canonicalFormula(equation)==canonical && numerical.operators[0].provider==provider,"Provenance changed mathematics/provider");
         ExecutableEquationSystem naked;naked.registry.add({"force",lhs,force,{origin,"same origin"}});
-        rejects("explicit Source AST",[&]{NumericalCompiler::compile(naked,program,recipes,providers,time,builtinProviders());});
+        rejects("explicit Source AST",[&]{NumericalCompiler::compile(naked,program,recipes,providers,time);});
     }
 }
 struct CountingModel:Physics::FluidStateModel::Model {

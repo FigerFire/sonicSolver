@@ -7,9 +7,9 @@
 | 想做什么 | 从哪里读 | 用 `E_U` 追踪 |
 | --- | --- | --- |
 | 添加由既有算子组成的方程 | [SF_nativeBinding.cpp](app/application/model/SF_nativeBinding.cpp) 读取 native 声明。[SF_model.cpp](app/application/model/SF_model.cpp) 展开模型，[SF_equationContribution.cpp](solver/system/SF_equationContribution.cpp) 组合 WHAT | `momentumStress` 引用 `E_U/viscU`。`finalizeMathematics` 替换唯一的黏性项，保留 `appliedForce` 等其他项 |
-| 改求解顺序 | [SF_declarations.cpp](solver/system/SF_declarations.cpp) 解码用户 HOW，[SF_pressureCoupling.cpp](solver/system/SF_pressureCoupling.cpp) 生成压力预制。[SF_lowering.cpp](solver/system/SF_lowering.cpp) 解析调用并生成操作树 | HOW 决定先发布黏度与 `SST.muEff`，再运行 `predictor`。过程契约检查依赖，[PlanExecutor](solver/run/SF_planExecutor.cpp) 执行冻结的顺序 |
+| 改求解顺序 | [SF_declarations.cpp](solver/system/SF_declarations.cpp) 解码用户 HOW，[SF_pressureCoupling.cpp](solver/system/SF_pressureCoupling.cpp) 生成压力预制。[SF_lowering.cpp](solver/system/SF_lowering.cpp) 索引调用、解析跨调用引用、组装操作树 | HOW 决定先发布黏度与 `SST.muEff`，再运行 `predictor`。过程契约检查依赖，[PlanExecutor](solver/run/SF_planExecutor.cpp) 执行冻结的顺序 |
 | 选输入版本 | [SF_stateRealization.cpp](solver/system/SF_stateRealization.cpp) 解析调用的读写需求，[SF_stateRealizer.cpp](solver/system/SF_stateRealizer.cpp) 绑定实际视图 | 预测调用读取已发布的 `SST.muEff: Current`。PISO 的预测目标是 Physical U，SIMPLE/PIMPLE 可通过 HOW 指定 Working U |
-| 更换离散方法 | [SF_builtinNumerics.cpp](solver/system/SF_builtinNumerics.cpp) 解析 WHICH，[SF_builtinProviders.cpp](solver/system/SF_builtinProviders.cpp) 将该次调用交给选中的方法 | [SF_cell.cpp](solver/system/SF_cell.cpp) 在同一入口核对 Cell 方程、逐项权重和所选 kernel。`viscU` 的 `stress.central2.arithmetic-faces` 绑定实际算术面牵引 |
+| 更换离散方法 | [SF_numericalCompiler.cpp](solver/system/SF_numericalCompiler.cpp) 的 `compileCall` 编译一个已定位的调用。它用 [SF_builtinNumerics.cpp](solver/system/SF_builtinNumerics.cpp) 解析 WHICH，并经 [SF_builtinProviders.cpp](solver/system/SF_builtinProviders.cpp) 选择直接方法 | [SF_cell.cpp](solver/system/SF_cell.cpp) 检查 Cell 方程。后续空间编译调用该 occurrence 保存的入口，解析权重、系数和实际 kernel。`viscU` 的 `stress.central2.arithmetic-faces` 绑定算术面牵引 |
 | 追踪计算结果 | [SF_singleFluidBinding.cpp](solver/algorithm/SF_singleFluidBinding.cpp) 先挂输出、再接读取、最后装操作。[SF_cellBinding.cpp](solver/algorithm/scalar/SF_cellBinding.cpp) 绑定该次预测工作区 | [SF_cellEquation.h](solver/discretization/SF_cellEquation.h) 装配面牵引。[SF_faceBinding.cpp](solver/algorithm/SF_faceBinding.cpp) 从 `predictor` 借用预测速度和 `dt/rho` 响应，压力校正后发布实际 `phi` 数组 |
 
 局部仿射、非局部 SST 闭合、普通标量输运和线性块的编译入口分别是 [SF_affine.cpp](solver/system/SF_affine.cpp)、[SF_sstMethod.cpp](solver/system/SF_sstMethod.cpp)、[SF_scalarMethod.cpp](solver/system/SF_scalarMethod.cpp) 和 [SF_block.cpp](solver/system/SF_block.cpp)。方法编译核对本次数学，冻结后的跨调用兼容性由 [SF_executionContract.cpp](solver/system/SF_executionContract.cpp) 核对。迁移细节与验证范围见 [method.md](../docs/method.md)。
@@ -268,7 +268,7 @@ Loop只重复次数，While通过res(id)引用残差模块；绝对/相对残差
 2. 过程合法性：顺序、作用域、版本可用性、目标写入、stage/commit 契约。
 3. 实现可用性：所选数值实现、离散操作、边界、halo、布局和并行能力。
 
-统一 Lowering 协调 HOW 树、WHAT 方程、STATE 使用和 WHICH 选择，生成现有 CompiledSolvePlan；不新建平行计划或第二套执行器。Runtime Binding 绑定已声明资源，PlanExecutor 执行已编译操作，不重新选模型、方程或数值方法。
+统一 Lowering 索引 HOW 叶节点，解析跨调用的 STATE 引用并校验 WHICH 绑定地址。`NumericalCompiler::compileCall` 消费该叶、选中的方法和只读编译输入，返回 `CompiledEquationCall`。Lowering 合并视图和效果，展开 recipe，并用展开后的树建立父作用域索引。空间 lowering 随后以完整程序所确定的 recipe、算子目录和每次调用已选的入口绑定具体项，最后由 `SolvePlanner` 冻结计划。Runtime Binding 绑定声明的资源，PlanExecutor 执行冻结操作。交付和待验收范围见 [call.md](../docs/call.md)。
 
 HOW 生命周期由过程编译统一解释。`IProvider::lowerLifecycle` 及全部生产实现已退役；局部方法不再扫描根 HOW、装饰其他调用或追加物理时间提交。`CompiledEquationCall` 只声明数值输入准备、迭代工作量、局部组前置动作和物理结果发布的操作身份，不携带新控制树。编译器在已有 Step/Loop/Sequence 作用域和显式 Commit 处实现这些要求，按操作身份去重并拒绝 owner 冲突；不创建数学循环或移动方程调用。固定时间 Working predictor 的入口旧值由普通方程区间准备保存一次；迭代入口值由引用它的压力外循环请求，不能在压力内修正循环覆盖旧时间。
 

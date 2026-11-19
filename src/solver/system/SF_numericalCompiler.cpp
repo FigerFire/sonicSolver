@@ -3,6 +3,7 @@
 
 #include "SF_numericalCompiler.h"
 #include "SF_config.h"
+#include "SF_numericalSelection.h"
 
 #include <algorithm>
 #include <stdexcept>
@@ -33,13 +34,87 @@ const ConservativeExecutionInputs& requireConservativeInputs(const CompiledNumer
     return *system.conservative;
 }
 
+CompiledEquationCall compileCall(
+        const ExecutableEquationSystem& system,const StateRegistry& state,
+        const ExecutionScope& site,const std::vector<NumericalBinding>& bindings,
+        const ProviderRegistry& registry,const CompiledTimeRecipe* time) {
+    const auto& step=site.step;
+    const bool block=site.kind==ExecutionKind::BlockSolve;
+    auto effective=resolveNumerics(step,bindings,block,&system);
+    const auto& selected=effective.value;
+    const auto& mathematical=system.registry.at(step.equation);
+    const IProvider* legacy=nullptr;
+    CompiledEquationCall compiled;
+    try {
+        state.validateSymbols(mathematical.lhs);state.validateSymbols(mathematical.rhs);
+        auto direct=block?std::nullopt:compileDirectEquation(system,step,selected);
+        if(direct)compiled=std::move(*direct);
+        else {
+            legacy=&registry.at(selected.method);
+            compiled=block?legacy->compileBlock(system,site,selected):legacy->compile(system,step,selected);
+            compiled.lowerSpatial=legacy->spatialLowering();
+        }
+    }
+    catch(const std::exception& error) {
+        throw std::runtime_error(mathematical.origin.source+": occurrence="+step.occurrence+" equation="+step.equation+" target="+step.target.symbol+" provider="+selected.method+": "+error.what());
+    }
+    for(const auto& read:step.inputs)
+        if(std::none_of(compiled.stateUses.begin(),compiled.stateUses.end(),[&](const auto& use){return use.symbol==read.symbol && use.version==read.version
+                && use.halo==read.halo && use.snapshot==read.snapshot && use.perIteration==read.perIteration && use.kind==read.kind;}))
+            throw std::runtime_error("Unconsumed STATE input version: "+read.symbol+" at "+step.occurrence);
+    if(!compiled.lowerSpatial)for(const auto& op:selected.operators)
+        if(std::find(compiled.operatorBindings.begin(),compiled.operatorBindings.end(),op.provider)==compiled.operatorBindings.end())
+            throw std::runtime_error("Unconsumed numerical operator choice: occurrence="+step.occurrence+" equation="+step.equation+" operator="+op.occurrence+" provider="+op.provider);
+
+    if(selected.time && (!compiled.temporalResidual || !time || *selected.time!=time->id()))
+        throw std::runtime_error("Time recipe conflict/unused ddt choice: occurrence="+step.occurrence+" equation="+step.equation+" provider="+selected.method+"; one resolved time recipe is required");
+    compiled.legacyProvider=legacy!=nullptr;
+    if(legacy) {
+        compiled.backendProvider=legacy->runtimeProvider();
+        const auto ownFragment=[&](const auto& self,SolvePlanNode& node)->void {
+            if(!node.operation.empty())node.provider=legacy->operationProvider(node.operation);
+            for(auto& child:node.children)self(self,child);
+        };
+        ownFragment(ownFragment,compiled.fragment);
+    }
+    if (compiled.source.equation!=step.equation || compiled.source.occurrence!=step.occurrence
+        || compiled.source.target.symbol!=step.target.symbol || compiled.source.target.kind!=step.target.kind
+        || compiled.target.symbol!=step.target.symbol || compiled.target.kind!=step.target.kind)
+        throw std::runtime_error("Provider changed frozen equation occurrence/target semantics: "+step.occurrence);
+    if (time && !compiled.temporalCapabilities.empty()
+        && std::find(compiled.temporalCapabilities.begin(),compiled.temporalCapabilities.end(),time->id())
+            ==compiled.temporalCapabilities.end())
+        throw std::runtime_error("Unsupported: provider "+selected.method+" cannot compile occurrence "
+            +step.occurrence+" with selected temporal method "+FDM::toString(time->id()));
+    if (!compiled.fragment.children.empty() || !compiled.fragment.operation.empty()) {
+        if (!compiled.backendOperation.empty())
+            throw std::runtime_error("EquationMethod has both fragment and backend operation authorities.");
+        const auto validate=[&](const auto& self,const SolvePlanNode& node)
+            -> void {
+            if (node.children.empty() && node.operation.empty())
+                throw std::runtime_error("EquationMethod fragment has a leaf without OpId.");
+            for (const auto& child:node.children) self(self,child);
+        };
+        validate(validate,compiled.fragment);
+    } else if (compiled.backendOperation.empty()) {
+        throw std::runtime_error("EquationMethod supplied neither a fragment nor backend OpId.");
+    }
+    if (compiled.stateEffects.empty() && compiled.temporalResidual
+        && compiled.publishesStageToPhysicalTarget && compiled.target.kind==TargetKind::Physical) {
+        for (const auto& written:compiled.writes) if (state.contains(written))
+            compiled.stateEffects.push_back({written,false,false});
+    }
+    compiled.numericalOperators=std::move(effective.value.operators);
+    compiled.numericalOrigins=std::move(effective.origins);
+    return compiled;
+}
+
 CompiledNumericalSystem compile(
         const ExecutableEquationSystem& equations,
         CompiledExecutionProgram& program,
         const FDM::NumericalRecipeSet& recipes,
         const TermProviderCatalog& catalog,
         const CompiledTimeRecipe& time,
-        const ProviderRegistry& providers,
         const std::vector<FormulaOperatorBinding>& bindings) {
     CompiledNumericalSystem result;
     result.recipes=recipes;
@@ -63,8 +138,15 @@ CompiledNumericalSystem compile(
                 selected.erase(std::remove_if(selected.begin(),selected.end(),[&](const auto& other){return other.formula==op.formula && other.occurrence==op.occurrence && other.operation==op.operation;}),selected.end());
                 selected.push_back(op);
             }
-            if(!lowerDirectSpatial(equations,call,recipes,catalog,selected,result))
-                providers.at(call.equationMethod).lowerSpatial(equations,call,recipes,catalog,selected,result);
+            if(!call.lowerSpatial)
+                throw std::runtime_error("Selected method has no spatial lowering implementation: "+
+                    call.equationMethod+" at "+call.source.occurrence);
+            try {
+                call.lowerSpatial(equations,call,recipes,catalog,selected,result);
+            } catch(const std::exception& error) {
+                throw std::runtime_error("Spatial lowering: occurrence="+call.source.occurrence
+                    +" equation="+call.source.equation+" method="+call.equationMethod+": "+error.what());
+            }
             for(auto n=first;n<result.operators.size();++n)result.operators[n].callOccurrence=call.source.occurrence;
         }
     for (const auto& binding:bindings) {

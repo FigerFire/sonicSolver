@@ -641,6 +641,29 @@ void requirePressureRelation(const Equation& equation,std::string_view method) {
         throw std::runtime_error("Unsupported fixed pressure relation: equation="+equation.id+" method="+std::string(method)+"; kernel cannot consume the changed AST");
 }
 
+void lowerRhieChow(const ExecutableEquationSystem& system,CompiledEquationCall& call,
+        const FDM::NumericalRecipeSet&,const TermProviderCatalog&,
+        const std::vector<FormulaOperatorBinding>& bindings,CompiledNumericalSystem& result) {
+    if(result.facePrediction)throw std::runtime_error("Multiple face prediction owners require independently bound face resources");
+    const auto& equation=system.registry.at(call.source.equation);
+    const auto& surface=equation.rhs;
+    const auto occurrence=surface.occurrence().empty()?"rhs":surface.occurrence();
+    const auto* selected=selectFormulaBinding(equation,surface,occurrence,bindings);
+    if(selected && selected->provider!="RhieChow")
+        throw std::runtime_error("equation="+equation.id+" occurrence="+occurrence+" target="+call.target.symbol
+            +": selected surfaceFlux implementation="+selected->provider+" is not available in RhieChow");
+    result.operators.emplace_back(equation.id,call.source.equation,call.target.symbol,call.equationMethod,
+        occurrence,Math::Op::SurfaceFlux,call.faceFlux->velocity,"p",CompiledSpatialBinding::Side::Right,
+        std::nullopt,"RhieChow","flow.rhie-chow",true);
+    result.facePrediction=call.faceFlux;
+}
+
+void lowerFusedEquation(const ExecutableEquationSystem& system,CompiledEquationCall& call,
+        const FDM::NumericalRecipeSet& recipes,const TermProviderCatalog& catalog,
+        const std::vector<FormulaOperatorBinding>& bindings,CompiledNumericalSystem& result) {
+    FusedSpatial::lower(system,call,recipes,catalog,bindings,result);
+}
+
 class PressureMethod final {
 public:
     enum class OutputContract { Assignment, Relation };
@@ -741,6 +764,7 @@ public:
             result.faceFlux->response=binding.response;
             result.faceFlux->numericalInputs.front()=targetText({"U",result.stateUses.front().kind});
             result.spatialTerms=true;
+            result.lowerSpatial=lowerRhieChow;
             for(const auto& selected:binding.operators)
                 if(selected.provider!="RhieChow")throw std::runtime_error("surfaceFlux occurrence="+selected.occurrence+" has no implementation "+selected.provider+" in selected RhieChow method");
             Math::requireCompatible(system.state.at("U").signature,PressureMathematics::signature("U"),"RhieChow velocity");
@@ -771,12 +795,7 @@ private:
 // Working(p) and Correction(p) alias the Corrector's existing workspace.
 class ConservativePressureMethod final : public IProvider {
 public:
-    void lowerSpatial(const ExecutableEquationSystem& system,const CompiledEquationCall& call,
-            const FDM::NumericalRecipeSet& recipes,const TermProviderCatalog& catalog,
-            const std::vector<FormulaOperatorBinding>& bindings,CompiledNumericalSystem& result) const override {
-        FusedSpatial::lower(system,call,recipes,catalog,bindings,result);
-    }
-    bool usesSpatialRecipes() const override { return true; }
+    SpatialLowering spatialLowering() const override { return lowerFusedEquation; }
     ConservativePressureMethod(std::string_view method,std::string_view equation,
             std::string_view output,TargetKind kind,std::vector<const char*> operations,
             std::vector<std::string> needs={},std::vector<std::string> provides={})
@@ -893,7 +912,7 @@ private:
 struct DirectMethod {
     std::string_view name;
     decltype(&compileCellEquation) compile;
-    decltype(&lowerCellEquation) lower=nullptr;
+    SpatialLowering lower=nullptr;
 };
 const DirectMethod* directMethod(std::string_view name) {
     static const DirectMethod methods[]={
@@ -904,9 +923,7 @@ const DirectMethod* directMethod(std::string_view name) {
             auto result=compileConservativeResidual(system,call,binding);
             result.backendProvider="flow.conservative";
             return result;
-        },[](const auto& system,auto& call,const auto& recipes,const auto& catalog,const auto& bindings,auto& numerical) {
-            FusedSpatial::lower(system,call,recipes,catalog,bindings,numerical);
-        }}
+        },lowerFusedEquation}
     };
     const auto selected=std::find_if(std::begin(methods),std::end(methods),[&](const auto& method){return method.name==name;});
     return selected==std::end(methods)?nullptr:selected;
@@ -929,7 +946,11 @@ TemporalMethodRegistry builtinTemporalMethods() {
 std::optional<CompiledEquationCall> compileDirectEquation(const ExecutableEquationSystem& system,
         const EquationCall& call,const NumericalBinding& binding) {
     if(binding.method=="CellExplicitEuler")throw std::runtime_error("Retired method CellExplicitEuler; select CellExplicit and an explicit Step/Stage scope");
-    if(const auto* method=directMethod(binding.method))return method->compile(system,call,binding);
+    if(const auto* method=directMethod(binding.method)) {
+        auto result=method->compile(system,call,binding);
+        result.lowerSpatial=method->lower;
+        return result;
+    }
     if(auto ordinary=compileScalarEquation(system,call,binding))return ordinary;
     static const PressureMethod prediction("RhieChow","phi",PressureMethod::OutputContract::Assignment,
         {methodLeaf(PlanNodeKind::Update,"RhieChow.predict","predict oriented face volume flux",OpIds::FaceFluxPredict)},
@@ -977,29 +998,6 @@ std::optional<CompiledEquationCall> compileDirectEquation(const ExecutableEquati
     for(const auto* method:{&relax,&restore,&convergence})
         if(binding.method==method->id())return method->compile(system,call,binding);
     return std::nullopt;
-}
-bool lowerDirectSpatial(const ExecutableEquationSystem& system,CompiledEquationCall& call,
-        const FDM::NumericalRecipeSet& recipes,const TermProviderCatalog& catalog,
-        const std::vector<FormulaOperatorBinding>& bindings,CompiledNumericalSystem& result) {
-    if(call.equationMethod=="RhieChow") {
-        if(result.facePrediction)throw std::runtime_error("Multiple face prediction owners require independently bound face resources");
-        const auto& equation=system.registry.at(call.source.equation);
-        const auto& surface=equation.rhs;
-        const auto occurrence=surface.occurrence().empty()?"rhs":surface.occurrence();
-        const auto* selected=selectFormulaBinding(equation,surface,occurrence,bindings);
-        if(selected && selected->provider!="RhieChow")
-            throw std::runtime_error("equation="+equation.id+" occurrence="+occurrence+" target="+call.target.symbol
-                +": selected surfaceFlux implementation="+selected->provider+" is not available in RhieChow");
-        result.operators.emplace_back(equation.id,call.source.equation,call.target.symbol,call.equationMethod,
-            occurrence,Math::Op::SurfaceFlux,call.faceFlux->velocity,"p",CompiledSpatialBinding::Side::Right,
-            std::nullopt,"RhieChow","flow.rhie-chow",true);
-        result.facePrediction=call.faceFlux;
-        return true;
-    }
-    const auto* method=directMethod(call.equationMethod);
-    if(!method || !method->lower)return false;
-    method->lower(system,call,recipes,catalog,bindings,result);
-    return true;
 }
 
 std::string validateCompiledConservativeStage(const ExecutableEquationSystem& equations,

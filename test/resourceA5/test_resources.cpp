@@ -6,31 +6,26 @@
 #include "solver/system/SF_numericalCompiler.h"
 
 namespace {
-struct LocalLowering final : System::IProvider {
-    mutable int calls=0;
-    std::string_view id()const override{return "test.localLowering";}
-    System::CompiledEquationCall compile(const System::ExecutableEquationSystem&,const System::EquationCall&,
-        const System::NumericalBinding&)const override{throw std::runtime_error("not used");}
-    void lowerSpatial(const System::ExecutableEquationSystem& system,const System::CompiledEquationCall& call,
+void lowerLocal(const System::ExecutableEquationSystem& system,System::CompiledEquationCall& call,
         const FDM::NumericalRecipeSet&,const System::TermProviderCatalog&,
-        const std::vector<System::FormulaOperatorBinding>&,System::CompiledNumericalSystem& numerical)const override {
-        const auto& equation=system.registry.at(call.source.equation);
-        require(equation.lhs.kind()==System::FormulaExpr::Kind::Negate,"AST changed before selected implementation");
-        ++calls;numerical.providerRequirements.push_back(std::string(id()));
-    }
-};
+        const std::vector<System::FormulaOperatorBinding>&,System::CompiledNumericalSystem& numerical) {
+    const auto& equation=system.registry.at(call.source.equation);
+    require(equation.lhs.kind()==System::FormulaExpr::Kind::Negate,"AST changed before selected implementation");
+    numerical.providerRequirements.push_back(call.equationMethod);
+}
 void delegatedLowering() {
     using E=System::FormulaExpr;
     System::ExecutableEquationSystem system;
     const auto target=E::symbol("a",Math::signature(0,{}));
     system.registry.add({"signed",E::negate(E::op(Math::Op::Ddt,{target})),E::constantValue(0)});
     System::CompiledExecutionProgram program;System::CompiledEquationCall call;
-    call.source.equation="signed";call.equationMethod="test.localLowering";call.spatialTerms=true;program.steps.push_back(call);
-    LocalLowering method;System::ProviderRegistry providers;providers.add(method);
+    call.source.equation="signed";call.equationMethod="test.localLowering";call.spatialTerms=true;call.lowerSpatial=lowerLocal;
+    program.steps.push_back(call);
     FDM::NumericalRecipeSet recipes;const auto time=System::builtinTemporalMethods().at(recipes.time.id()).compile(recipes.time);
-    const auto lowered=System::NumericalCompiler::compile(system,program,recipes,{},time,providers);
-    require(method.calls==1 && lowered.providerRequirements==std::vector<std::string>{"test.localLowering"},"Public compiler bypassed selected lowering");
-    rejects([&]{System::NumericalCompiler::compile(system,program,recipes,{},time,System::builtinProviders());});
+    const auto lowered=System::NumericalCompiler::compile(system,program,recipes,{},time);
+    require(lowered.providerRequirements==std::vector<std::string>{"test.localLowering"},"Public compiler bypassed selected lowering");
+    program.steps.front().lowerSpatial=nullptr;
+    rejects([&]{System::NumericalCompiler::compile(system,program,recipes,{},time);});
 }
 System::ResolvedSimulationSystem pair(FDM::SolverConfig& config) {
     auto a=request("a",.03),b=request("b",.08);

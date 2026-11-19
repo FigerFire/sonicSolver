@@ -17,6 +17,8 @@
 #include <initializer_list>
 #include <optional>
 
+namespace SF::FDM { struct NumericalRecipeSet; }
+
 namespace SF::System {
 
 using EquationRef = std::string;
@@ -273,6 +275,13 @@ struct CompiledFaceFlux {
 };
 inline std::string faceFluxPublication(const std::string& storage) {return "face.published:"+storage;}
 
+struct CompiledEquationCall;
+struct CompiledNumericalSystem;
+class TermProviderCatalog;
+/// @brief 已选方法的空间编译入口，仅引用函数及本次调用，不借用方法对象。
+using SpatialLowering = void (*)(const ExecutableEquationSystem&,CompiledEquationCall&,
+    const FDM::NumericalRecipeSet&,const TermProviderCatalog&,
+    const std::vector<FormulaOperatorBinding>&,CompiledNumericalSystem&);
 
 struct CompiledEquationCall {
     EquationCall source;
@@ -287,6 +296,7 @@ struct CompiledEquationCall {
     BoundOperation physicalPublication;
     std::optional<CompiledFaceFlux> faceFlux;
     bool spatialTerms = false;
+    SpatialLowering lowerSpatial=nullptr;
     bool primitiveSourceRequired = false;
     std::string residualWorkspace;
     int requiredHaloWidth=0;

@@ -22,10 +22,6 @@ struct CompiledNumericalSystem;
 /// @brief 已迁移的局部数值方法入口；仅按 WHICH 方法选择，不访问模型或运行资源。
 std::optional<CompiledEquationCall> compileDirectEquation(const ExecutableEquationSystem&,
     const EquationCall&,const NumericalBinding&);
-/// @brief 真实方程项的编译；未迁移实现仍由其原接口处理，无失败回退。
-bool lowerDirectSpatial(const ExecutableEquationSystem&,CompiledEquationCall&,
-    const FDM::NumericalRecipeSet&,const TermProviderCatalog&,
-    const std::vector<FormulaOperatorBinding>&,CompiledNumericalSystem&);
 
 /// @brief 已迁移方法的有限过程/布局约束，不重新匹配动量 AST。
 std::string validateCompiledConservativeStage(const ExecutableEquationSystem&,const CompiledSolvePlan&);
@@ -58,17 +54,11 @@ public:
     virtual std::string_view id() const = 0;
     /// Implementation ownership is part of the selected numerical contract.
     virtual std::string_view runtimeProvider() const { return {}; }
-    /// Global term recipes are consumed only by providers exposing spatial assembly.
-    virtual bool usesSpatialRecipes() const { return false; }
     virtual std::string_view operationProvider(const OpId&) const {
         return runtimeProvider();
     }
-    /// @brief 所选实现负责自身 AST 能力与数值绑定，公共 compiler 不假设融合格式。
-    virtual void lowerSpatial(const ExecutableEquationSystem&,const CompiledEquationCall&,
-        const FDM::NumericalRecipeSet&,const TermProviderCatalog&,
-        const std::vector<FormulaOperatorBinding>&,CompiledNumericalSystem&) const {
-        throw std::runtime_error("Selected provider has no spatial lowering implementation: "+std::string(id()));
-    }
+    /// @brief 所选实现的空间编译入口。空值表示此方法不提供空间编译。
+    virtual SpatialLowering spatialLowering() const { return nullptr; }
     /// @brief 整体残差/未知量集合由所选实现lower；默认拒绝，不展开为逐项执行。
     virtual CompiledEquationCall compileBlock(const ExecutableEquationSystem&,
         const ExecutionScope&,const NumericalBinding&) const {

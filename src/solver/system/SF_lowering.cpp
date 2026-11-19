@@ -404,45 +404,13 @@ SolvePlanNode lowerTree(const CompiledExecutionProgram& program) {
     return result;
 }
 
-}
-CompiledExecutionProgram compileProgram(
-        const ExecutableEquationSystem& system,const StateRegistry& state,
-        const ExecutionProgram& program,
-        const std::vector<NumericalBinding>& bindings,
-        const ProviderRegistry& registry,
-        const CompiledTimeRecipe* time,
-        const ITemporalMethod* temporalMethod) {
-    CompiledExecutionProgram result;
-    ExecutionScope root=processRoot(program);
-    if (!program.explicitOrder) {
-        orderExecution(root);
-        composeDefaultPlacement(program,root);
-    }
-    const auto address=[&](const auto& self,ExecutionScope& scope)->void {
-        for (std::size_t i=0;i<scope.children.size();++i) {
-            auto& child=scope.children[i];
-            if (child.id.empty()) child.id=scope.id+"/"+std::to_string(i);
-            if (child.kind==ExecutionKind::EquationCall && child.step.occurrence.empty()) child.step.occurrence=child.id;
-            self(self,child);
-        }
-    };
-    address(address,root);
-    validatePlacement(program,root);
-    const auto explicitFrequency=[&](const auto& self,const ExecutionScope& scope)->bool {
-        return scope.frequency!=ExecutionFrequency::Inherit
-            || std::any_of(scope.children.begin(),scope.children.end(),[&](const auto& child){return self(self,child);});
-    };
-    const bool recipeScope=program.recipeScopes || explicitFrequency(explicitFrequency,root);
-    result.root=root;
-    std::set<std::string> declaredResiduals;
-    for(const auto& residual:program.residuals) {
-        if(residual.id.empty() || !declaredResiduals.insert(residual.id).second)throw std::runtime_error("Duplicate/empty residual definition: "+residual.id);
-        if(residual.members.empty())result.residuals.push_back(residual);
-    }
-    std::vector<EquationCall*> steps;
-    std::vector<const ExecutionScope*> parents;
-    std::map<const EquationCall*,const ExecutionScope*> blocks;
-    const auto collect=[&](const auto& self,ExecutionScope& node,const ExecutionScope* parent,bool stage=false,bool step=false)->void {
+// Resolve cross-call references while the authored tree is stable. No addresses
+// from this pass survive the subsequent recipe expansion.
+void compileCalls(const ExecutableEquationSystem& system,const StateRegistry& state,
+        const std::vector<NumericalBinding>& bindings,const ProviderRegistry& registry,
+        const CompiledTimeRecipe* time,CompiledExecutionProgram& result) {
+    std::vector<ExecutionScope*> calls;
+    const auto collect=[&](const auto& self,ExecutionScope& node,bool stage=false,bool step=false)->void {
         stage=stage || node.kind==ExecutionKind::StageLoop || node.frequency==ExecutionFrequency::Stage;
         step=node.frequency==ExecutionFrequency::Step || (step && node.frequency==ExecutionFrequency::Inherit);
         if (node.kind==ExecutionKind::EquationCall) {
@@ -450,8 +418,7 @@ CompiledExecutionProgram compileProgram(
             if (!node.children.empty())
                 throw std::runtime_error("HOW Step cannot contain child nodes.");
             node.step.stageScoped=stage;node.step.stepScoped=step && !stage;
-            steps.push_back(&node.step);
-            parents.push_back(parent);
+            calls.push_back(&node);
             return;
         }
         if (node.kind==ExecutionKind::Commit) {
@@ -488,18 +455,20 @@ CompiledExecutionProgram compileProgram(
             for(const auto& id:node.unknowns){const auto& s=state.at(id);if(s.readOnly() || s.constantValue)throw std::runtime_error("Block target is not writable: "+id);if(std::find(seen.begin(),seen.end(),id)!=seen.end())throw std::runtime_error("Duplicate block unknown: "+id);seen.push_back(id);bool present=false;for(const auto& eq:node.equations){const auto& e=system.registry.at(eq);for(const auto* side:{&e.lhs,&e.rhs}){const auto shape=inspectFormula(*side,id);present=present || std::find(shape.symbols.begin(),shape.symbols.end(),id)!=shape.symbols.end();}}if(!present)throw std::runtime_error("Block target absent from residual system: "+id);}
             if(!node.children.empty())throw std::runtime_error("BlockSolve cannot contain sequential children");
             node.step={node.equations.front(),{node.unknowns.front()},node.id};node.step.stageScoped=stage;
-            blocks.emplace(&node.step,&node);steps.push_back(&node.step);parents.push_back(parent);return;
+            calls.push_back(&node);return;
         }
-        for (auto& child:node.children) self(self,child,&node,stage,step);
+        for (auto& child:node.children) self(self,child,stage,step);
     };
-    collect(collect,result.root,nullptr);
-    std::vector<std::string> occurrences;
-    for (const auto* step:steps) {
+    collect(collect,result.root);
+    std::vector<EquationCall*> steps;
+    std::set<std::string> occurrences;
+    for (auto* call:calls) {
+        auto* step=&call->step;
         (void)system.registry.at(step->equation);
         if(step->target.kind!=TargetKind::Workspace)(void)state.at(step->target.symbol);
-        if (std::find(occurrences.begin(),occurrences.end(),step->occurrence)!=occurrences.end())
+        if(!occurrences.insert(step->occurrence).second)
             throw std::runtime_error("Duplicate execution occurrence: "+step->occurrence);
-        occurrences.push_back(step->occurrence);
+        steps.push_back(step);
     }
     resolveCallInputs(state,steps);
     for (const auto& binding:bindings) {
@@ -512,93 +481,76 @@ CompiledExecutionProgram compileProgram(
             }))
             throw std::runtime_error("Numerical binding addresses no execution occurrence: "+binding.equation);
     }
-    for (const auto* step:steps) {
-        auto effective=resolveNumerics(*step,bindings,blocks.count(step),&system);
-        resolveOperatorReferences(system,*step,effective.value);
-        const NumericalBinding* found=&effective.value;
-        const auto& mathematical=system.registry.at(step->equation);
-        if (step->target.kind!=TargetKind::Workspace) state.at(step->target.symbol);
-        const IProvider* legacy=nullptr;
-        CompiledEquationCall compiled;
-        try {
-            state.validateSymbols(mathematical.lhs);state.validateSymbols(mathematical.rhs);
-            auto direct=blocks.count(step)?std::optional<CompiledEquationCall>{}:compileDirectEquation(system,*step,*found);
-            if(direct)compiled=std::move(*direct);
-            else {legacy=&registry.at(found->method);compiled=blocks.count(step)?legacy->compileBlock(system,*blocks.at(step),*found):legacy->compile(system,*step,*found);}
-        }
-        catch(const std::exception& error) {
-            throw std::runtime_error(system.registry.at(step->equation).origin.source+": occurrence="+step->occurrence+" equation="+step->equation+" target="+step->target.symbol+" provider="+found->method+": "+error.what());
-        }
-        for(const auto& read:step->inputs)
-            if(std::none_of(compiled.stateUses.begin(),compiled.stateUses.end(),[&](const auto& use){return use.symbol==read.symbol && use.version==read.version
-                    && use.halo==read.halo && use.snapshot==read.snapshot && use.perIteration==read.perIteration && use.kind==read.kind;}))
-                throw std::runtime_error("Unconsumed STATE input version: "+read.symbol+" at "+step->occurrence);
-        if(!(legacy?legacy->usesSpatialRecipes():compiled.spatialTerms))for(const auto& op:found->operators)
-            if(std::find(compiled.operatorBindings.begin(),compiled.operatorBindings.end(),op.provider)==compiled.operatorBindings.end())
-                throw std::runtime_error("Unconsumed numerical operator choice: occurrence="+step->occurrence+" equation="+step->equation+" operator="+op.occurrence+" provider="+op.provider);
-        compiled.numericalOperators=effective.value.operators;
-        compiled.numericalOrigins=effective.origins;
-        if(effective.value.time && (!compiled.temporalResidual || !time || *effective.value.time!=time->id()))
-            throw std::runtime_error("Time recipe conflict/unused ddt choice: occurrence="+step->occurrence+" equation="+step->equation+" provider="+found->method+"; one resolved time recipe is required");
-        compiled.legacyProvider=legacy!=nullptr;
-        if(legacy)compiled.backendProvider=legacy->runtimeProvider();
-        const auto ownFragment=[&](const auto& self,SolvePlanNode& node)->void {
-            if (!node.operation.empty())
-                if(legacy)node.provider=legacy->operationProvider(node.operation);
-            for (auto& child:node.children) self(self,child);
-        };
-        ownFragment(ownFragment,compiled.fragment);
-        if (compiled.source.equation!=step->equation || compiled.source.occurrence!=step->occurrence
-            || compiled.source.target.symbol!=step->target.symbol || compiled.source.target.kind!=step->target.kind
-            || compiled.target.symbol!=step->target.symbol || compiled.target.kind!=step->target.kind)
-            throw std::runtime_error("Provider changed frozen equation occurrence/target semantics: "+step->occurrence);
+    for(const auto* site:calls) {
+        auto compiled=NumericalCompiler::compileCall(system,state,*site,bindings,registry,time);
         auto stateView=realizeTarget(state,compiled.target);
         const auto existing=std::find_if(result.stateViews.begin(),result.stateViews.end(),
             [&](const auto& view) { return view.symbol==stateView.symbol && view.kind==stateView.kind; });
         if (existing==result.stateViews.end()) result.stateViews.push_back(std::move(stateView));
         else if (existing->storage!=stateView.storage || existing->components!=stateView.components
                  || existing->owner!=stateView.owner)
-            throw std::runtime_error("Conflicting storage authorities for STATE view: "+step->target.symbol);
-        if (time && !compiled.temporalCapabilities.empty()
-            && std::find(compiled.temporalCapabilities.begin(),compiled.temporalCapabilities.end(),time->id())
-                ==compiled.temporalCapabilities.end())
-            throw std::runtime_error("Unsupported: provider "+found->method+" cannot compile occurrence "
-                +step->occurrence+" with selected temporal method "+FDM::toString(time->id()));
-        if (!compiled.fragment.children.empty() || !compiled.fragment.operation.empty()) {
-            if (!compiled.backendOperation.empty())
-                throw std::runtime_error("EquationMethod has both fragment and backend operation authorities.");
-            const auto validate=[&](const auto& self,const SolvePlanNode& node)
-                -> void {
-                if (node.children.empty() && node.operation.empty())
-                    throw std::runtime_error("EquationMethod fragment has a leaf without OpId.");
-                for (const auto& child:node.children) self(self,child);
-            };
-            validate(validate,compiled.fragment);
-        } else if (compiled.backendOperation.empty()) {
-            throw std::runtime_error("EquationMethod supplied neither a fragment nor backend OpId.");
-        }
-        if (compiled.stateEffects.empty() && compiled.temporalResidual
-            && compiled.publishesStageToPhysicalTarget && compiled.target.kind==TargetKind::Physical) {
-            for (const auto& written:compiled.writes) if (state.contains(written))
-                compiled.stateEffects.push_back({written,false,false});
-        }
+            throw std::runtime_error("Conflicting storage authorities for STATE view: "+site->step.target.symbol);
         result.steps.push_back(std::move(compiled));
     }
-    if(recipeScope) {
-        expandRecipeScope(result.root,result.steps);
-        // Expanding only the declared recipe group changes parent addresses,
-        // not occurrence order or numerical selection. Rebind those references.
-        parents.clear();steps.clear();std::size_t index=0;
-        const auto reparent=[&](const auto& self,ExecutionScope& node,const ExecutionScope* parent,bool stage)->void {
-            stage=stage || node.kind==ExecutionKind::StageLoop || node.frequency==ExecutionFrequency::Stage;
-            if(node.kind==ExecutionKind::EquationCall || node.kind==ExecutionKind::BlockSolve) {
-                node.step.stageScoped=stage;steps.push_back(&node.step);parents.push_back(parent);
-                result.steps.at(index++).source=node.step;return;
-            }
-            for(auto& child:node.children)self(self,child,&node,stage);
-        };
-        reparent(reparent,result.root,nullptr,false);
+}
+
+}
+CompiledExecutionProgram compileProgram(
+        const ExecutableEquationSystem& system,const StateRegistry& state,
+        const ExecutionProgram& program,
+        const std::vector<NumericalBinding>& bindings,
+        const ProviderRegistry& registry,
+        const CompiledTimeRecipe* time,
+        const ITemporalMethod* temporalMethod) {
+    CompiledExecutionProgram result;
+    ExecutionScope root=processRoot(program);
+    if (!program.explicitOrder) {
+        orderExecution(root);
+        composeDefaultPlacement(program,root);
     }
+    const auto address=[&](const auto& self,ExecutionScope& scope)->void {
+        for (std::size_t i=0;i<scope.children.size();++i) {
+            auto& child=scope.children[i];
+            if (child.id.empty()) child.id=scope.id+"/"+std::to_string(i);
+            if (child.kind==ExecutionKind::EquationCall && child.step.occurrence.empty()) child.step.occurrence=child.id;
+            self(self,child);
+        }
+    };
+    address(address,root);
+    validatePlacement(program,root);
+    const auto explicitFrequency=[&](const auto& self,const ExecutionScope& scope)->bool {
+        return scope.frequency!=ExecutionFrequency::Inherit
+            || std::any_of(scope.children.begin(),scope.children.end(),[&](const auto& child){return self(self,child);});
+    };
+    const bool recipeScope=program.recipeScopes || explicitFrequency(explicitFrequency,root);
+    result.root=std::move(root);
+    std::set<std::string> declaredResiduals;
+    for(const auto& residual:program.residuals) {
+        if(residual.id.empty() || !declaredResiduals.insert(residual.id).second)throw std::runtime_error("Duplicate/empty residual definition: "+residual.id);
+        if(residual.members.empty())result.residuals.push_back(residual);
+    }
+    compileCalls(system,state,bindings,registry,time,result);
+
+    if(recipeScope)expandRecipeScope(result.root,result.steps);
+    std::vector<const ExecutionScope*> parents;
+    const auto indexCalls=[&](const auto& self,ExecutionScope& node,const ExecutionScope* parent,bool stage)->void {
+        stage=stage || node.kind==ExecutionKind::StageLoop || node.frequency==ExecutionFrequency::Stage;
+        if(node.kind==ExecutionKind::EquationCall || node.kind==ExecutionKind::BlockSolve) {
+            auto& call=result.steps.at(parents.size());
+            if(call.source.occurrence!=node.step.occurrence)
+                throw std::runtime_error("Recipe expansion changed HOW occurrence order: "+node.step.occurrence);
+            if(recipeScope) {
+                node.step.stageScoped=stage;
+                call.source.stageScoped=stage;
+            }
+            parents.push_back(parent);
+            return;
+        }
+        for(auto& child:node.children)self(self,child,&node,stage);
+    };
+    indexCalls(indexCalls,result.root,nullptr,false);
+    if(parents.size()!=result.steps.size())
+        throw std::runtime_error("Recipe expansion changed the number of HOW occurrences.");
     // Fusion is explicitly authored by a provider contract and remains local
     // to adjacent sibling occurrences. Source WHAT/HOW and both targets survive.
     std::vector<std::string> fusedKeys;
@@ -1077,7 +1029,7 @@ void compileSystem(ResolvedSimulationSystem& result,const ExecutionProgram& exec
     TermProviderCatalog termProviders=TermProviderCatalog::builtIn();
     for (const auto& descriptor:selected.termProviders) termProviders.addSource(descriptor);
     result.numericalSystem=NumericalCompiler::compile(result.executableSystem,compiledExecution,
-        selected.recipes,termProviders,compiledTime,builtinProviders(),selected.operatorBindings);
+        selected.recipes,termProviders,compiledTime,selected.operatorBindings);
     result.numericalSystem.dt=selected.dt;
     result.numericalSystem.phaseTransport=selected.phaseTransport;
     result.numericalSystem.pressureOperator=selected.pressureOperator;
@@ -1108,7 +1060,7 @@ void compileSystem(ResolvedSimulationSystem& result,const ExecutionProgram& exec
             }
         }
         if (step.temporalResidual && step.spatialTerms) {
-            if (step.spatialTerms && step.operatorBindings.empty())
+            if (step.operatorBindings.empty())
                 throw std::runtime_error("ConservativeResidual has no bound spatial provider.");
             step.requirements.push_back("halo depth="
                 +std::to_string(result.numericalSystem.requiredHaloWidth));

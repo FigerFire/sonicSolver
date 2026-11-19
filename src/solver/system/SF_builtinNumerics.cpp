@@ -26,6 +26,28 @@ void overlay(NumericalBinding& destination,const NumericalBinding& source) {
     }
     destination.origin=source.origin;
 }
+
+void resolveOperatorReferences(const ExecutableEquationSystem& system,const EquationCall& call,NumericalBinding& binding) {
+    std::set<std::pair<std::string,std::string>> used;
+    for(auto& op:binding.operators) {
+        if(op.formula.empty() || op.formula=="*")op.formula=call.equation;
+        if(op.formula!=call.equation)throw std::runtime_error("WHICH operator belongs to another equation at Step "+call.occurrence+": "+op.formula);
+        const auto& equation=system.registry.at(op.formula);
+        std::vector<const FormulaExpr*> exact,abbreviated;
+        const auto inspect=[&](const auto& self,const FormulaExpr& expression)->void {
+            if(expression.kind()==FormulaExpr::Kind::Operator) {
+                if(expression.occurrence()==op.occurrence)exact.push_back(&expression);
+                if(Math::name(expression.operation())==op.occurrence)abbreviated.push_back(&expression);
+            }
+            for(const auto& child:expression.arguments())self(self,child);
+        };
+        inspect(inspect,equation.lhs);inspect(inspect,equation.rhs);
+        const auto& matches=exact.empty()?abbreviated:exact;
+        if(matches.size()!=1)throw std::runtime_error("Missing/ambiguous operator occurrence: "+call.occurrence+" / "+op.formula+" / "+op.occurrence);
+        op.occurrence=matches.front()->occurrence();
+        if(op.occurrence.empty() || !used.emplace(op.formula,op.occurrence).second)throw std::runtime_error("Duplicate/unnamed numerical operator binding: "+call.occurrence);
+    }
+}
 }
 ResolvedBinding resolveNumerics(const EquationCall& call,const std::vector<NumericalBinding>& bindings,bool block,const ExecutableEquationSystem* system) {
     ResolvedBinding result;
@@ -78,29 +100,14 @@ ResolvedBinding resolveNumerics(const EquationCall& call,const std::vector<Numer
     }
     if(result.value.method.empty())throw std::runtime_error("Implementation capability missing: no provider for equation occurrence "+call.equation+" / "+call.occurrence+(block?"; whole block requires an explicit Step binding":""));
     if((result.value.responseDeclared || !result.value.response.empty()) && result.value.method!="RhieChow")throw std::runtime_error("Selected method has no response-reference input: "+result.value.method+" / "+call.occurrence);
+    if(system) {
+        std::set<std::pair<std::string,std::string>> sites;
+        for(const auto& op:result.value.operators)
+            if(!sites.emplace(op.formula,op.occurrence).second)
+                throw std::runtime_error("Duplicate/unnamed numerical operator binding: "+call.occurrence);
+    }
     result.value.equation=call.equation;result.value.occurrence=call.occurrence;
     return result;
-}
-void resolveOperatorReferences(const ExecutableEquationSystem& system,const EquationCall& call,NumericalBinding& binding) {
-    std::set<std::pair<std::string,std::string>> used;
-    for(auto& op:binding.operators) {
-        if(op.formula.empty() || op.formula=="*")op.formula=call.equation;
-        if(op.formula!=call.equation)throw std::runtime_error("WHICH operator belongs to another equation at Step "+call.occurrence+": "+op.formula);
-        const auto& equation=system.registry.at(op.formula);
-        std::vector<const FormulaExpr*> exact,abbreviated;
-        const auto inspect=[&](const auto& self,const FormulaExpr& expression)->void {
-            if(expression.kind()==FormulaExpr::Kind::Operator) {
-                if(expression.occurrence()==op.occurrence)exact.push_back(&expression);
-                if(Math::name(expression.operation())==op.occurrence)abbreviated.push_back(&expression);
-            }
-            for(const auto& child:expression.arguments())self(self,child);
-        };
-        inspect(inspect,equation.lhs);inspect(inspect,equation.rhs);
-        const auto& matches=exact.empty()?abbreviated:exact;
-        if(matches.size()!=1)throw std::runtime_error("Missing/ambiguous operator occurrence: "+call.occurrence+" / "+op.formula+" / "+op.occurrence);
-        op.occurrence=matches.front()->occurrence();
-        if(op.occurrence.empty() || !used.emplace(op.formula,op.occurrence).second)throw std::runtime_error("Duplicate/unnamed numerical operator binding: "+call.occurrence);
-    }
 }
 
 const PressureNumericalConfig* requiredPressureInputs(const Program& program) {
